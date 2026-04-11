@@ -1,0 +1,74 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  background-color: #0B0F1A;
+  color: #F1F5F9;
+  font-family: 'Inter', system-ui, sans-serif;
+  margin: 0;
+  padding: 0;
+  -webkit-font-smoothing: antialiased;
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #0B0F1A;
+}
+::-webkit-scrollbar-thumb {
+  background: #1E2A3A;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #3B82F6;
+}
+
+/* Table styles */
+table {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+thead th {
+  background-color: #131929;
+  color: #64748B;
+  font-size: 0.70rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 10px 14px;
+  text-align: left;
+  border-bottom: 1px solid #1E2A3A;
+  white-space: nowrap;
+}
+
+tbody tr {
+  border-bottom: 1px solid #1A2236;
+  transition: background-color 0.1s;
+}
+
+tbody tr:hover {
+  background-color: #1E2D42;
+  cursor: pointer;
+}
+
+tbody td {
+  padding: 10px 14px;
+  color: #CBD5E1;
+  font-size: 0.82rem;
+  white-space: nowrap;
+}
+
+/* Mono numbers */
+.mono {
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+}
