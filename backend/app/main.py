@@ -1,10 +1,18 @@
+import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 
 from app.database import init_db
 from app.api.routes import properties, companies, opportunities, activity, dashboard
 from app.ingestion.scheduler import start_scheduler, stop_scheduler
 from app.config import settings
+
+# Path to the built React frontend (relative to this file → ../../frontend/dist)
+FRONTEND_DIST = os.path.join(
+    os.path.dirname(__file__), "..", "..", "frontend", "dist"
+)
 
 
 def create_app() -> FastAPI:
@@ -16,17 +24,18 @@ def create_app() -> FastAPI:
 
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["http://localhost:5173", "http://localhost:3000"],
+        allow_origins=["*"],
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
     )
 
-    app.include_router(dashboard.router, prefix="/api")
-    app.include_router(properties.router, prefix="/api")
-    app.include_router(companies.router, prefix="/api")
+    # ── API routes ────────────────────────────────────────────────────────
+    app.include_router(dashboard.router,     prefix="/api")
+    app.include_router(properties.router,    prefix="/api")
+    app.include_router(companies.router,     prefix="/api")
     app.include_router(opportunities.router, prefix="/api")
-    app.include_router(activity.router, prefix="/api")
+    app.include_router(activity.router,      prefix="/api")
 
     @app.on_event("startup")
     def on_startup():
@@ -46,6 +55,21 @@ def create_app() -> FastAPI:
     @app.get("/health")
     def health():
         return {"status": "ok", "system": settings.app_name}
+
+    # ── Serve built React frontend ────────────────────────────────────────
+    if os.path.isdir(FRONTEND_DIST):
+        # Serve static assets (JS, CSS, images)
+        app.mount(
+            "/assets",
+            StaticFiles(directory=os.path.join(FRONTEND_DIST, "assets")),
+            name="assets",
+        )
+
+        # Catch-all: serve index.html for any non-API route (React Router)
+        @app.get("/{full_path:path}", include_in_schema=False)
+        def serve_spa(full_path: str):
+            index = os.path.join(FRONTEND_DIST, "index.html")
+            return FileResponse(index)
 
     return app
 

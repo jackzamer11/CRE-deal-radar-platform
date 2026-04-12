@@ -115,6 +115,10 @@ export interface OpportunityListOut {
   property_address: string | null
   property_submarket: string | null
   company_name: string | null
+  prediction_score: number | null
+  owner_behavior_score: number | null
+  mispricing_score: number | null
+  tenant_opportunity_score: number | null
 }
 
 export interface OpportunityOut extends OpportunityListOut {
