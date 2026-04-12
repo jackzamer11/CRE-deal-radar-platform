@@ -36,6 +36,9 @@ export const getProperties = (filters?: PropertyFilters): Promise<PropertyListOu
 export const getProperty = (propertyId: string): Promise<PropertyOut> =>
   api.get(`/properties/${propertyId}`).then(r => r.data)
 
+export const createProperty = (payload: Record<string, unknown>): Promise<PropertyOut> =>
+  api.post('/properties/', payload).then(r => r.data)
+
 export const refreshAllSignals = (): Promise<{ refreshed: number; timestamp: string }> =>
   api.post('/properties/refresh-signals').then(r => r.data)
 
@@ -56,6 +59,9 @@ export const getCompanies = (filters?: CompanyFilters): Promise<CompanyListOut[]
 
 export const getCompany = (companyId: string): Promise<CompanyOut> =>
   api.get(`/companies/${companyId}`).then(r => r.data)
+
+export const createCompany = (payload: Record<string, unknown>): Promise<CompanyOut> =>
+  api.post('/companies/', payload).then(r => r.data)
 
 // ── Opportunities ──────────────────────────────────────────────────────────
 

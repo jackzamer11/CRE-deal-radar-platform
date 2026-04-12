@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react'
-import { Building2, Filter, RefreshCw, X } from 'lucide-react'
+import { Building2, Filter, RefreshCw, X, Plus } from 'lucide-react'
 import { getProperties } from '../api/client'
-import type { PropertyListOut } from '../types'
+import type { PropertyListOut, PropertyOut } from '../types'
 import { PriorityBadge } from '../components/PriorityBadge'
 import ScoreBadge from '../components/ScoreBadge'
+import AddPropertyModal from '../components/AddPropertyModal'
 
 const SUBMARKETS = [
   'Arlington (Clarendon)',
@@ -35,6 +36,7 @@ export default function Properties() {
   const [priority, setPriority] = useState('')
   const [listedOnly, setListedOnly] = useState<boolean | undefined>()
   const [selected, setSelected] = useState<PropertyListOut | null>(null)
+  const [showAddModal, setShowAddModal] = useState(false)
 
   const load = async () => {
     setLoading(true)
@@ -61,9 +63,18 @@ export default function Properties() {
           <h1 className="text-xl font-bold text-ink-primary">Properties</h1>
           <span className="text-ink-muted text-sm">({properties.length})</span>
         </div>
-        <button onClick={load} className="p-2 rounded-lg hover:bg-surface-card text-ink-muted hover:text-ink-primary">
-          <RefreshCw size={15} className={loading ? 'animate-spin' : ''} />
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setShowAddModal(true)}
+            className="flex items-center gap-2 px-4 py-2 rounded-lg bg-accent-blue text-white text-xs font-semibold
+                       hover:bg-accent-blueDim transition-colors"
+          >
+            <Plus size={13} /> Add Property
+          </button>
+          <button onClick={load} className="p-2 rounded-lg hover:bg-surface-card text-ink-muted hover:text-ink-primary">
+            <RefreshCw size={15} className={loading ? 'animate-spin' : ''} />
+          </button>
+        </div>
       </div>
 
       {/* Filters */}
@@ -179,6 +190,17 @@ export default function Properties() {
           </table>
         </div>
       </div>
+
+      {/* Add Property Modal */}
+      {showAddModal && (
+        <AddPropertyModal
+          onClose={() => setShowAddModal(false)}
+          onSaved={(saved: PropertyOut) => {
+            setShowAddModal(false)
+            load()
+          }}
+        />
+      )}
 
       {/* Detail panel */}
       {selected && (

@@ -1,5 +1,6 @@
 from typing import List, Optional
-from datetime import datetime
+from datetime import datetime, date
+from pydantic import BaseModel
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
@@ -9,6 +10,34 @@ from app.models.property import Property
 from app.schemas.property import PropertyOut, PropertyListOut, PropertyCreate, SignalBreakdown
 from app.services import signal_engine as se
 from app.services.scoring_model import score_property
+from app.config import settings
+
+CURRENT_YEAR = 2026
+
+
+class PropertyManualCreate(BaseModel):
+    address: str
+    submarket: str
+    asset_class: str = "Class B"
+    total_sf: int
+    year_built: int
+    last_renovation_year: Optional[int] = None
+    owner_name: str
+    owner_type: str = "LLC"
+    owner_phone: Optional[str] = None
+    owner_email: Optional[str] = None
+    acquisition_year: Optional[int] = None
+    acquisition_price: Optional[float] = None
+    in_place_rent_psf: float
+    occupancy_pct: float
+    sf_expiring_12mo: float = 0.0
+    sf_expiring_24mo: float = 0.0
+    last_lease_signed_year: Optional[int] = None
+    is_listed: bool = False
+    asking_price: Optional[float] = None
+    days_on_market: Optional[int] = None
+    estimated_loan_maturity_year: Optional[int] = None
+    notes: Optional[str] = None
 
 router = APIRouter(prefix="/properties", tags=["properties"])
 
@@ -125,6 +154,101 @@ def list_properties(
     col = getattr(Property, sort_by, Property.signal_score)
     props = q.order_by(col.desc()).all()
     return props
+
+
+@router.post("/", response_model=PropertyOut)
+def create_property(payload: PropertyManualCreate, db: Session = Depends(get_db)):
+    """Manually add a new property. Signals are computed immediately after creation."""
+
+    # Auto-generate property_id (NVA-XXX)
+    existing_ids = [p.property_id for p in db.query(Property.property_id).all()]
+    nums = []
+    for pid in existing_ids:
+        try:
+            nums.append(int(pid.split("-")[1]))
+        except (IndexError, ValueError):
+            pass
+    next_num = (max(nums) + 1) if nums else 1
+    property_id = f"NVA-{next_num:03d}"
+
+    # Derived fields
+    vacancy_pct   = round(100.0 - payload.occupancy_pct, 2)
+    leased_sf     = payload.total_sf * (payload.occupancy_pct / 100.0)
+    vacant_sf     = payload.total_sf * (vacancy_pct / 100.0)
+    rollover_pct  = round(payload.sf_expiring_12mo / payload.total_sf * 100, 2) if payload.total_sf else 0.0
+
+    # Pull market benchmarks from config
+    market_rent   = settings.submarket_market_rent.get(payload.submarket, 26.0)
+    market_cap    = settings.submarket_cap_rate.get(payload.submarket, 6.5)
+    avg_dom       = settings.submarket_avg_dom.get(payload.submarket, 120)
+
+    # Acquisition date + years owned
+    acq_date = date(payload.acquisition_year, 1, 1) if payload.acquisition_year else None
+    years_owned = round((date.today() - acq_date).days / 365.25, 1) if acq_date else 0.0
+
+    # Years since last lease
+    if payload.last_lease_signed_year:
+        years_since_last_lease = round(CURRENT_YEAR - payload.last_lease_signed_year, 1)
+        last_lease_date = date(payload.last_lease_signed_year, 6, 1)
+    else:
+        years_since_last_lease = 0.0
+        last_lease_date = None
+
+    # Asking price PSF
+    asking_psf = None
+    if payload.asking_price and payload.total_sf:
+        asking_psf = round(payload.asking_price / payload.total_sf, 2)
+
+    # In-place cap rate estimate
+    cap_rate = None
+    if payload.asking_price and payload.in_place_rent_psf and leased_sf:
+        noi_estimate = payload.in_place_rent_psf * leased_sf * 0.55
+        cap_rate = round(noi_estimate / payload.asking_price * 100, 2)
+
+    prop = Property(
+        property_id              = property_id,
+        address                  = payload.address,
+        submarket                = payload.submarket,
+        asset_class              = payload.asset_class,
+        total_sf                 = payload.total_sf,
+        year_built               = payload.year_built,
+        last_renovation_year     = payload.last_renovation_year,
+        owner_name               = payload.owner_name,
+        owner_type               = payload.owner_type,
+        owner_phone              = payload.owner_phone,
+        owner_email              = payload.owner_email,
+        acquisition_date         = acq_date,
+        acquisition_price        = payload.acquisition_price,
+        years_owned              = years_owned,
+        asking_price             = payload.asking_price,
+        asking_price_psf         = asking_psf,
+        in_place_rent_psf        = payload.in_place_rent_psf,
+        market_rent_psf          = market_rent,
+        market_cap_rate          = market_cap,
+        cap_rate                 = cap_rate,
+        occupancy_pct            = payload.occupancy_pct,
+        vacancy_pct              = vacancy_pct,
+        leased_sf                = leased_sf,
+        vacant_sf                = vacant_sf,
+        sf_expiring_12mo         = payload.sf_expiring_12mo,
+        sf_expiring_24mo         = payload.sf_expiring_24mo,
+        lease_rollover_pct       = rollover_pct,
+        last_lease_signed_date   = last_lease_date,
+        years_since_last_lease   = years_since_last_lease,
+        is_listed                = payload.is_listed,
+        days_on_market           = payload.days_on_market,
+        submarket_avg_dom        = avg_dom,
+        estimated_loan_maturity_year = payload.estimated_loan_maturity_year,
+        notes                    = payload.notes,
+    )
+    db.add(prop)
+    db.flush()
+
+    # Run signals immediately so the new property has scores
+    _run_signals(prop)
+    db.commit()
+    db.refresh(prop)
+    return _enrich(prop)
 
 
 @router.get("/{property_id}", response_model=PropertyOut)

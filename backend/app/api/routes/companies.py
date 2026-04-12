@@ -1,5 +1,6 @@
 from typing import List, Optional
-from datetime import datetime
+from datetime import datetime, date
+from pydantic import BaseModel
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
@@ -11,6 +12,26 @@ from app.services import signal_engine as se
 from app.services.scoring_model import score_property
 
 router = APIRouter(prefix="/companies", tags=["companies"])
+
+CURRENT_YEAR = 2026
+
+
+class CompanyManualCreate(BaseModel):
+    name: str
+    industry: str
+    description: Optional[str] = None
+    current_headcount: int
+    headcount_12mo_ago: Optional[int] = None
+    open_positions: int = 0
+    current_address: Optional[str] = None
+    current_submarket: Optional[str] = None
+    current_sf: Optional[int] = None
+    lease_expiry_months: Optional[int] = None
+    primary_contact_name: Optional[str] = None
+    primary_contact_title: Optional[str] = None
+    primary_contact_phone: Optional[str] = None
+    linkedin_url: Optional[str] = None
+    website: Optional[str] = None
 
 
 def _run_signals(company: Company) -> None:
@@ -62,6 +83,74 @@ def _run_signals(company: Company) -> None:
         and (company.lease_expiry_months or 999) <= 24
         and (company.sf_per_head or 999) <= 150
     )
+
+
+@router.post("/", response_model=CompanyOut)
+def create_company(payload: CompanyManualCreate, db: Session = Depends(get_db)):
+    """Manually add a new company. Signals are computed immediately after creation."""
+
+    # Auto-generate company_id (CO-XXX)
+    existing_ids = [c.company_id for c in db.query(Company.company_id).all()]
+    nums = []
+    for cid in existing_ids:
+        try:
+            nums.append(int(cid.split("-")[1]))
+        except (IndexError, ValueError):
+            pass
+    next_num = (max(nums) + 1) if nums else 1
+    company_id = f"CO-{next_num:03d}"
+
+    # Derived fields
+    growth_pct = None
+    if payload.headcount_12mo_ago and payload.headcount_12mo_ago > 0:
+        growth_pct = round(
+            (payload.current_headcount - payload.headcount_12mo_ago)
+            / payload.headcount_12mo_ago * 100, 1
+        )
+
+    hiring_velocity = None
+    if payload.current_headcount > 0:
+        hiring_velocity = round(payload.open_positions / payload.current_headcount * 100, 1)
+
+    sf_per_head = None
+    if payload.current_sf and payload.current_headcount > 0:
+        sf_per_head = round(payload.current_sf / payload.current_headcount, 1)
+
+    estimated_sf_needed = None
+    if payload.current_headcount:
+        growth_factor = 1 + ((growth_pct or 0) / 100.0) * 1.25
+        estimated_sf_needed = int(payload.current_headcount * growth_factor * 175)
+
+    company = Company(
+        company_id            = company_id,
+        name                  = payload.name,
+        industry              = payload.industry,
+        description           = payload.description,
+        current_headcount     = payload.current_headcount,
+        headcount_12mo_ago    = payload.headcount_12mo_ago,
+        headcount_growth_pct  = growth_pct,
+        open_positions        = payload.open_positions,
+        hiring_velocity       = hiring_velocity,
+        current_address       = payload.current_address,
+        current_submarket     = payload.current_submarket,
+        current_sf            = payload.current_sf,
+        sf_per_head           = sf_per_head,
+        lease_expiry_months   = payload.lease_expiry_months,
+        estimated_sf_needed   = estimated_sf_needed,
+        primary_contact_name  = payload.primary_contact_name,
+        primary_contact_title = payload.primary_contact_title,
+        primary_contact_phone = payload.primary_contact_phone,
+        linkedin_url          = payload.linkedin_url,
+        website               = payload.website,
+    )
+    db.add(company)
+    db.flush()
+
+    # Run signals immediately
+    _run_signals(company)
+    db.commit()
+    db.refresh(company)
+    return company
 
 
 @router.get("/", response_model=List[CompanyListOut])

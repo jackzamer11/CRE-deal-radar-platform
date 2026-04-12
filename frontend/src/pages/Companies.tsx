@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react'
-import { Users, Filter, X, TrendingUp, Clock, MapPin } from 'lucide-react'
+import { Users, Filter, X, TrendingUp, Clock, MapPin, Plus, RefreshCw } from 'lucide-react'
 import { getCompanies } from '../api/client'
-import type { CompanyListOut } from '../types'
+import type { CompanyListOut, CompanyOut } from '../types'
 import { PriorityBadge } from '../components/PriorityBadge'
 import ScoreBadge from '../components/ScoreBadge'
+import AddCompanyModal from '../components/AddCompanyModal'
 
 const SUBMARKETS = [
   'Arlington (Clarendon)', 'Arlington (Rosslyn)', 'Arlington (Ballston)',
@@ -29,6 +30,7 @@ export default function Companies() {
   const [priority, setPriority] = useState('')
   const [expansionOnly, setExpansionOnly] = useState(false)
   const [selected, setSelected] = useState<CompanyListOut | null>(null)
+  const [showAddModal, setShowAddModal] = useState(false)
 
   const load = async () => {
     setLoading(true)
@@ -53,6 +55,18 @@ export default function Companies() {
           <Users size={20} className="text-emerald-400" />
           <h1 className="text-xl font-bold text-ink-primary">Companies</h1>
           <span className="text-ink-muted text-sm">({companies.length})</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setShowAddModal(true)}
+            className="flex items-center gap-2 px-4 py-2 rounded-lg bg-emerald-600 text-white text-xs font-semibold
+                       hover:bg-emerald-700 transition-colors"
+          >
+            <Plus size={13} /> Add Company
+          </button>
+          <button onClick={load} className="p-2 rounded-lg hover:bg-surface-card text-ink-muted hover:text-ink-primary">
+            <RefreshCw size={15} className={loading ? 'animate-spin' : ''} />
+          </button>
         </div>
       </div>
 
@@ -159,6 +173,17 @@ export default function Companies() {
           </div>
         ))}
       </div>
+
+      {/* Add Company Modal */}
+      {showAddModal && (
+        <AddCompanyModal
+          onClose={() => setShowAddModal(false)}
+          onSaved={(_saved: CompanyOut) => {
+            setShowAddModal(false)
+            load()
+          }}
+        />
+      )}
 
       {/* Detail panel */}
       {selected && (
