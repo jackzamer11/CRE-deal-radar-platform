@@ -112,8 +112,14 @@ export const createActivity = (payload: {
 
 export const runPipeline = (): Promise<{
   status: string
+  properties_enriched: number
   properties_refreshed: number
   companies_refreshed: number
   new_opportunities: number
   elapsed_seconds: number
 }> => api.post('/pipeline/run').then(r => r.data)
+
+export const refreshPublicRecords = (): Promise<{
+  status: string
+  properties_enriched: number
+}> => api.post('/pipeline/refresh-public-records').then(r => r.data)

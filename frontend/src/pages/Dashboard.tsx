@@ -1,12 +1,13 @@
 import { useEffect, useState } from 'react'
 import {
   Zap, TrendingUp, Users, AlertTriangle,
-  PhoneCall, ChevronRight, RefreshCw
+  PhoneCall, ChevronRight, RefreshCw, Plus, Database
 } from 'lucide-react'
-import { getDailyBriefing } from '../api/client'
-import type { DailyBriefing, CallTarget } from '../types'
+import { getDailyBriefing, runPipeline } from '../api/client'
+import type { DailyBriefing, CallTarget, PropertyOut } from '../types'
 import { PriorityBadge, DealTypeBadge, ConfidenceBadge } from '../components/PriorityBadge'
 import ScoreBadge from '../components/ScoreBadge'
+import AddPropertyModal from '../components/AddPropertyModal'
 
 function StatCard({
   label, value, sub, icon: Icon, color,
@@ -114,6 +115,9 @@ export default function Dashboard() {
   const [briefing, setBriefing] = useState<DailyBriefing | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [showAddModal, setShowAddModal] = useState(false)
+  const [pipelineRunning, setPipelineRunning] = useState(false)
+  const [pipelineStatus, setPipelineStatus] = useState<string | null>(null)
 
   const load = async () => {
     setLoading(true)
@@ -125,6 +129,22 @@ export default function Dashboard() {
       setError(e?.response?.data?.detail || 'Failed to load briefing')
     } finally {
       setLoading(false)
+    }
+  }
+
+  const handleRunPipeline = async () => {
+    setPipelineRunning(true)
+    setPipelineStatus(null)
+    try {
+      const result = await runPipeline()
+      setPipelineStatus(
+        `Done — ${result.properties_refreshed} properties, ${result.new_opportunities} new deals (${result.elapsed_seconds}s)`
+      )
+      await load()
+    } catch {
+      setPipelineStatus('Pipeline failed — check server logs')
+    } finally {
+      setPipelineRunning(false)
     }
   }
 
@@ -156,15 +176,52 @@ export default function Dashboard() {
             })} · Northern Virginia Office · Under $10M · 3K–30K SF
           </p>
         </div>
-        <button
-          onClick={load}
-          className="flex items-center gap-2 px-4 py-2 rounded-lg bg-surface-card border border-surface-border
-                     text-ink-secondary hover:text-ink-primary text-sm transition-colors"
-        >
-          <RefreshCw size={14} />
-          Refresh
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setShowAddModal(true)}
+            className="flex items-center gap-2 px-4 py-2 rounded-lg bg-accent-blue text-white
+                       text-xs font-semibold hover:bg-accent-blueDim transition-colors"
+          >
+            <Plus size={13} /> Add Property
+          </button>
+          <button
+            onClick={handleRunPipeline}
+            disabled={pipelineRunning}
+            className="flex items-center gap-2 px-4 py-2 rounded-lg bg-surface-card border border-surface-border
+                       text-ink-secondary hover:text-ink-primary text-xs font-semibold transition-colors disabled:opacity-50"
+            title="Refresh Arlington + Fairfax county data and recalculate all signals"
+          >
+            <Database size={13} className={pipelineRunning ? 'animate-pulse text-emerald-400' : ''} />
+            {pipelineRunning ? 'Refreshing…' : 'Refresh Data'}
+          </button>
+          <button
+            onClick={load}
+            className="flex items-center gap-2 px-4 py-2 rounded-lg bg-surface-card border border-surface-border
+                       text-ink-secondary hover:text-ink-primary text-xs transition-colors"
+          >
+            <RefreshCw size={13} />
+          </button>
+        </div>
       </div>
+
+      {/* Pipeline status toast */}
+      {pipelineStatus && (
+        <div className="mb-6 px-4 py-2.5 rounded-lg bg-emerald-500/10 border border-emerald-500/25 text-emerald-400 text-xs flex items-center justify-between">
+          <span>{pipelineStatus}</span>
+          <button onClick={() => setPipelineStatus(null)} className="text-ink-muted hover:text-ink-primary ml-4">✕</button>
+        </div>
+      )}
+
+      {/* Add Property Modal */}
+      {showAddModal && (
+        <AddPropertyModal
+          onClose={() => setShowAddModal(false)}
+          onSaved={(_saved: PropertyOut) => {
+            setShowAddModal(false)
+            load()
+          }}
+        />
+      )}
 
       {/* Stats */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">

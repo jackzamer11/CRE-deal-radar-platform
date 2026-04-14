@@ -292,6 +292,92 @@ def run_deal_creation(db: Session) -> int:
     return created_count
 
 
+def refresh_public_records(db: Session) -> int:
+    """
+    Enrich properties with live data from:
+      - Arlington County Open Data (building permits + assessments)
+      - Fairfax County iCARE / GIS REST API (CAMA assessments)
+
+    Updates: assessed_value (estimated_value), last_renovation_year,
+             owner_name (if blank), acquisition_price (if blank).
+    Runs before signal recalculation so enriched data feeds into scores.
+    Failures are logged but never raise — pipeline continues regardless.
+    """
+    from app.ingestion.adapters.arlington_opendata import (
+        fetch_building_permits,
+        fetch_property_assessment,
+        get_last_major_permit_year,
+    )
+    from app.ingestion.adapters.fairfax_icare import enrich_property_from_fairfax
+    from datetime import date as _date
+
+    updated = 0
+    props = db.query(Property).all()
+
+    for prop in props:
+        submarket = (prop.submarket or "").lower()
+        assessment = None
+
+        try:
+            if "arlington" in submarket:
+                # ── Arlington County ──────────────────────────────────────
+                assessment = fetch_property_assessment(prop.address)
+
+                # Permit history → last renovation year
+                permits = fetch_building_permits(
+                    address_fragment=prop.address.split(",")[0][:30]
+                )
+                reno_year = get_last_major_permit_year(permits)
+                if reno_year and (
+                    not prop.last_renovation_year
+                    or reno_year > prop.last_renovation_year
+                ):
+                    prop.last_renovation_year = reno_year
+                    logger.info(
+                        "[Pipeline] Arlington permit → %s renovation year: %d",
+                        prop.property_id, reno_year,
+                    )
+
+            elif any(s in submarket for s in ("tysons", "reston", "falls church", "fairfax")):
+                # ── Fairfax County ────────────────────────────────────────
+                assessment = enrich_property_from_fairfax(prop.address)
+
+                if assessment and assessment.get("effective_year"):
+                    eff = assessment["effective_year"]
+                    if not prop.last_renovation_year or eff > prop.last_renovation_year:
+                        prop.last_renovation_year = eff
+
+            # Apply assessment data (common for both counties)
+            if assessment:
+                if assessment.get("assessed_value"):
+                    prop.estimated_value = assessment["assessed_value"]
+
+                if assessment.get("owner_name") and not prop.owner_name:
+                    prop.owner_name = assessment["owner_name"]
+
+                if assessment.get("last_sale_price") and not prop.acquisition_price:
+                    prop.acquisition_price = assessment["last_sale_price"]
+
+                if assessment.get("last_sale_date") and not prop.acquisition_date:
+                    try:
+                        prop.acquisition_date = _date.fromisoformat(
+                            str(assessment["last_sale_date"])[:10]
+                        )
+                    except (ValueError, TypeError):
+                        pass
+
+                updated += 1
+
+        except Exception as exc:
+            logger.warning(
+                "[Pipeline] Public records failed for %s: %s", prop.property_id, exc
+            )
+
+    db.commit()
+    logger.info("[Pipeline] Public records refresh — %d/%d properties enriched", updated, len(props))
+    return updated
+
+
 def run_full_pipeline(db: Session = None) -> dict:
     """
     Full daily pipeline. Called by APScheduler or manually via API.
@@ -305,26 +391,31 @@ def run_full_pipeline(db: Session = None) -> dict:
         start = datetime.utcnow()
         logger.info("[Pipeline] Starting daily refresh")
 
-        # 1. Refresh property signals
+        # 1. Enrich from public records (Arlington + Fairfax APIs)
+        enriched = refresh_public_records(db)
+        logger.info(f"[Pipeline] Public records enriched {enriched} properties")
+
+        # 2. Refresh property signals
         props = db.query(Property).all()
         for prop in props:
             refresh_property_signals(db, prop)
         db.commit()
         logger.info(f"[Pipeline] Refreshed signals for {len(props)} properties")
 
-        # 2. Refresh company signals
+        # 3. Refresh company signals
         companies = db.query(Company).all()
         for company in companies:
             refresh_company_signals(db, company)
         db.commit()
         logger.info(f"[Pipeline] Refreshed signals for {len(companies)} companies")
 
-        # 3. Run deal creation
+        # 4. Run deal creation
         new_opps = run_deal_creation(db)
 
         elapsed = (datetime.utcnow() - start).seconds
         result = {
             "status":               "success",
+            "properties_enriched":  enriched,
             "properties_refreshed": len(props),
             "companies_refreshed":  len(companies),
             "new_opportunities":    new_opps,

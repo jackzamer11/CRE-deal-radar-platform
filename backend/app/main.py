@@ -1,8 +1,11 @@
 import os
-from fastapi import FastAPI
+from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
+from sqlalchemy.orm import Session
+
+from app.database import get_db
 
 from app.database import init_db
 from app.api.routes import properties, companies, opportunities, activity, dashboard
@@ -51,6 +54,13 @@ def create_app() -> FastAPI:
         """Trigger the full data refresh pipeline on-demand."""
         from app.ingestion.pipeline import run_full_pipeline
         return run_full_pipeline()
+
+    @app.post("/api/pipeline/refresh-public-records", tags=["pipeline"])
+    def refresh_public_records_now(db: Session = Depends(get_db)):
+        """Pull latest data from Arlington County Open Data and Fairfax iCARE."""
+        from app.ingestion.pipeline import refresh_public_records
+        enriched = refresh_public_records(db)
+        return {"status": "ok", "properties_enriched": enriched}
 
     @app.get("/health")
     def health():
