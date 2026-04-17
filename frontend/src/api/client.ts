@@ -123,3 +123,26 @@ export const refreshPublicRecords = (): Promise<{
   status: string
   properties_enriched: number
 }> => api.post('/pipeline/refresh-public-records').then(r => r.data)
+
+// ── Bulk upload ────────────────────────────────────────────────────────────
+
+export interface BulkUploadError {
+  row: number
+  address: string
+  reason: string
+}
+
+export interface BulkUploadResult {
+  inserted: number
+  updated: number
+  skipped: number
+  errors: BulkUploadError[]
+}
+
+export const uploadPropertiesBulk = (file: File): Promise<BulkUploadResult> => {
+  const form = new FormData()
+  form.append('file', file)
+  return api.post('/properties/bulk-upload', form, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  }).then(r => r.data)
+}

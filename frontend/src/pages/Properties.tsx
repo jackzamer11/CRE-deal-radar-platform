@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react'
-import { Building2, Filter, RefreshCw, X, Plus } from 'lucide-react'
+import { Building2, Filter, RefreshCw, X, Plus, Upload } from 'lucide-react'
 import { getProperties } from '../api/client'
 import type { PropertyListOut, PropertyOut } from '../types'
 import { PriorityBadge } from '../components/PriorityBadge'
 import ScoreBadge from '../components/ScoreBadge'
 import AddPropertyModal from '../components/AddPropertyModal'
+import BulkUploadModal from '../components/BulkUploadModal'
 
 const SUBMARKETS = [
   'Arlington (Clarendon)',
@@ -37,6 +38,7 @@ export default function Properties() {
   const [listedOnly, setListedOnly] = useState<boolean | undefined>()
   const [selected, setSelected] = useState<PropertyListOut | null>(null)
   const [showAddModal, setShowAddModal] = useState(false)
+  const [showBulkModal, setShowBulkModal] = useState(false)
 
   const load = async () => {
     setLoading(true)
@@ -70,6 +72,13 @@ export default function Properties() {
                        hover:bg-accent-blueDim transition-colors"
           >
             <Plus size={13} /> Add Property
+          </button>
+          <button
+            onClick={() => setShowBulkModal(true)}
+            className="flex items-center gap-2 px-4 py-2 rounded-lg bg-surface-card border border-surface-border
+                       text-ink-secondary hover:text-ink-primary text-xs font-semibold transition-colors"
+          >
+            <Upload size={13} /> Bulk Upload
           </button>
           <button onClick={load} className="p-2 rounded-lg hover:bg-surface-card text-ink-muted hover:text-ink-primary">
             <RefreshCw size={15} className={loading ? 'animate-spin' : ''} />
@@ -191,14 +200,17 @@ export default function Properties() {
         </div>
       </div>
 
-      {/* Add Property Modal */}
       {showAddModal && (
         <AddPropertyModal
           onClose={() => setShowAddModal(false)}
-          onSaved={(saved: PropertyOut) => {
-            setShowAddModal(false)
-            load()
-          }}
+          onSaved={(_saved: PropertyOut) => { setShowAddModal(false); load() }}
+        />
+      )}
+
+      {showBulkModal && (
+        <BulkUploadModal
+          onClose={() => setShowBulkModal(false)}
+          onDone={load}
         />
       )}
 
