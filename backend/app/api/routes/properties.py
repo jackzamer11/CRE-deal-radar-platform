@@ -4,6 +4,7 @@ from typing import List, Optional
 from datetime import datetime, date
 
 import pandas as pd
+from dateutil import parser as _dateparser
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -83,6 +84,172 @@ _REQUIRED_INTERNAL = {
     "address", "submarket", "total_sf", "year_built",
     "owner_name", "in_place_rent_psf", "occupancy_pct",
 }
+
+# ── CoStar import constants ────────────────────────────────────────────────
+
+# Key = CoStar submarket name (lowercase, stripped).
+# Value = platform submarket string, or None for ambiguous (skip with reason).
+COSTAR_SUBMARKET_MAP: dict = {
+    "old town alexandria":  "Alexandria (Old Town)",
+    "alexandria/old town":  "Alexandria (Old Town)",
+    "falls church":         "Falls Church",
+    "reston":               "Reston",
+    "tysons":               "Tysons",
+    "tysons corner":        "Tysons",
+    "clarendon":            "Arlington (Clarendon)",
+    "rosslyn":              "Arlington (Rosslyn)",
+    "rosslyn/ballston":     None,   # ambiguous — specific error message
+    "ballston":             "Arlington (Ballston)",
+    "columbia pike":        "Arlington (Columbia Pike)",
+}
+
+COSTAR_CLASS_MAP: dict = {
+    "a": "Class A",
+    "b": "Class B",
+    "c": "Class C",
+}
+
+# Exact CoStar export column names (order matches CoStar default export).
+# Used to validate the file has the right headers.
+COSTAR_REQUIRED_COLS = [
+    "Property Address", "Building Class", "RBA", "Submarket Name",
+    "City", "State", "Zip", "Year Built", "Year Renovated",
+    "Last Sale Date", "Last Sale Price", "Origination Amount",
+    "Origination Date", "Maturity Date", "Percent Leased",
+    "Rent/SF/Yr", "Building Status", "For Sale Status",
+    "For Sale Price", "True Owner Contact", "True Owner Name",
+    "True Owner Phone",
+]
+
+
+def _costar_str(row: dict, col: str) -> Optional[str]:
+    v = row.get(col)
+    if v is None:
+        return None
+    if isinstance(v, float) and pd.isna(v):
+        return None
+    s = str(v).strip()
+    return s if s else None
+
+
+def _costar_float(row: dict, col: str) -> Optional[float]:
+    raw = _costar_str(row, col)
+    if raw is None:
+        return None
+    try:
+        return float(raw.replace(",", "").replace("$", "").replace("%", ""))
+    except ValueError:
+        return None
+
+
+def _costar_int(row: dict, col: str) -> Optional[int]:
+    f = _costar_float(row, col)
+    return int(f) if f is not None else None
+
+
+def _extract_year(raw: Optional[str]) -> Optional[int]:
+    """Parse a date string in any common format and return the year."""
+    if not raw:
+        return None
+    try:
+        return _dateparser.parse(raw, fuzzy=True).year
+    except (ValueError, OverflowError, TypeError):
+        return None
+
+
+def _costar_bool(row: dict, col: str) -> bool:
+    raw = _costar_str(row, col)
+    if not raw:
+        return False
+    return raw.lower() in ("y", "yes", "true", "1")
+
+
+def _parse_costar_row(row: dict, row_num: int) -> tuple:
+    """
+    Validate and parse one post-filter CoStar row.
+    Returns (PropertyManualCreate, None) or (None, error_dict).
+    Caller has already applied state / submarket / status filters.
+    """
+    err = {"row": row_num, "address": _costar_str(row, "Property Address") or "—"}
+
+    address = _costar_str(row, "Property Address")
+    if not address:
+        return None, {**err, "reason": "Missing Property Address"}
+
+    err["address"] = address
+
+    # Submarket (already filtered, but re-resolve to platform name)
+    cs_sub = _costar_str(row, "Submarket Name") or ""
+    submarket = COSTAR_SUBMARKET_MAP.get(cs_sub.lower())
+    if not submarket:
+        return None, {**err, "reason": f"Submarket '{cs_sub}' could not be resolved"}
+
+    # Building Class
+    raw_class = _costar_str(row, "Building Class") or ""
+    asset_class = COSTAR_CLASS_MAP.get(raw_class.strip().lower())
+    if not asset_class:
+        return None, {**err, "reason": f"Building Class '{raw_class}' not recognised (expected A, B, or C)"}
+
+    # RBA (total_sf)
+    total_sf = _costar_int(row, "RBA")
+    if not total_sf:
+        return None, {**err, "reason": "Missing or zero RBA"}
+
+    # Year Built
+    year_built = _costar_int(row, "Year Built")
+    if not year_built:
+        return None, {**err, "reason": "Missing Year Built"}
+
+    # Occupancy
+    occupancy = _costar_float(row, "Percent Leased")
+    if occupancy is None:
+        return None, {**err, "reason": "Missing Percent Leased"}
+    # CoStar sometimes exports as 0–100, sometimes as 0–1
+    if 0.0 < occupancy <= 1.0:
+        occupancy = round(occupancy * 100, 2)
+
+    # Owner name: "Contact, Entity" or just "Entity" or "Unknown"
+    contact    = _costar_str(row, "True Owner Contact")
+    owner_raw  = _costar_str(row, "True Owner Name")
+    if contact and owner_raw:
+        owner_name = f"{contact}, {owner_raw}"
+    elif owner_raw:
+        owner_name = owner_raw
+    elif contact:
+        owner_name = contact
+    else:
+        owner_name = "Unknown"
+
+    # Dates → years
+    acq_year      = _extract_year(_costar_str(row, "Last Sale Date"))
+    maturity_year = _extract_year(_costar_str(row, "Maturity Date"))
+
+    # Notes: flag that in-place rent is missing
+    notes = "in_place_rent_psf not imported from CoStar — update manually."
+
+    return PropertyManualCreate(
+        address=address,
+        submarket=submarket,
+        asset_class=asset_class,
+        total_sf=total_sf,
+        year_built=year_built,
+        last_renovation_year=_costar_int(row, "Year Renovated"),
+        owner_name=owner_name,
+        owner_type="",                                    # not in CoStar export
+        owner_phone=_costar_str(row, "True Owner Phone"),
+        owner_email=None,
+        acquisition_year=acq_year,
+        acquisition_price=_costar_float(row, "Last Sale Price"),
+        in_place_rent_psf=0.0,                           # asking rent ignored per spec
+        occupancy_pct=occupancy,
+        sf_expiring_12mo=0.0,
+        sf_expiring_24mo=0.0,
+        last_lease_signed_year=None,
+        is_listed=_costar_bool(row, "For Sale Status"),
+        asking_price=_costar_float(row, "For Sale Price"),
+        estimated_loan_maturity_year=maturity_year,
+        notes=notes,
+    ), None
 
 
 class PropertyManualCreate(BaseModel):
@@ -540,6 +707,149 @@ async def bulk_upload_properties(
         "updated":  updated,
         "skipped":  len(errors),
         "errors":   errors,
+    }
+
+
+@router.post("/costar-import")
+async def costar_import(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+):
+    """
+    Import a CoStar raw export (.csv or .xlsx).
+
+    Filtering pipeline (in order):
+      1. State != VA          → filtered_state
+      2. Submarket unmapped   → filtered_submarket (tracks unmapped_submarkets set)
+      3. Building Status != Existing → filtered_status
+
+    Deduplication key: Property Address (case-insensitive, whitespace-trimmed).
+    Returns: {total_rows, filtered_state, filtered_submarket, filtered_status,
+               inserted, updated, skipped, unmapped_submarkets, errors}
+    """
+    fname = (file.filename or "").lower()
+    if not (fname.endswith(".csv") or fname.endswith(".xlsx") or fname.endswith(".xls")):
+        raise HTTPException(status_code=400, detail="File must be .csv or .xlsx")
+
+    contents = await file.read()
+    try:
+        if fname.endswith(".csv"):
+            df = pd.read_csv(io.BytesIO(contents), dtype=str, keep_default_na=False)
+        else:
+            df = pd.read_excel(io.BytesIO(contents), dtype=str, keep_default_na=False, engine="openpyxl")
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Could not parse file: {exc}")
+
+    df.columns = [c.strip() for c in df.columns]
+
+    # Check required columns
+    col_set = set(df.columns)
+    missing = [c for c in COSTAR_REQUIRED_COLS if c not in col_set]
+    if missing:
+        raise HTTPException(status_code=400, detail=f"Missing CoStar columns: {', '.join(missing)}")
+
+    df = df.replace("", None)
+    rows = df.to_dict(orient="records")
+    total_rows = len(rows)
+
+    filtered_state     = 0
+    filtered_submarket = 0
+    filtered_status    = 0
+    unmapped_submarkets: set = set()
+    inserted = updated = 0
+    errors: list = []
+
+    existing: dict = {
+        p.address.strip().lower(): p
+        for p in db.query(Property).all()
+    }
+
+    for idx, row in enumerate(rows, start=2):
+        # Filter 1: State must be VA
+        state_val = _costar_str(row, "State") or ""
+        if state_val.strip().upper() != "VA":
+            filtered_state += 1
+            continue
+
+        # Filter 2: Submarket must map to a platform submarket
+        cs_sub = (_costar_str(row, "Submarket Name") or "").strip()
+        sub_key = cs_sub.lower()
+        if sub_key not in COSTAR_SUBMARKET_MAP:
+            unmapped_submarkets.add(cs_sub or "(blank)")
+            filtered_submarket += 1
+            continue
+        if COSTAR_SUBMARKET_MAP[sub_key] is None:
+            # Ambiguous mapping (e.g. rosslyn/ballston)
+            unmapped_submarkets.add(cs_sub)
+            filtered_submarket += 1
+            continue
+
+        # Filter 3: Building Status must be "Existing"
+        bldg_status = (_costar_str(row, "Building Status") or "").strip().lower()
+        if bldg_status != "existing":
+            filtered_status += 1
+            continue
+
+        # Parse row
+        payload, err = _parse_costar_row(row, row_num=idx)
+        if err:
+            errors.append(err)
+            continue
+
+        dedupe_key = payload.address.strip().lower()
+
+        if dedupe_key in existing:
+            prop = existing[dedupe_key]
+            # Update with CoStar data
+            prop.owner_name   = payload.owner_name
+            prop.owner_phone  = payload.owner_phone or prop.owner_phone
+            prop.total_sf     = payload.total_sf
+            prop.year_built   = payload.year_built
+            prop.last_renovation_year = payload.last_renovation_year or prop.last_renovation_year
+            prop.occupancy_pct = payload.occupancy_pct
+            prop.vacancy_pct   = round(100.0 - payload.occupancy_pct, 2)
+            prop.leased_sf     = payload.total_sf * (payload.occupancy_pct / 100.0)
+            prop.vacant_sf     = payload.total_sf * (prop.vacancy_pct / 100.0)
+            prop.is_listed     = payload.is_listed
+            if payload.asking_price:
+                prop.asking_price     = payload.asking_price
+                prop.asking_price_psf = round(payload.asking_price / payload.total_sf, 2) if payload.total_sf else None
+            if payload.acquisition_price:
+                prop.acquisition_price = payload.acquisition_price
+            if payload.acquisition_year:
+                acq_date = date(payload.acquisition_year, 1, 1)
+                prop.acquisition_date = acq_date
+                prop.years_owned = round((date.today() - acq_date).days / 365.25, 1)
+            if payload.estimated_loan_maturity_year:
+                prop.estimated_loan_maturity_year = payload.estimated_loan_maturity_year
+            # Append CoStar note without overwriting existing notes
+            costar_note = "in_place_rent_psf not imported from CoStar — update manually."
+            if not prop.notes:
+                prop.notes = costar_note
+            elif costar_note not in prop.notes:
+                prop.notes = f"{prop.notes}\n{costar_note}"
+            _run_signals(prop)
+            updated += 1
+        else:
+            prop = _build_property(payload, _next_property_id(db))
+            db.add(prop)
+            db.flush()
+            _run_signals(prop)
+            existing[dedupe_key] = prop
+            inserted += 1
+
+    db.commit()
+
+    return {
+        "total_rows":          total_rows,
+        "filtered_state":      filtered_state,
+        "filtered_submarket":  filtered_submarket,
+        "filtered_status":     filtered_status,
+        "inserted":            inserted,
+        "updated":             updated,
+        "skipped":             len(errors),
+        "unmapped_submarkets": sorted(unmapped_submarkets),
+        "errors":              errors,
     }
 
 

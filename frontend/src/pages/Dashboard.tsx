@@ -9,6 +9,7 @@ import { PriorityBadge, DealTypeBadge, ConfidenceBadge } from '../components/Pri
 import ScoreBadge from '../components/ScoreBadge'
 import AddPropertyModal from '../components/AddPropertyModal'
 import BulkUploadModal from '../components/BulkUploadModal'
+import CoStarImportModal from '../components/CoStarImportModal'
 
 function StatCard({
   label, value, sub, icon: Icon, color,
@@ -118,6 +119,7 @@ export default function Dashboard() {
   const [error, setError] = useState<string | null>(null)
   const [showAddModal, setShowAddModal] = useState(false)
   const [showBulkModal, setShowBulkModal] = useState(false)
+  const [showCoStarModal, setShowCoStarModal] = useState(false)
   const [pipelineRunning, setPipelineRunning] = useState(false)
   const [pipelineStatus, setPipelineStatus] = useState<string | null>(null)
 
@@ -194,6 +196,13 @@ export default function Dashboard() {
             <Upload size={13} /> Bulk Upload
           </button>
           <button
+            onClick={() => setShowCoStarModal(true)}
+            className="flex items-center gap-2 px-4 py-2 rounded-lg bg-surface-card border border-surface-border
+                       text-ink-secondary hover:text-ink-primary text-xs font-semibold transition-colors"
+          >
+            <Upload size={13} /> Import CoStar Export
+          </button>
+          <button
             onClick={handleRunPipeline}
             disabled={pipelineRunning}
             className="flex items-center gap-2 px-4 py-2 rounded-lg bg-surface-card border border-surface-border
@@ -232,6 +241,13 @@ export default function Dashboard() {
       {showBulkModal && (
         <BulkUploadModal
           onClose={() => setShowBulkModal(false)}
+          onDone={load}
+        />
+      )}
+
+      {showCoStarModal && (
+        <CoStarImportModal
+          onClose={() => setShowCoStarModal(false)}
           onDone={load}
         />
       )}

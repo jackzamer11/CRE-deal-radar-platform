@@ -146,3 +146,23 @@ export const uploadPropertiesBulk = (file: File): Promise<BulkUploadResult> => {
     headers: { 'Content-Type': 'multipart/form-data' },
   }).then(r => r.data)
 }
+
+export interface CoStarImportResult {
+  total_rows: number
+  filtered_state: number
+  filtered_submarket: number
+  filtered_status: number
+  inserted: number
+  updated: number
+  skipped: number
+  unmapped_submarkets: string[]
+  errors: BulkUploadError[]
+}
+
+export const importCoStarExport = (file: File): Promise<CoStarImportResult> => {
+  const form = new FormData()
+  form.append('file', file)
+  return api.post('/properties/costar-import', form, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  }).then(r => r.data)
+}
