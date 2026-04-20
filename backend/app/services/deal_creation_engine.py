@@ -49,9 +49,12 @@ ADJACENT_SUBMARKETS = {
     "Arlington (Ballston)":      ["Arlington (Clarendon)", "Arlington (Columbia Pike)", "Falls Church"],
     "Arlington (Columbia Pike)": ["Arlington (Ballston)", "Falls Church", "Alexandria (Old Town)"],
     "Alexandria (Old Town)":     ["Arlington (Columbia Pike)", "Arlington (Rosslyn)"],
-    "Tysons":                    ["Reston", "Falls Church", "Arlington (Ballston)"],
-    "Reston":                    ["Tysons", "Falls Church"],
-    "Falls Church":              ["Tysons", "Arlington (Ballston)", "Arlington (Columbia Pike)", "Reston"],
+    "Tysons":                    ["Reston", "Falls Church", "Arlington (Ballston)", "McLean", "Vienna"],
+    "Reston":                    ["Tysons", "Falls Church", "Vienna"],
+    "Falls Church":              ["Tysons", "Arlington (Ballston)", "Arlington (Columbia Pike)", "Reston", "McLean", "Fairfax City"],
+    "McLean":                    ["Tysons", "Falls Church"],
+    "Vienna":                    ["McLean", "Tysons", "Fairfax City", "Reston"],
+    "Fairfax City":              ["Vienna", "Falls Church"],
 }
 
 # Typical NoVA office commission rate (% of total lease value or sale price)

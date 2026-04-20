@@ -17,6 +17,9 @@ const SUBMARKETS = [
   'Tysons',
   'Reston',
   'Falls Church',
+  'McLean',
+  'Vienna',
+  'Fairfax City',
 ]
 
 const PRIORITIES = ['IMMEDIATE', 'HIGH', 'WORKABLE', 'IGNORE']

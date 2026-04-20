@@ -21,6 +21,9 @@ class Settings(BaseSettings):
         "Tysons": 240,
         "Reston": 265,
         "Falls Church": 190,
+        "McLean": 243,
+        "Vienna": 218,
+        "Fairfax City": 189,
     }
 
     # Submarket avg market rents ($/SF/yr NNN)
@@ -33,6 +36,9 @@ class Settings(BaseSettings):
         "Tysons": 27.0,
         "Reston": 28.5,
         "Falls Church": 23.5,
+        "McLean": 33.0,
+        "Vienna": 31.33,
+        "Fairfax City": 28.0,
     }
 
     # Submarket avg cap rates
@@ -45,6 +51,9 @@ class Settings(BaseSettings):
         "Tysons": 6.2,
         "Reston": 6.5,
         "Falls Church": 7.0,
+        "McLean": 9.7,
+        "Vienna": 9.5,
+        "Fairfax City": 10.2,
     }
 
     # Submarket avg days on market
@@ -57,6 +66,9 @@ class Settings(BaseSettings):
         "Tysons": 130,
         "Reston": 115,
         "Falls Church": 150,
+        "McLean": 560,
+        "Vienna": 290,
+        "Fairfax City": 252,
     }
 
     class Config:

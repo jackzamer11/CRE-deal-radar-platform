@@ -25,6 +25,7 @@ VALID_SUBMARKETS = {
     "Arlington (Clarendon)", "Arlington (Rosslyn)", "Arlington (Ballston)",
     "Arlington (Columbia Pike)", "Alexandria (Old Town)",
     "Tysons", "Reston", "Falls Church",
+    "McLean", "Vienna", "Fairfax City",
 }
 
 ASSET_CLASS_MAP = {
@@ -101,6 +102,11 @@ COSTAR_SUBMARKET_MAP: dict = {
     "rosslyn/ballston":     None,   # ambiguous — specific error message
     "ballston":             "Arlington (Ballston)",
     "columbia pike":        "Arlington (Columbia Pike)",
+    "mclean":               "McLean",
+    "vienna":               "Vienna",
+    "tysons/vienna":        "Vienna",
+    "fairfax city":         "Fairfax City",
+    "fairfax":              "Fairfax City",
 }
 
 COSTAR_CLASS_MAP: dict = {

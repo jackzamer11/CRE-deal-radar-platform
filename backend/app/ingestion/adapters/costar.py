@@ -28,6 +28,9 @@ NOVA_COSTAR_SUBMARKET_CODES = {
     "Tysons":                    "WDC-NO-TYS",
     "Reston":                    "WDC-NO-RES",
     "Falls Church":              "WDC-NO-FLC",
+    "McLean":                    "WDC-NO-MCL",
+    "Vienna":                    "WDC-NO-VIE",
+    "Fairfax City":              "WDC-NO-FFX",
 }
 
 # CoStar property type filter: Office = 3

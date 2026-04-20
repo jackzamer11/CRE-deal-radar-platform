@@ -12,6 +12,9 @@ const SUBMARKETS = [
   'Tysons',
   'Reston',
   'Falls Church',
+  'McLean',
+  'Vienna',
+  'Fairfax City',
 ]
 
 interface Props {

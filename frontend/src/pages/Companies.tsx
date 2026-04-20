@@ -9,6 +9,7 @@ import AddCompanyModal from '../components/AddCompanyModal'
 const SUBMARKETS = [
   'Arlington (Clarendon)', 'Arlington (Rosslyn)', 'Arlington (Ballston)',
   'Arlington (Columbia Pike)', 'Alexandria (Old Town)', 'Tysons', 'Reston', 'Falls Church',
+  'McLean', 'Vienna', 'Fairfax City',
 ]
 
 function GrowthBadge({ pct }: { pct: number | null }) {
