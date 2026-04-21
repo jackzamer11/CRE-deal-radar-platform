@@ -4,8 +4,31 @@ One-time migration: make occupancy_pct and vacancy_pct nullable.
 SQLite does not support ALTER COLUMN, so this script recreates the
 properties table while preserving all existing rows and indexes.
 
-Usage (from the backend/ directory):
+OPTION A — Python (recommended, run from the backend/ directory):
     python -m migrations.make_occupancy_nullable
+    OR
+    python migrations/make_occupancy_nullable.py
+
+OPTION B — Raw SQLite shell (if Python fails):
+    Open a terminal in the backend/ directory, then:
+
+    sqlite3 deal_radar.db
+
+    Paste these statements one at a time:
+
+        PRAGMA foreign_keys=OFF;
+        ALTER TABLE properties RENAME TO _properties_old;
+        CREATE TABLE properties AS SELECT * FROM _properties_old;
+        DROP TABLE _properties_old;
+        PRAGMA foreign_keys=ON;
+
+    NOTE: "CREATE TABLE AS SELECT" creates the new table without any
+    NOT NULL constraints, which is exactly what we need. All data is
+    preserved. Type .quit to exit the sqlite3 shell.
+
+    Then recreate the primary-key index:
+        CREATE UNIQUE INDEX IF NOT EXISTS ix_properties_property_id
+            ON properties (property_id);
 """
 import os
 import sqlite3
@@ -84,4 +107,11 @@ def run():
 
 
 if __name__ == "__main__":
+    # Adjust path when run as a plain script (python migrations/make_occupancy_nullable.py)
+    # vs as a module (python -m migrations.make_occupancy_nullable from backend/).
+    import sys
+    # Ensure backend/ is on sys.path so the relative DB_PATH resolves correctly.
+    backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if backend_dir not in sys.path:
+        sys.path.insert(0, backend_dir)
     run()
