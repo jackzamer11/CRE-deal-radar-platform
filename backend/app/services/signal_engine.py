@@ -49,7 +49,7 @@ def sig_lease_rollover(lease_rollover_pct: float) -> float:
     return _clamp(r * 1.5)
 
 
-def sig_vacancy_trend(current_vacancy: float, vacancy_12mo_ago: Optional[float]) -> float:
+def sig_vacancy_trend(current_vacancy: Optional[float], vacancy_12mo_ago: Optional[float]) -> float:
     """
     Rising vacancy trend — delta from 12 months ago.
     Accelerating vacancy is the single strongest forward indicator of
@@ -57,6 +57,8 @@ def sig_vacancy_trend(current_vacancy: float, vacancy_12mo_ago: Optional[float])
 
     Formula: delta_pp = current_vacancy_pct - vacancy_pct_12mo_ago
     """
+    if current_vacancy is None:
+        return 0.0  # abstain — occupancy not yet populated
     if vacancy_12mo_ago is None:
         # No history — use absolute vacancy level as base signal
         if current_vacancy >= 50: return 60.0
@@ -113,7 +115,7 @@ def sig_capex_gap(year_built: int, last_renovation_year: Optional[int]) -> float
 
 def compute_prediction_score(
     lease_rollover_pct: float,
-    vacancy_pct: float,
+    vacancy_pct: Optional[float],
     vacancy_12mo_ago: Optional[float],
     years_owned: float,
     years_since_last_lease: float,
@@ -169,7 +171,7 @@ def sig_hold_period(years_owned: float) -> float:
     return _clamp(years_owned * 4.0)
 
 
-def sig_occupancy_decline(vacancy_pct: float, vacancy_12mo_ago: Optional[float]) -> float:
+def sig_occupancy_decline(vacancy_pct: Optional[float], vacancy_12mo_ago: Optional[float]) -> float:
     """
     Two components:
     1. Rate of occupancy decline (trend signal — high urgency)
@@ -178,6 +180,8 @@ def sig_occupancy_decline(vacancy_pct: float, vacancy_12mo_ago: Optional[float])
     Combining both captures the owner who is either actively losing
     tenants OR has been stuck at high vacancy for an extended period.
     """
+    if vacancy_pct is None:
+        return 0.0  # abstain — occupancy not yet populated
     # Rate component
     if vacancy_12mo_ago is not None:
         delta = vacancy_pct - vacancy_12mo_ago
@@ -254,7 +258,7 @@ def sig_debt_pressure(
 
 def compute_owner_behavior_score(
     years_owned: float,
-    vacancy_pct: float,
+    vacancy_pct: Optional[float],
     vacancy_12mo_ago: Optional[float],
     in_place_rent: float,
     market_rent: float,

@@ -180,12 +180,16 @@ export default function Properties() {
                     {p.years_owned != null ? `${p.years_owned.toFixed(1)}yr` : '—'}
                   </td>
                   <td>
-                    <span className={`mono text-xs font-semibold ${
-                      p.occupancy_pct < 55 ? 'text-red-400' :
-                      p.occupancy_pct < 75 ? 'text-amber-400' : 'text-emerald-400'
-                    }`}>
-                      {(100 - p.occupancy_pct).toFixed(0)}%
-                    </span>
+                    {p.occupancy_pct == null ? (
+                      <span className="mono text-xs text-ink-muted">—</span>
+                    ) : (
+                      <span className={`mono text-xs font-semibold ${
+                        p.occupancy_pct < 55 ? 'text-red-400' :
+                        p.occupancy_pct < 75 ? 'text-amber-400' : 'text-emerald-400'
+                      }`}>
+                        {(100 - p.occupancy_pct).toFixed(0)}%
+                      </span>
+                    )}
                   </td>
                   <td className="mono text-xs">{p.lease_rollover_pct.toFixed(0)}%</td>
                   <td className="mono text-xs text-ink-secondary">—</td>
@@ -266,7 +270,7 @@ export default function Properties() {
               <div className="bg-surface-muted rounded-lg p-3 space-y-2">
                 <div className="text-[10px] text-ink-muted uppercase tracking-wider mb-2">Property Details</div>
                 <Row label="Total SF"    value={fmt(selected.total_sf, '', ' SF')} />
-                <Row label="Vacancy"     value={`${(100 - selected.occupancy_pct).toFixed(0)}%`} />
+                <Row label="Vacancy"     value={selected.occupancy_pct == null ? '—' : `${(100 - selected.occupancy_pct).toFixed(0)}%`} />
                 <Row label="Rollover"    value={`${selected.lease_rollover_pct.toFixed(0)}% (12mo)`} />
                 <Row label="Owner"       value={selected.owner_name} />
                 <Row label="Held"        value={selected.years_owned ? `${selected.years_owned.toFixed(1)} years` : '—'} />

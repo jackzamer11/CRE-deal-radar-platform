@@ -206,12 +206,9 @@ def _parse_costar_row(row: dict, row_num: int) -> tuple:
     if not year_built:
         return None, {**err, "reason": "Missing Year Built"}
 
-    # Occupancy
+    # Occupancy (optional — abstains from vacancy signals when blank)
     occupancy = _costar_float(row, "Percent Leased")
-    if occupancy is None:
-        return None, {**err, "reason": "Missing Percent Leased"}
-    # CoStar sometimes exports as 0–100, sometimes as 0–1
-    if 0.0 < occupancy <= 1.0:
+    if occupancy is not None and 0.0 < occupancy <= 1.0:
         occupancy = round(occupancy * 100, 2)
 
     # Owner name: "Contact, Entity" or just "Entity" or "Unknown"
@@ -272,7 +269,7 @@ class PropertyManualCreate(BaseModel):
     acquisition_year: Optional[int] = None
     acquisition_price: Optional[float] = None
     in_place_rent_psf: float
-    occupancy_pct: float
+    occupancy_pct: Optional[float] = None
     sf_expiring_12mo: float = 0.0
     sf_expiring_24mo: float = 0.0
     last_lease_signed_year: Optional[int] = None
@@ -363,9 +360,10 @@ def _next_property_id(db: Session) -> str:
 
 def _build_property(payload: PropertyManualCreate, property_id: str) -> Property:
     """Construct a Property ORM object from a validated payload."""
-    vacancy_pct  = round(100.0 - payload.occupancy_pct, 2)
-    leased_sf    = payload.total_sf * (payload.occupancy_pct / 100.0)
-    vacant_sf    = payload.total_sf * (vacancy_pct / 100.0)
+    occ          = payload.occupancy_pct
+    vacancy_pct  = round(100.0 - occ, 2) if occ is not None else None
+    leased_sf    = payload.total_sf * (occ / 100.0) if occ is not None else None
+    vacant_sf    = payload.total_sf * (vacancy_pct / 100.0) if vacancy_pct is not None else None
     rollover_pct = round(payload.sf_expiring_12mo / payload.total_sf * 100, 2) if payload.total_sf else 0.0
 
     market_rent = settings.submarket_market_rent.get(payload.submarket, 26.0)
@@ -567,9 +565,14 @@ def _apply_update(prop: Property, row: dict) -> None:
         prop.years_since_last_lease = round(CURRENT_YEAR - iv("last_lease_signed_year"), 1)
 
     # Recompute derived fields from current prop state
-    prop.vacancy_pct      = round(100.0 - prop.occupancy_pct, 2)
-    prop.leased_sf        = prop.total_sf * (prop.occupancy_pct / 100.0)
-    prop.vacant_sf        = prop.total_sf * (prop.vacancy_pct / 100.0)
+    if prop.occupancy_pct is not None:
+        prop.vacancy_pct = round(100.0 - prop.occupancy_pct, 2)
+        prop.leased_sf   = prop.total_sf * (prop.occupancy_pct / 100.0)
+        prop.vacant_sf   = prop.total_sf * (prop.vacancy_pct / 100.0)
+    else:
+        prop.vacancy_pct = None
+        prop.leased_sf   = None
+        prop.vacant_sf   = None
     prop.lease_rollover_pct = (
         round(prop.sf_expiring_12mo / prop.total_sf * 100, 2) if prop.total_sf else 0.0
     )
@@ -813,9 +816,14 @@ async def costar_import(
             prop.year_built   = payload.year_built
             prop.last_renovation_year = payload.last_renovation_year or prop.last_renovation_year
             prop.occupancy_pct = payload.occupancy_pct
-            prop.vacancy_pct   = round(100.0 - payload.occupancy_pct, 2)
-            prop.leased_sf     = payload.total_sf * (payload.occupancy_pct / 100.0)
-            prop.vacant_sf     = payload.total_sf * (prop.vacancy_pct / 100.0)
+            if payload.occupancy_pct is not None:
+                prop.vacancy_pct = round(100.0 - payload.occupancy_pct, 2)
+                prop.leased_sf   = payload.total_sf * (payload.occupancy_pct / 100.0)
+                prop.vacant_sf   = payload.total_sf * (prop.vacancy_pct / 100.0)
+            else:
+                prop.vacancy_pct = None
+                prop.leased_sf   = None
+                prop.vacant_sf   = None
             prop.is_listed     = payload.is_listed
             if payload.asking_price:
                 prop.asking_price     = payload.asking_price

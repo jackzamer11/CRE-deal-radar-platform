@@ -42,8 +42,8 @@ class Property(Base):
     market_cap_rate = Column(Float, nullable=False)     # Submarket avg cap rate
 
     # Occupancy & Leasing
-    occupancy_pct = Column(Float, nullable=False)
-    vacancy_pct = Column(Float, nullable=False)
+    occupancy_pct = Column(Float, nullable=True)
+    vacancy_pct = Column(Float, nullable=True)
     vacancy_12mo_ago = Column(Float, nullable=True)
     leased_sf = Column(Float, nullable=True)
     vacant_sf = Column(Float, nullable=True)

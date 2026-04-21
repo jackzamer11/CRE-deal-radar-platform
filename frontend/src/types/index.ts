@@ -29,7 +29,7 @@ export interface PropertyListOut {
   asset_class: string
   total_sf: number
   owner_name: string
-  occupancy_pct: number
+  occupancy_pct: number | null
   years_owned: number | null
   lease_rollover_pct: number
   prediction_score: number
@@ -55,7 +55,7 @@ export interface PropertyOut extends PropertyListOut {
   noi: number | null
   cap_rate: number | null
   market_cap_rate: number
-  vacancy_pct: number
+  vacancy_pct: number | null
   vacancy_12mo_ago: number | null
   vacant_sf: number | null
   sf_expiring_12mo: number

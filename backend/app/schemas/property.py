@@ -42,8 +42,8 @@ class PropertyBase(BaseModel):
     noi: Optional[float] = None
     cap_rate: Optional[float] = None
     market_cap_rate: float
-    occupancy_pct: float
-    vacancy_pct: float
+    occupancy_pct: Optional[float] = None
+    vacancy_pct: Optional[float] = None
     vacancy_12mo_ago: Optional[float] = None
     leased_sf: Optional[float] = None
     vacant_sf: Optional[float] = None
@@ -89,7 +89,7 @@ class PropertyListOut(BaseModel):
     asset_class: str
     total_sf: int
     owner_name: str
-    occupancy_pct: float
+    occupancy_pct: Optional[float]
     years_owned: Optional[float]
     lease_rollover_pct: float
     prediction_score: float
