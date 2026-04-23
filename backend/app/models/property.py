@@ -85,6 +85,10 @@ class Property(Base):
     sig_dom_premium = Column(Float, default=0.0)
     sig_cap_rate_spread = Column(Float, default=0.0)
 
+    # Scoring metadata
+    signals_scored_count = Column(Integer, default=0)
+    insufficient_data = Column(Boolean, default=False)
+
     # Output
     priority = Column(String, default="IGNORE")   # IMMEDIATE / HIGH / WORKABLE / IGNORE
     deal_type = Column(String, nullable=True)      # PRE_MARKET / ACTIVE_MISPRICED

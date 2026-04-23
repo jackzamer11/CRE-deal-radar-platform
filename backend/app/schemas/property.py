@@ -74,6 +74,8 @@ class PropertyOut(PropertyBase):
     priority: str
     deal_type: Optional[str] = None
     signal_breakdown: Optional[SignalBreakdown] = None
+    signals_scored_count: int = 0
+    insufficient_data: bool = False
     created_at: datetime
     updated_at: datetime
 
@@ -98,6 +100,8 @@ class PropertyListOut(BaseModel):
     priority: str
     is_listed: bool
     notes: Optional[str]
+    signals_scored_count: int = 0
+    insufficient_data: bool = False
 
     class Config:
         from_attributes = True

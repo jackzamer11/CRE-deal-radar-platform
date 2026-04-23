@@ -38,6 +38,8 @@ export interface PropertyListOut {
   priority: Priority
   is_listed: boolean
   notes: string | null
+  signals_scored_count: number
+  insufficient_data: boolean
 }
 
 export interface PropertyOut extends PropertyListOut {
@@ -80,6 +82,8 @@ export interface CompanyListOut {
   expansion_signal: boolean
   opportunity_score: number
   priority: Priority
+  signals_scored_count: number
+  insufficient_data: boolean
 }
 
 export interface CompanyOut extends CompanyListOut {
@@ -94,6 +98,8 @@ export interface CompanyOut extends CompanyListOut {
   sig_lease_expiry: number
   sig_space_utilization: number
   sig_geo_clustering: number
+  lease_expiry_source: string | null
+  lease_expiry_last_verified: string | null
   primary_contact_name: string | null
   primary_contact_title: string | null
   primary_contact_phone: string | null

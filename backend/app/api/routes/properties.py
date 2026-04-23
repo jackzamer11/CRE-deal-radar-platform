@@ -309,20 +309,21 @@ def _run_signals(prop: Property) -> None:
     scored     = score_property(pred_comp, owner_comp, misp_comp, 0, prop.is_listed)
 
     pb, ob, mb = pred_result["breakdown"], owner_result["breakdown"], misp_result["breakdown"]
-    prop.sig_lease_rollover          = pb["lease_rollover"]
-    prop.sig_vacancy_trend           = pb["vacancy_trend"]
-    prop.sig_ownership_duration      = pb["ownership_duration"]
-    prop.sig_leasing_drought         = pb["leasing_drought"]
-    prop.sig_capex_gap               = pb["capex_gap"]
-    prop.sig_hold_period             = ob["hold_period"]
-    prop.sig_occupancy_decline       = ob["occupancy_decline"]
-    prop.sig_rent_stagnation         = ob["rent_stagnation"]
-    prop.sig_reinvestment_inactivity = ob["reinvestment_inactivity"]
-    prop.sig_debt_pressure           = ob["debt_pressure"]
-    prop.sig_rent_gap                = mb["rent_gap"]
-    prop.sig_price_psf               = mb["price_psf"]
-    prop.sig_dom_premium             = mb["dom_premium"]
-    prop.sig_cap_rate_spread         = mb["cap_rate_spread"]
+    # Store sub-scores; None (abstain) persisted as 0.0
+    prop.sig_lease_rollover          = pb["lease_rollover"]          or 0.0
+    prop.sig_vacancy_trend           = pb["vacancy_trend"]           or 0.0
+    prop.sig_ownership_duration      = pb["ownership_duration"]      or 0.0
+    prop.sig_leasing_drought         = pb["leasing_drought"]         or 0.0
+    prop.sig_capex_gap               = pb["capex_gap"]               or 0.0
+    prop.sig_hold_period             = ob["hold_period"]             or 0.0
+    prop.sig_occupancy_decline       = ob["occupancy_decline"]       or 0.0
+    prop.sig_rent_stagnation         = ob["rent_stagnation"]         or 0.0
+    prop.sig_reinvestment_inactivity = ob["reinvestment_inactivity"] or 0.0
+    prop.sig_debt_pressure           = ob["debt_pressure"]           or 0.0
+    prop.sig_rent_gap                = mb["rent_gap"]                or 0.0
+    prop.sig_price_psf               = mb["price_psf"]               or 0.0
+    prop.sig_dom_premium             = mb["dom_premium"]             or 0.0
+    prop.sig_cap_rate_spread         = mb["cap_rate_spread"]         or 0.0
     prop.prediction_score     = pred_comp
     prop.owner_behavior_score = owner_comp
     prop.mispricing_score     = misp_comp
@@ -330,6 +331,12 @@ def _run_signals(prop: Property) -> None:
     prop.priority             = scored["priority"]
     prop.deal_type            = scored["deal_type"]
     prop.last_signal_run      = datetime.utcnow()
+    prop.signals_scored_count = (
+        pred_result["signals_scored"] +
+        owner_result["signals_scored"] +
+        misp_result["signals_scored"]
+    )
+    prop.insufficient_data    = prop.signals_scored_count < 3
 
 
 def _enrich(prop: Property) -> PropertyOut:

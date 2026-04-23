@@ -209,14 +209,17 @@ def _run_signals(company: Company) -> None:
         nearby_company_count=1,
     )
     breakdown = result["breakdown"]
-    company.sig_headcount_growth  = breakdown["headcount_growth"]
-    company.sig_hiring_velocity   = breakdown["hiring_velocity"]
-    company.sig_lease_expiry      = breakdown["lease_expiry"]
-    company.sig_space_utilization = breakdown["space_utilization"]
-    company.sig_geo_clustering    = breakdown["geo_clustering"]
+    # Store sub-scores; None (abstain) persisted as 0.0
+    company.sig_headcount_growth  = breakdown["headcount_growth"]  or 0.0
+    company.sig_hiring_velocity   = breakdown["hiring_velocity"]   or 0.0
+    company.sig_lease_expiry      = breakdown["lease_expiry"]      or 0.0
+    company.sig_space_utilization = breakdown["space_utilization"] or 0.0
+    company.sig_geo_clustering    = breakdown["geo_clustering"]    or 0.0
 
     composite = result["composite"]
-    company.opportunity_score = composite
+    company.opportunity_score     = composite
+    company.signals_scored_count  = result["signals_scored"]
+    company.insufficient_data     = result["insufficient_data"]
 
     if composite >= 75:
         company.priority = "IMMEDIATE"
@@ -428,6 +431,8 @@ async def costar_tenant_import(
             c.current_submarket     = payload["current_submarket"]
             c.current_sf            = payload["current_sf"]
             c.lease_expiry_months   = payload["lease_expiry_months"]
+            if payload["lease_expiry_months"] is not None:
+                c.lease_expiry_source = "costar"
             c.primary_contact_name  = payload["primary_contact_name"] or c.primary_contact_name
             c.primary_contact_phone = payload["primary_contact_phone"] or c.primary_contact_phone
             c.tenant_representative = payload["tenant_representative"]
@@ -458,6 +463,7 @@ async def costar_tenant_import(
                 current_sf            = payload["current_sf"],
                 sf_per_head           = sf_per_head,
                 lease_expiry_months   = payload["lease_expiry_months"],
+                lease_expiry_source   = "costar" if payload["lease_expiry_months"] is not None else None,
                 estimated_sf_needed   = estimated_sf_needed,
                 primary_contact_name  = payload["primary_contact_name"],
                 primary_contact_phone = payload["primary_contact_phone"],
@@ -495,6 +501,57 @@ def get_company(company_id: str, db: Session = Depends(get_db)):
     company = db.query(Company).filter(Company.company_id == company_id).first()
     if not company:
         raise HTTPException(status_code=404, detail="Company not found")
+    return company
+
+
+VALID_LEASE_SOURCES = {"costar", "manual", "sec_filing", "landlord_confirmed", "public_record"}
+
+
+class LeaseExpiryUpdate(BaseModel):
+    lease_expiry_months: Optional[int] = None
+    lease_expiry_date: Optional[str] = None   # ISO date "YYYY-MM-DD"; used to compute months when provided
+    lease_expiry_source: str = "manual"
+
+
+@router.patch("/{company_id}/lease", response_model=CompanyOut)
+def update_lease_expiry(
+    company_id: str,
+    payload: LeaseExpiryUpdate,
+    db: Session = Depends(get_db),
+):
+    """
+    Manually set lease expiry for a company that has no CoStar data.
+    Accepts either lease_expiry_months directly, or an ISO date string
+    from which months are computed.  Re-runs signals after saving.
+    """
+    company = db.query(Company).filter(Company.company_id == company_id).first()
+    if not company:
+        raise HTTPException(status_code=404, detail="Company not found")
+
+    if payload.lease_expiry_source not in VALID_LEASE_SOURCES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid lease_expiry_source; must be one of {sorted(VALID_LEASE_SOURCES)}",
+        )
+
+    if payload.lease_expiry_date:
+        try:
+            expiry_date = date.fromisoformat(payload.lease_expiry_date)
+        except ValueError:
+            raise HTTPException(status_code=422, detail="lease_expiry_date must be YYYY-MM-DD")
+        today = date.today()
+        months = max(0, (expiry_date.year - today.year) * 12 + (expiry_date.month - today.month))
+        company.lease_expiry_date   = expiry_date
+        company.lease_expiry_months = months
+    elif payload.lease_expiry_months is not None:
+        company.lease_expiry_months = payload.lease_expiry_months
+
+    company.lease_expiry_source        = payload.lease_expiry_source
+    company.lease_expiry_last_verified = date.today()
+
+    _run_signals(company)
+    db.commit()
+    db.refresh(company)
     return company
 
 

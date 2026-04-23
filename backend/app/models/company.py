@@ -32,6 +32,8 @@ class Company(Base):
     # Lease
     lease_expiry_date = Column(Date, nullable=True)
     lease_expiry_months = Column(Integer, nullable=True)  # Months until expiry
+    lease_expiry_source = Column(String, nullable=True)   # costar | manual | sec_filing | landlord_confirmed | public_record
+    lease_expiry_last_verified = Column(Date, nullable=True)
     estimated_sf_needed = Column(Integer, nullable=True)  # Projected space need
 
     # Behavioral Signals
@@ -46,9 +48,11 @@ class Company(Base):
     sig_space_utilization = Column(Float, default=0.0)
     sig_geo_clustering = Column(Float, default=0.0)
 
-    # Composite score
+    # Composite score and metadata
     opportunity_score = Column(Float, default=0.0)
     priority = Column(String, default="IGNORE")
+    signals_scored_count = Column(Integer, default=0)
+    insufficient_data = Column(Boolean, default=False)
 
     # Contact
     primary_contact_name = Column(String, nullable=True)

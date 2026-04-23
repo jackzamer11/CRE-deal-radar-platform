@@ -9,6 +9,8 @@ C. MISPRICING           — Active listings with hidden upside
 D. TENANT OPPORTUNITY   — Companies that can CREATE deals
 
 All scores are normalized 0-100.
+Signals return None (abstain) when required input data is missing.
+Composites are weighted averages over scored (non-None) signals only.
 """
 
 from datetime import date
@@ -21,11 +23,41 @@ MODERN_SF_PER_HEAD = 175           # Modern office space standard
 
 
 # ---------------------------------------------------------------------------
-# HELPER
+# HELPERS
 # ---------------------------------------------------------------------------
 
 def _clamp(value: float, lo: float = 0.0, hi: float = 100.0) -> float:
     return max(lo, min(hi, value))
+
+
+def _weighted_composite(
+    scores: dict,
+    weights: dict,
+    min_scored: int = 3,
+) -> dict:
+    """
+    Compute weighted average over non-None signals only.
+
+    Returns composite on the same 0-100 scale regardless of how many signals
+    abstained, by normalising weights to the scored subset.  Flags
+    insufficient_data when fewer than min_scored signals contributed.
+    """
+    scored = {k: v for k, v in scores.items() if v is not None}
+    n = len(scored)
+    if n == 0:
+        composite = 0.0
+    else:
+        total_weight = sum(weights[k] for k in scored)
+        composite = (
+            sum(scored[k] * weights[k] for k in scored) / total_weight
+            if total_weight > 0 else 0.0
+        )
+    return {
+        "composite": round(composite, 2),
+        "breakdown": {k: round(v, 1) if v is not None else None for k, v in scores.items()},
+        "signals_scored": n,
+        "insufficient_data": n < min_scored,
+    }
 
 
 # ===========================================================================
@@ -49,16 +81,18 @@ def sig_lease_rollover(lease_rollover_pct: float) -> float:
     return _clamp(r * 1.5)
 
 
-def sig_vacancy_trend(current_vacancy: Optional[float], vacancy_12mo_ago: Optional[float]) -> float:
+def sig_vacancy_trend(current_vacancy: Optional[float], vacancy_12mo_ago: Optional[float]) -> Optional[float]:
     """
     Rising vacancy trend — delta from 12 months ago.
     Accelerating vacancy is the single strongest forward indicator of
     an owner's motivation to exit before the asset enters distress.
 
+    Returns None when current vacancy is unknown (abstain).
+
     Formula: delta_pp = current_vacancy_pct - vacancy_pct_12mo_ago
     """
     if current_vacancy is None:
-        return 0.0  # abstain — occupancy not yet populated
+        return None  # abstain — occupancy not yet populated
     if vacancy_12mo_ago is None:
         # No history — use absolute vacancy level as base signal
         if current_vacancy >= 50: return 60.0
@@ -140,14 +174,13 @@ def compute_prediction_score(
         "capex_gap":           sig_capex_gap(year_built, last_renovation_year),
     }
     weights = {
-        "lease_rollover": 0.30,
-        "vacancy_trend":  0.25,
+        "lease_rollover":     0.30,
+        "vacancy_trend":      0.25,
         "ownership_duration": 0.25,
-        "leasing_drought": 0.10,
-        "capex_gap":       0.10,
+        "leasing_drought":    0.10,
+        "capex_gap":          0.10,
     }
-    composite = sum(scores[k] * weights[k] for k in scores)
-    return {"composite": round(composite, 2), "breakdown": {k: round(v, 1) for k, v in scores.items()}}
+    return _weighted_composite(scores, weights)
 
 
 # ===========================================================================
@@ -171,17 +204,19 @@ def sig_hold_period(years_owned: float) -> float:
     return _clamp(years_owned * 4.0)
 
 
-def sig_occupancy_decline(vacancy_pct: Optional[float], vacancy_12mo_ago: Optional[float]) -> float:
+def sig_occupancy_decline(vacancy_pct: Optional[float], vacancy_12mo_ago: Optional[float]) -> Optional[float]:
     """
     Two components:
     1. Rate of occupancy decline (trend signal — high urgency)
     2. Absolute current vacancy (stress signal — baseline pressure)
 
+    Returns None when vacancy data is unknown (abstain).
+
     Combining both captures the owner who is either actively losing
     tenants OR has been stuck at high vacancy for an extended period.
     """
     if vacancy_pct is None:
-        return 0.0  # abstain — occupancy not yet populated
+        return None  # abstain — occupancy not yet populated
     # Rate component
     if vacancy_12mo_ago is not None:
         delta = vacancy_pct - vacancy_12mo_ago
@@ -290,8 +325,7 @@ def compute_owner_behavior_score(
         "reinvestment_inactivity": 0.15,
         "debt_pressure":           0.10,
     }
-    composite = sum(scores[k] * weights[k] for k in scores)
-    return {"composite": round(composite, 2), "breakdown": {k: round(v, 1) for k, v in scores.items()}}
+    return _weighted_composite(scores, weights)
 
 
 # ===========================================================================
@@ -397,15 +431,17 @@ def compute_mispricing_score(
       Cap rate spread .......... 15%  (income yield signal)
     """
     if not is_listed:
-        return {"composite": 0.0, "breakdown": {
-            "rent_gap": 0.0, "price_psf": 0.0,
-            "dom_premium": 0.0, "cap_rate_spread": 0.0,
-        }}
+        return {
+            "composite": 0.0,
+            "breakdown": {"rent_gap": 0.0, "price_psf": 0.0, "dom_premium": 0.0, "cap_rate_spread": 0.0},
+            "signals_scored": 0,
+            "insufficient_data": True,
+        }
 
     scores = {
-        "rent_gap":       sig_rent_gap(in_place_rent, market_rent),
-        "price_psf":      sig_price_psf(asking_price_psf, submarket_avg_psf),
-        "dom_premium":    sig_dom_premium(days_on_market, submarket_avg_dom),
+        "rent_gap":        sig_rent_gap(in_place_rent, market_rent),
+        "price_psf":       sig_price_psf(asking_price_psf, submarket_avg_psf),
+        "dom_premium":     sig_dom_premium(days_on_market, submarket_avg_dom),
         "cap_rate_spread": sig_cap_rate_spread(cap_rate, market_cap_rate),
     }
     weights = {
@@ -414,8 +450,7 @@ def compute_mispricing_score(
         "dom_premium":     0.25,
         "cap_rate_spread": 0.15,
     }
-    composite = sum(scores[k] * weights[k] for k in scores)
-    return {"composite": round(composite, 2), "breakdown": {k: round(v, 1) for k, v in scores.items()}}
+    return _weighted_composite(scores, weights)
 
 
 # ===========================================================================
@@ -423,16 +458,16 @@ def compute_mispricing_score(
 # Companies whose growth trajectory can CREATE deals.
 # ===========================================================================
 
-def sig_headcount_growth(growth_pct: Optional[float]) -> float:
+def sig_headcount_growth(growth_pct: Optional[float]) -> Optional[float]:
     """
     Year-over-year headcount growth rate.
     Companies growing >25% annually will outgrow their space
     within 12-18 months — creating a predictable relocation need.
 
-    Formula: derived from LinkedIn, job posting velocity, press releases
+    Returns None when growth data is unavailable (abstain).
     """
     if growth_pct is None:
-        return 0.0
+        return None
     g = growth_pct
     if g >= 50:  return 100.0
     if g >= 35:  return 82.0
@@ -442,16 +477,18 @@ def sig_headcount_growth(growth_pct: Optional[float]) -> float:
     return _clamp(g * 2.0)
 
 
-def sig_hiring_velocity(open_positions: int, current_headcount: Optional[int]) -> float:
+def sig_hiring_velocity(open_positions: int, current_headcount: Optional[int]) -> Optional[float]:
     """
     Open positions as % of current headcount.
     High hiring velocity = space need will materialize faster than
     the lease expiry clock suggests.
 
+    Returns None when headcount is unknown (abstain).
+
     Formula: velocity = open_positions / current_headcount * 100
     """
     if not current_headcount or current_headcount <= 0:
-        return 0.0
+        return None
     velocity = open_positions / current_headcount * 100.0
     if velocity >= 30:  return 100.0
     if velocity >= 20:  return 80.0
@@ -460,16 +497,18 @@ def sig_hiring_velocity(open_positions: int, current_headcount: Optional[int]) -
     return _clamp(velocity * 4.0)
 
 
-def sig_lease_expiry_proximity(lease_expiry_months: Optional[int]) -> float:
+def sig_lease_expiry_proximity(lease_expiry_months: Optional[int]) -> Optional[float]:
     """
     Months until lease expiry.
     The closer the expiry, the higher the urgency — and the more leverage
     you have as a broker who arrives BEFORE the tenant starts their own search.
 
+    Returns None when lease expiry is unknown (abstain).
+
     Window of max impact: 6-18 months out (decision window).
     """
     if lease_expiry_months is None:
-        return 0.0
+        return None
     m = lease_expiry_months
     if m <= 0:   return 100.0   # Already expired
     if m <= 6:   return 100.0
@@ -480,18 +519,20 @@ def sig_lease_expiry_proximity(lease_expiry_months: Optional[int]) -> float:
     return 0.0
 
 
-def sig_space_utilization(current_sf: Optional[int], current_headcount: Optional[int]) -> float:
+def sig_space_utilization(current_sf: Optional[int], current_headcount: Optional[int]) -> Optional[float]:
     """
     Space utilization: SF per employee vs. modern standard (175 SF/head).
 
     Cramped (<130 SF/head): urgent need for more space — relocation demand
     Oversized (>230 SF/head): likely to downsize — landlord exit signal
 
+    Returns None when SF or headcount is unknown (abstain).
+
     Both are actionable — either as tenant rep or as a signal to approach
     the current landlord about absorbing vacant space.
     """
     if not current_sf or not current_headcount or current_headcount <= 0:
-        return 0.0
+        return None
     sf_per_head = current_sf / current_headcount
 
     # Expansion signal (cramped)
@@ -550,11 +591,11 @@ def compute_tenant_opportunity_score(
       Geographic clustering ........ 5%   (market activity context)
     """
     scores = {
-        "headcount_growth":    sig_headcount_growth(headcount_growth_pct),
-        "hiring_velocity":     sig_hiring_velocity(open_positions, current_headcount),
-        "lease_expiry":        sig_lease_expiry_proximity(lease_expiry_months),
-        "space_utilization":   sig_space_utilization(current_sf, current_headcount),
-        "geo_clustering":      sig_geo_clustering(current_submarket, nearby_company_count),
+        "headcount_growth":  sig_headcount_growth(headcount_growth_pct),
+        "hiring_velocity":   sig_hiring_velocity(open_positions, current_headcount),
+        "lease_expiry":      sig_lease_expiry_proximity(lease_expiry_months),
+        "space_utilization": sig_space_utilization(current_sf, current_headcount),
+        "geo_clustering":    sig_geo_clustering(current_submarket, nearby_company_count),
     }
     weights = {
         "headcount_growth":  0.25,
@@ -563,5 +604,4 @@ def compute_tenant_opportunity_score(
         "space_utilization": 0.20,
         "geo_clustering":    0.05,
     }
-    composite = sum(scores[k] * weights[k] for k in scores)
-    return {"composite": round(composite, 2), "breakdown": {k: round(v, 1) for k, v in scores.items()}}
+    return _weighted_composite(scores, weights)

@@ -63,6 +63,18 @@ export const getCompany = (companyId: string): Promise<CompanyOut> =>
 export const createCompany = (payload: Record<string, unknown>): Promise<CompanyOut> =>
   api.post('/companies/', payload).then(r => r.data)
 
+export interface LeaseExpiryUpdate {
+  lease_expiry_months?: number
+  lease_expiry_date?: string       // ISO "YYYY-MM-DD"
+  lease_expiry_source?: string     // costar | manual | sec_filing | landlord_confirmed | public_record
+}
+
+export const updateCompanyLease = (
+  companyId: string,
+  payload: LeaseExpiryUpdate,
+): Promise<CompanyOut> =>
+  api.patch(`/companies/${companyId}/lease`, payload).then(r => r.data)
+
 // ── Opportunities ──────────────────────────────────────────────────────────
 
 export interface OpportunityFilters {

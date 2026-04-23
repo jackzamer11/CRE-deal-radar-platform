@@ -17,6 +17,8 @@ class CompanyBase(BaseModel):
     current_sf: Optional[int] = None
     lease_expiry_date: Optional[date] = None
     lease_expiry_months: Optional[int] = None
+    lease_expiry_source: Optional[str] = None
+    lease_expiry_last_verified: Optional[date] = None
     expansion_signal: bool = False
     contraction_signal: bool = False
     relocation_signal: bool = False
@@ -49,6 +51,8 @@ class CompanyOut(CompanyBase):
     sig_geo_clustering: float
     opportunity_score: float
     priority: str
+    signals_scored_count: int
+    insufficient_data: bool
     created_at: datetime
     updated_at: datetime
 
@@ -68,6 +72,8 @@ class CompanyListOut(BaseModel):
     expansion_signal: bool
     opportunity_score: float
     priority: str
+    signals_scored_count: int
+    insufficient_data: bool
 
     class Config:
         from_attributes = True
