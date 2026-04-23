@@ -73,7 +73,7 @@ export interface CompanyListOut {
   company_id: string
   name: string
   industry: string
-  current_headcount: number
+  current_headcount: number | null
   headcount_growth_pct: number | null
   current_submarket: string | null
   lease_expiry_months: number | null

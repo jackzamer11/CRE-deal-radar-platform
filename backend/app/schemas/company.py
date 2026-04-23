@@ -9,7 +9,7 @@ class CompanyBase(BaseModel):
     name: str
     industry: str
     description: Optional[str] = None
-    current_headcount: int
+    current_headcount: Optional[int] = None
     headcount_12mo_ago: Optional[int] = None
     open_positions: int = 0
     current_address: Optional[str] = None
@@ -61,7 +61,7 @@ class CompanyListOut(BaseModel):
     company_id: str
     name: str
     industry: str
-    current_headcount: int
+    current_headcount: Optional[int]
     headcount_growth_pct: Optional[float]
     current_submarket: Optional[str]
     lease_expiry_months: Optional[int]

@@ -442,7 +442,7 @@ def sig_headcount_growth(growth_pct: Optional[float]) -> float:
     return _clamp(g * 2.0)
 
 
-def sig_hiring_velocity(open_positions: int, current_headcount: int) -> float:
+def sig_hiring_velocity(open_positions: int, current_headcount: Optional[int]) -> float:
     """
     Open positions as % of current headcount.
     High hiring velocity = space need will materialize faster than
@@ -450,7 +450,7 @@ def sig_hiring_velocity(open_positions: int, current_headcount: int) -> float:
 
     Formula: velocity = open_positions / current_headcount * 100
     """
-    if current_headcount <= 0:
+    if not current_headcount or current_headcount <= 0:
         return 0.0
     velocity = open_positions / current_headcount * 100.0
     if velocity >= 30:  return 100.0
@@ -480,7 +480,7 @@ def sig_lease_expiry_proximity(lease_expiry_months: Optional[int]) -> float:
     return 0.0
 
 
-def sig_space_utilization(current_sf: Optional[int], current_headcount: int) -> float:
+def sig_space_utilization(current_sf: Optional[int], current_headcount: Optional[int]) -> float:
     """
     Space utilization: SF per employee vs. modern standard (175 SF/head).
 
@@ -490,7 +490,7 @@ def sig_space_utilization(current_sf: Optional[int], current_headcount: int) -> 
     Both are actionable — either as tenant rep or as a signal to approach
     the current landlord about absorbing vacant space.
     """
-    if not current_sf or current_headcount <= 0:
+    if not current_sf or not current_headcount or current_headcount <= 0:
         return 0.0
     sf_per_head = current_sf / current_headcount
 
@@ -533,7 +533,7 @@ def sig_geo_clustering(
 def compute_tenant_opportunity_score(
     headcount_growth_pct: Optional[float],
     open_positions: int,
-    current_headcount: int,
+    current_headcount: Optional[int],
     lease_expiry_months: Optional[int],
     current_sf: Optional[int],
     current_submarket: Optional[str],

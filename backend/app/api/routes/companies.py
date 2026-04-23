@@ -141,12 +141,7 @@ def _parse_costar_tenant_row(row: dict, row_num: int) -> tuple:
         return None, {**err, "reason": "Missing Tenant Name"}
     err["address"] = _cs_str(row, "Address") or "—"
 
-    employees_raw = _cs_str(row, "Employees")
-    if not employees_raw:
-        return None, {**err, "reason": "Missing Employees"}
-    headcount = _cs_int(row, "Employees")
-    if headcount is None or headcount <= 0:
-        return None, {**err, "reason": f"Invalid Employees value: '{employees_raw}'"}
+    headcount = _cs_int(row, "Employees")  # None if blank or unparseable; row continues
 
     industry_raw = _cs_str(row, "Industry") or ""
     naics_raw    = _cs_str(row, "NAICS") or ""
@@ -207,7 +202,7 @@ def _run_signals(company: Company) -> None:
     result = se.compute_tenant_opportunity_score(
         company.headcount_growth_pct,
         company.open_positions or 0,
-        company.current_headcount or 1,
+        company.current_headcount,
         company.lease_expiry_months,
         company.current_sf,
         company.current_submarket,
@@ -448,9 +443,9 @@ async def costar_tenant_import(
         else:
             # Derived fields
             sf_per_head = None
-            if payload["current_sf"] and payload["current_headcount"] > 0:
+            if payload["current_sf"] and payload["current_headcount"] and payload["current_headcount"] > 0:
                 sf_per_head = round(payload["current_sf"] / payload["current_headcount"], 1)
-            estimated_sf_needed = int(payload["current_headcount"] * 1.25 * 175)
+            estimated_sf_needed = int(payload["current_headcount"] * 1.25 * 175) if payload["current_headcount"] else None
 
             c = Company(
                 company_id            = _next_company_id(db),

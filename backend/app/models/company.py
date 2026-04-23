@@ -17,7 +17,7 @@ class Company(Base):
     description = Column(Text, nullable=True)
 
     # Size & Growth
-    current_headcount = Column(Integer, nullable=False)
+    current_headcount = Column(Integer, nullable=True)
     headcount_12mo_ago = Column(Integer, nullable=True)
     headcount_growth_pct = Column(Float, nullable=True)   # Computed
     open_positions = Column(Integer, default=0)

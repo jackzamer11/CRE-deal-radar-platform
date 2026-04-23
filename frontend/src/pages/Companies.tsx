@@ -146,7 +146,7 @@ export default function Companies() {
               </div>
               <div className="bg-surface-muted rounded-lg p-2">
                 <div className="text-[10px] text-ink-muted mb-0.5">Headcount</div>
-                <div className="text-sm font-semibold mono text-ink-primary">{c.current_headcount}</div>
+                <div className="text-sm font-semibold mono text-ink-primary">{c.current_headcount ?? '—'}</div>
               </div>
             </div>
 
@@ -218,7 +218,7 @@ export default function Companies() {
               <div className="bg-surface-muted rounded-lg p-3">
                 <div className="text-[10px] text-ink-muted uppercase tracking-wider mb-2">Tenant Intelligence</div>
                 <div className="space-y-1.5">
-                  <Row label="Current Headcount"  value={String(selected.current_headcount)} />
+                  <Row label="Current Headcount"  value={selected.current_headcount != null ? String(selected.current_headcount) : '—'} />
                   <Row label="YoY Growth"         value={selected.headcount_growth_pct != null ? `+${selected.headcount_growth_pct.toFixed(0)}%` : '—'} />
                   <Row label="Lease Expiry"       value={selected.lease_expiry_months != null ? `${selected.lease_expiry_months} months` : '—'} />
                   <Row label="Submarket"          value={selected.current_submarket || '—'} />
