@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react'
-import { Users, Filter, X, TrendingUp, Clock, MapPin, Plus, RefreshCw } from 'lucide-react'
+import { Users, Filter, X, TrendingUp, Clock, MapPin, Plus, RefreshCw, Upload } from 'lucide-react'
 import { getCompanies } from '../api/client'
 import type { CompanyListOut, CompanyOut } from '../types'
 import { PriorityBadge } from '../components/PriorityBadge'
 import ScoreBadge from '../components/ScoreBadge'
 import AddCompanyModal from '../components/AddCompanyModal'
+import CoStarTenantImportModal from '../components/CoStarTenantImportModal'
 
 const SUBMARKETS = [
   'Arlington (Clarendon)', 'Arlington (Rosslyn)', 'Arlington (Ballston)',
@@ -32,6 +33,7 @@ export default function Companies() {
   const [expansionOnly, setExpansionOnly] = useState(false)
   const [selected, setSelected] = useState<CompanyListOut | null>(null)
   const [showAddModal, setShowAddModal] = useState(false)
+  const [showTenantImportModal, setShowTenantImportModal] = useState(false)
 
   const load = async () => {
     setLoading(true)
@@ -64,6 +66,13 @@ export default function Companies() {
                        hover:bg-emerald-700 transition-colors"
           >
             <Plus size={13} /> Add Company
+          </button>
+          <button
+            onClick={() => setShowTenantImportModal(true)}
+            className="flex items-center gap-2 px-4 py-2 rounded-lg bg-surface-card border border-surface-border
+                       text-ink-secondary hover:text-ink-primary text-xs font-semibold transition-colors"
+          >
+            <Upload size={13} /> Import CoStar Tenants
           </button>
           <button onClick={load} className="p-2 rounded-lg hover:bg-surface-card text-ink-muted hover:text-ink-primary">
             <RefreshCw size={15} className={loading ? 'animate-spin' : ''} />
@@ -175,14 +184,17 @@ export default function Companies() {
         ))}
       </div>
 
-      {/* Add Company Modal */}
       {showAddModal && (
         <AddCompanyModal
           onClose={() => setShowAddModal(false)}
-          onSaved={(_saved: CompanyOut) => {
-            setShowAddModal(false)
-            load()
-          }}
+          onSaved={(_saved: CompanyOut) => { setShowAddModal(false); load() }}
+        />
+      )}
+
+      {showTenantImportModal && (
+        <CoStarTenantImportModal
+          onClose={() => setShowTenantImportModal(false)}
+          onDone={load}
         />
       )}
 

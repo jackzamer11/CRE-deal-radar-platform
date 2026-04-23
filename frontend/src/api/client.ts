@@ -166,3 +166,23 @@ export const importCoStarExport = (file: File): Promise<CoStarImportResult> => {
     headers: { 'Content-Type': 'multipart/form-data' },
   }).then(r => r.data)
 }
+
+export interface CoStarTenantImportResult {
+  total_rows: number
+  filtered_state: number
+  filtered_submarket: number
+  filtered_size: number
+  inserted: number
+  updated: number
+  skipped: number
+  unmapped_submarkets: string[]
+  errors: BulkUploadError[]
+}
+
+export const importCoStarTenants = (file: File): Promise<CoStarTenantImportResult> => {
+  const form = new FormData()
+  form.append('file', file)
+  return api.post('/companies/costar-import', form, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  }).then(r => r.data)
+}

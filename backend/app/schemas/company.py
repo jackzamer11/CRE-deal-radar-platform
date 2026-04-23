@@ -1,3 +1,4 @@
+# backend/app/schemas/company.py
 from datetime import date, datetime
 from typing import Optional
 from pydantic import BaseModel
@@ -24,6 +25,11 @@ class CompanyBase(BaseModel):
     primary_contact_phone: Optional[str] = None
     linkedin_url: Optional[str] = None
     website: Optional[str] = None
+    tenant_representative: Optional[str] = None
+    current_rent_psf: Optional[float] = None
+    future_move_flag: Optional[bool] = None
+    future_move_type: Optional[str] = None
+    linked_property_id: Optional[int] = None
 
 
 class CompanyCreate(CompanyBase):

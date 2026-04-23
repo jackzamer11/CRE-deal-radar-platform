@@ -1,3 +1,4 @@
+# backend/app/models/company.py
 from datetime import datetime
 from sqlalchemy import Column, Integer, String, Float, Boolean, Text, Date, DateTime
 from sqlalchemy.orm import relationship
@@ -55,6 +56,13 @@ class Company(Base):
     primary_contact_phone = Column(String, nullable=True)
     linkedin_url = Column(String, nullable=True)
     website = Column(String, nullable=True)
+
+    # CoStar Tenant enrichment fields
+    tenant_representative = Column(String, nullable=True)
+    current_rent_psf = Column(Float, nullable=True)
+    future_move_flag = Column(Boolean, nullable=True)
+    future_move_type = Column(String, nullable=True)
+    linked_property_id = Column(Integer, nullable=True)
 
     # Timestamps
     created_at = Column(DateTime, default=datetime.utcnow)

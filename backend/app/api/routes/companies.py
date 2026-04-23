@@ -1,12 +1,17 @@
+import io
 from typing import List, Optional
 from datetime import datetime, date
-from pydantic import BaseModel
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+import pandas as pd
+from dateutil import parser as _dateparser
+from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models.company import Company
+from app.models.property import Property
 from app.schemas.company import CompanyOut, CompanyListOut
 from app.services import signal_engine as se
 from app.services.scoring_model import score_property
@@ -15,6 +20,170 @@ router = APIRouter(prefix="/companies", tags=["companies"])
 
 CURRENT_YEAR = 2026
 
+# ── CoStar tenant import constants ────────────────────────────────────────────
+
+COSTAR_SUBMARKET_MAP: dict = {
+    "old town alexandria":  "Alexandria (Old Town)",
+    "alexandria/old town":  "Alexandria (Old Town)",
+    "falls church":         "Falls Church",
+    "reston":               "Reston",
+    "tysons":               "Tysons",
+    "tysons corner":        "Tysons",
+    "clarendon":            "Arlington (Clarendon)",
+    "rosslyn":              "Arlington (Rosslyn)",
+    "rosslyn/ballston":     None,
+    "ballston":             "Arlington (Ballston)",
+    "columbia pike":        "Arlington (Columbia Pike)",
+    "mclean":               "McLean",
+    "vienna":               "Vienna",
+    "tysons/vienna":        "Vienna",
+    "fairfax city":         "Fairfax City",
+    "fairfax":              "Fairfax City",
+}
+
+COSTAR_TENANT_COLS = [
+    "Address", "Tenant Name", "Industry", "Employees", "Website",
+    "Submarket", "SF Occupied", "NAICS", "City", "State", "Zip",
+    "Best Tenant Contact", "Best Tenant Phone", "Tenant Representative",
+    "Next Break Date", "Rent/SF/year", "Future Move", "Future Move Type",
+]
+
+
+# ── CoStar tenant import helpers ──────────────────────────────────────────────
+
+def _cs_str(row: dict, col: str) -> Optional[str]:
+    v = row.get(col)
+    if v is None:
+        return None
+    if isinstance(v, float) and pd.isna(v):
+        return None
+    s = str(v).strip()
+    return s if s else None
+
+
+def _cs_float(row: dict, col: str) -> Optional[float]:
+    raw = _cs_str(row, col)
+    if raw is None:
+        return None
+    try:
+        return float(raw.replace(",", "").replace("$", "").replace("%", ""))
+    except ValueError:
+        return None
+
+
+def _cs_int(row: dict, col: str) -> Optional[int]:
+    f = _cs_float(row, col)
+    return int(f) if f is not None else None
+
+
+def _parse_rent_psf(raw: Optional[str]) -> Optional[float]:
+    if not raw:
+        return None
+    cleaned = raw.strip().replace("$", "").replace(",", "").replace("FS", "").replace(" ", "")
+    try:
+        return float(cleaned)
+    except ValueError:
+        return None
+
+
+def _months_until(date_str: Optional[str]) -> Optional[int]:
+    if not date_str:
+        return None
+    try:
+        expiry = _dateparser.parse(date_str, fuzzy=True).date()
+        today = date.today()
+        if expiry <= today:
+            return 0
+        return max(0, (expiry.year - today.year) * 12 + (expiry.month - today.month))
+    except (ValueError, OverflowError, TypeError):
+        return None
+
+
+def _next_company_id(db: Session) -> str:
+    existing_ids = [c.company_id for c in db.query(Company.company_id).all()]
+    nums = []
+    for cid in existing_ids:
+        try:
+            nums.append(int(cid.split("-")[1]))
+        except (IndexError, ValueError):
+            pass
+    return f"CO-{(max(nums) + 1) if nums else 1:03d}"
+
+
+def _apply_costar_bonus(company: Company) -> None:
+    """Bonus signal: no broker rep on record (+10); confirmed future move/relocation (+15)."""
+    bonus = 0.0
+    if not company.tenant_representative:
+        bonus += 10.0
+    if company.future_move_flag:
+        ft = (company.future_move_type or "").lower()
+        if any(kw in ft for kw in ("reloc", "expan", "move", "requir")):
+            bonus += 15.0
+    if bonus > 0:
+        company.opportunity_score = min(100.0, round(company.opportunity_score + bonus, 2))
+        s = company.opportunity_score
+        if s >= 75:   company.priority = "IMMEDIATE"
+        elif s >= 62: company.priority = "HIGH"
+        elif s >= 42: company.priority = "WORKABLE"
+        else:         company.priority = "IGNORE"
+
+
+def _parse_costar_tenant_row(row: dict, row_num: int) -> tuple:
+    """
+    Validate and parse one post-filter CoStar Tenant Locations row.
+    Returns (payload_dict, None) or (None, error_dict).
+    Caller has already applied state / submarket / SF-size filters.
+    """
+    err = {"row": row_num, "address": _cs_str(row, "Address") or "—"}
+
+    name = _cs_str(row, "Tenant Name")
+    if not name:
+        return None, {**err, "reason": "Missing Tenant Name"}
+    err["address"] = _cs_str(row, "Address") or "—"
+
+    employees_raw = _cs_str(row, "Employees")
+    if not employees_raw:
+        return None, {**err, "reason": "Missing Employees"}
+    headcount = _cs_int(row, "Employees")
+    if headcount is None or headcount <= 0:
+        return None, {**err, "reason": f"Invalid Employees value: '{employees_raw}'"}
+
+    industry_raw = _cs_str(row, "Industry") or ""
+    naics_raw    = _cs_str(row, "NAICS") or ""
+    if industry_raw and naics_raw:
+        industry = f"{industry_raw} ({naics_raw})"
+    elif industry_raw:
+        industry = industry_raw
+    elif naics_raw:
+        industry = naics_raw
+    else:
+        industry = "Unknown"
+
+    cs_sub   = (_cs_str(row, "Submarket") or "").strip()
+    submarket = COSTAR_SUBMARKET_MAP.get(cs_sub.lower())
+
+    future_move_raw = (_cs_str(row, "Future Move") or "").strip().lower()
+    future_move = future_move_raw in ("yes", "y", "true", "1")
+
+    return {
+        "name":                 name,
+        "industry":             industry,
+        "current_headcount":    headcount,
+        "current_address":      _cs_str(row, "Address"),
+        "current_submarket":    submarket,
+        "current_sf":           _cs_int(row, "SF Occupied"),
+        "lease_expiry_months":  _months_until(_cs_str(row, "Next Break Date")),
+        "primary_contact_name": _cs_str(row, "Best Tenant Contact"),
+        "primary_contact_phone":_cs_str(row, "Best Tenant Phone"),
+        "tenant_representative":_cs_str(row, "Tenant Representative"),
+        "current_rent_psf":     _parse_rent_psf(_cs_str(row, "Rent/SF/year")),
+        "future_move_flag":     future_move,
+        "future_move_type":     _cs_str(row, "Future Move Type"),
+        "website":              _cs_str(row, "Website"),
+    }, None
+
+
+# ── Pydantic schema for manual create ─────────────────────────────────────────
 
 class CompanyManualCreate(BaseModel):
     name: str
@@ -88,17 +257,7 @@ def _run_signals(company: Company) -> None:
 @router.post("/", response_model=CompanyOut)
 def create_company(payload: CompanyManualCreate, db: Session = Depends(get_db)):
     """Manually add a new company. Signals are computed immediately after creation."""
-
-    # Auto-generate company_id (CO-XXX)
-    existing_ids = [c.company_id for c in db.query(Company.company_id).all()]
-    nums = []
-    for cid in existing_ids:
-        try:
-            nums.append(int(cid.split("-")[1]))
-        except (IndexError, ValueError):
-            pass
-    next_num = (max(nums) + 1) if nums else 1
-    company_id = f"CO-{next_num:03d}"
+    company_id = _next_company_id(db)
 
     # Derived fields
     growth_pct = None
@@ -172,6 +331,168 @@ def list_companies(
         q = q.filter(Company.opportunity_score >= min_score)
     companies = q.order_by(Company.opportunity_score.desc()).all()
     return companies
+
+
+@router.post("/costar-import")
+async def costar_tenant_import(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+):
+    """
+    Import a CoStar Tenant Locations export (.csv or .xlsx).
+
+    Filter pipeline:
+      1. State != VA             → filtered_state
+      2. Submarket unmapped      → filtered_submarket  (tracks unmapped_submarkets)
+      3. SF Occupied < 2,500     → filtered_size
+
+    Dedupe key: (Tenant Name, Address) — case-insensitive, whitespace-trimmed.
+    Auto-links to an existing Property when Address matches exactly.
+    Returns {total_rows, filtered_state, filtered_submarket, filtered_size,
+             inserted, updated, skipped, unmapped_submarkets, errors}
+    """
+    fname = (file.filename or "").lower()
+    if not (fname.endswith(".csv") or fname.endswith(".xlsx") or fname.endswith(".xls")):
+        raise HTTPException(status_code=400, detail="File must be .csv or .xlsx")
+
+    contents = await file.read()
+    try:
+        if fname.endswith(".csv"):
+            df = pd.read_csv(io.BytesIO(contents), dtype=str, keep_default_na=False)
+        else:
+            df = pd.read_excel(io.BytesIO(contents), dtype=str, keep_default_na=False, engine="openpyxl")
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Could not parse file: {exc}")
+
+    df.columns = [c.strip() for c in df.columns]
+
+    missing = [c for c in COSTAR_TENANT_COLS if c not in set(df.columns)]
+    if missing:
+        raise HTTPException(status_code=400, detail=f"Missing CoStar columns: {', '.join(missing)}")
+
+    df = df.replace("", None)
+    rows = df.to_dict(orient="records")
+    total_rows = len(rows)
+
+    filtered_state     = 0
+    filtered_submarket = 0
+    filtered_size      = 0
+    unmapped_submarkets: set = set()
+    inserted = updated = 0
+    errors: list = []
+
+    # Build dedupe index: (name.lower(), address.lower()) → Company
+    existing: dict = {}
+    for c in db.query(Company).all():
+        key = (c.name.strip().lower(), (c.current_address or "").strip().lower())
+        existing[key] = c
+
+    for idx, row in enumerate(rows, start=2):
+        # Filter 1: State must be VA
+        if (_cs_str(row, "State") or "").strip().upper() != "VA":
+            filtered_state += 1
+            continue
+
+        # Filter 2: Submarket must map
+        cs_sub  = (_cs_str(row, "Submarket") or "").strip()
+        sub_key = cs_sub.lower()
+        if sub_key not in COSTAR_SUBMARKET_MAP or COSTAR_SUBMARKET_MAP[sub_key] is None:
+            unmapped_submarkets.add(cs_sub or "(blank)")
+            filtered_submarket += 1
+            continue
+
+        # Filter 3: SF Occupied >= 2,500
+        sf_occ = _cs_float(row, "SF Occupied")
+        if sf_occ is None or sf_occ < 2500:
+            filtered_size += 1
+            continue
+
+        payload, err = _parse_costar_tenant_row(row, row_num=idx)
+        if err:
+            errors.append(err)
+            continue
+
+        name    = payload["name"]
+        address = payload["current_address"] or ""
+        key     = (name.strip().lower(), address.strip().lower())
+
+        # Auto-link to matching property
+        linked_prop_id = None
+        if address:
+            prop = db.query(Property).filter(
+                func.lower(Property.address) == address.strip().lower()
+            ).first()
+            if prop:
+                linked_prop_id = prop.id
+
+        if key in existing:
+            c = existing[key]
+            c.industry              = payload["industry"]
+            c.current_headcount     = payload["current_headcount"]
+            c.current_address       = payload["current_address"]
+            c.current_submarket     = payload["current_submarket"]
+            c.current_sf            = payload["current_sf"]
+            c.lease_expiry_months   = payload["lease_expiry_months"]
+            c.primary_contact_name  = payload["primary_contact_name"] or c.primary_contact_name
+            c.primary_contact_phone = payload["primary_contact_phone"] or c.primary_contact_phone
+            c.tenant_representative = payload["tenant_representative"]
+            c.current_rent_psf      = payload["current_rent_psf"]
+            c.future_move_flag      = payload["future_move_flag"]
+            c.future_move_type      = payload["future_move_type"]
+            c.website               = payload["website"] or c.website
+            if linked_prop_id:
+                c.linked_property_id = linked_prop_id
+            _run_signals(c)
+            _apply_costar_bonus(c)
+            updated += 1
+        else:
+            # Derived fields
+            sf_per_head = None
+            if payload["current_sf"] and payload["current_headcount"] > 0:
+                sf_per_head = round(payload["current_sf"] / payload["current_headcount"], 1)
+            estimated_sf_needed = int(payload["current_headcount"] * 1.25 * 175)
+
+            c = Company(
+                company_id            = _next_company_id(db),
+                name                  = name,
+                industry              = payload["industry"],
+                current_headcount     = payload["current_headcount"],
+                open_positions        = 0,
+                current_address       = payload["current_address"],
+                current_submarket     = payload["current_submarket"],
+                current_sf            = payload["current_sf"],
+                sf_per_head           = sf_per_head,
+                lease_expiry_months   = payload["lease_expiry_months"],
+                estimated_sf_needed   = estimated_sf_needed,
+                primary_contact_name  = payload["primary_contact_name"],
+                primary_contact_phone = payload["primary_contact_phone"],
+                website               = payload["website"],
+                tenant_representative = payload["tenant_representative"],
+                current_rent_psf      = payload["current_rent_psf"],
+                future_move_flag      = payload["future_move_flag"],
+                future_move_type      = payload["future_move_type"],
+                linked_property_id    = linked_prop_id,
+            )
+            db.add(c)
+            db.flush()
+            _run_signals(c)
+            _apply_costar_bonus(c)
+            existing[key] = c
+            inserted += 1
+
+    db.commit()
+
+    return {
+        "total_rows":          total_rows,
+        "filtered_state":      filtered_state,
+        "filtered_submarket":  filtered_submarket,
+        "filtered_size":       filtered_size,
+        "inserted":            inserted,
+        "updated":             updated,
+        "skipped":             len(errors),
+        "unmapped_submarkets": sorted(unmapped_submarkets),
+        "errors":              errors,
+    }
 
 
 @router.get("/{company_id}", response_model=CompanyOut)
