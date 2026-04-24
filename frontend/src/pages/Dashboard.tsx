@@ -177,7 +177,7 @@ export default function Dashboard() {
           <p className="text-ink-muted text-sm mt-0.5">
             {new Date(briefing.briefing_date).toLocaleDateString('en-US', {
               weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
-            })} · Northern Virginia Office · Under $10M · 3K–30K SF
+            })} · Northern Virginia Office · Under $7M · 3K–30K SF
           </p>
         </div>
         <div className="flex items-center gap-2">
