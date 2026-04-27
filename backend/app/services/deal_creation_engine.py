@@ -62,6 +62,8 @@ LEASE_COMMISSION_RATE = 0.04    # 4% of total lease value
 SALE_COMMISSION_RATE  = 0.02    # 2% of sale price
 AVG_LEASE_TERM_YEARS  = 5       # Standard new lease term in NoVA
 
+CURRENT_YEAR = 2026
+
 
 def _is_nearby(prop_submarket: str, company_submarket: Optional[str]) -> bool:
     if not company_submarket:
@@ -114,7 +116,7 @@ OPENING:
 expansion. Do you have 3 minutes?"
 
 CORE MESSAGE:
-"Based on your current footprint of ~{company.sf_per_head:.0f} SF per
+"Based on your current footprint of ~{company.sf_per_head or 0:.0f} SF per
 person and your growth rate, my models show you'll need approximately
 {sf_needed:,} SF within the next 12-18 months. Your lease comes up
 {expiry_urgency}. I want to get you positioned BEFORE you're in
@@ -140,9 +142,9 @@ actively looking in your building's submarket."
 
 CORE MESSAGE:
 "The company is in the {company.industry} sector, {company.current_headcount}
-employees and growing at {company.headcount_growth_pct:.0f}% per year.
+employees and growing at {company.headcount_growth_pct or 0:.0f}% per year.
 They need {sf_needed:,} SF and their lease expires in {months} months —
-they're motivated to move quickly. Your {prop.vacant_sf:,.0f} SF of
+they're motivated to move quickly. Your {prop.vacant_sf or 0:,.0f} SF of
 vacancy at {prop.address} matches their requirements."
 
 VALUE PROP:
@@ -150,9 +152,9 @@ VALUE PROP:
 vacancy without an extended marketing campaign."
 
 DEAL STATS:
-  • Tenant: {company.name} | {company.current_headcount} heads +{company.headcount_growth_pct:.0f}%/yr
+  • Tenant: {company.name} | {company.current_headcount} heads +{company.headcount_growth_pct or 0:.0f}%/yr
   • Space needed: {sf_needed:,} SF | Lease expiry: {months}mo
-  • Building: {prop.address} | {prop.vacancy_pct:.0f}% vacant ({prop.vacant_sf:,.0f} SF)
+  • Building: {prop.address} | {prop.vacancy_pct or 0:.0f}% vacant ({prop.vacant_sf or 0:,.0f} SF)
   • Est. deal value: ${estimated_deal_value:,.0f} | Est. commission: ${estimated_commission:,.0f}
   • Your Signal Score: {score:.0f}/100"""
 
@@ -164,18 +166,18 @@ Listing Agent / Seller Contact
 
 OPENING:
 "Hi, I'm [Your Name] with [Firm]. I represent an equity buyer
-specifically looking for office assets under $10M in {prop.submarket}.
+specifically looking for office assets under $7M in {prop.submarket}.
 I've been tracking {prop.address}."
 
 CORE MESSAGE:
 "This asset has been on market {prop.days_on_market or 0} days.
-My buyer understands the in-place rent story at ${prop.in_place_rent_psf:.2f}/SF
-versus the {prop.submarket} market at ${prop.market_rent_psf:.2f}/SF —
+My buyer understands the in-place rent story at ${prop.in_place_rent_psf or 0:.2f}/SF
+versus the {prop.submarket} market at ${prop.market_rent_psf or 0:.2f}/SF —
 that's a {rent_gap_pct:.0f}% mark-to-market gap. They're buying the
 rollover upside, not the current NOI."
 
 PRICE ANGLE:
-"At ${prop.asking_price_psf:.2f}/SF asking, I believe we can find a
+"At ${prop.asking_price_psf or 0:.2f}/SF asking, I believe we can find a
 number that works for both sides. My buyer can close in 45 days,
 all-cash, minimal contingencies."
 
@@ -184,10 +186,10 @@ CLOSE:
 
 DEAL STATS:
   • Address: {prop.address} | {prop.submarket}
-  • Vacancy: {prop.vacancy_pct:.0f}% | In-place rent: ${prop.in_place_rent_psf:.2f}/SF
-  • Market rent: ${prop.market_rent_psf:.2f}/SF | Gap: {rent_gap_pct:.0f}%
+  • Vacancy: {prop.vacancy_pct or 0:.0f}% | In-place rent: ${prop.in_place_rent_psf or 0:.2f}/SF
+  • Market rent: ${prop.market_rent_psf or 0:.2f}/SF | Gap: {rent_gap_pct:.0f}%
   • Days on market: {prop.days_on_market or 0} (mkt avg: {prop.submarket_avg_dom or '—'})
-  • Asking: ${prop.asking_price_psf:.2f}/SF | Est. value: ${estimated_deal_value:,.0f}
+  • Asking: ${prop.asking_price_psf or 0:.2f}/SF | Est. value: ${estimated_deal_value:,.0f}
   • Your Signal Score: {score:.0f}/100"""
 
     else:  # PRE_MARKET
@@ -203,7 +205,7 @@ office market and I've been tracking {prop.address} for several months."
 CORE MESSAGE:
 "I'm currently working with buyers specifically targeting {prop.submarket}
 assets in your size range. Given the current leasing environment —
-{prop.vacancy_pct:.0f}% vacancy, {prop.lease_rollover_pct:.0f}% of
+{prop.vacancy_pct or 0:.0f}% vacancy, {prop.lease_rollover_pct or 0:.0f}% of
 leases rolling in the next 12 months — I think the timing to have a
 confidential conversation is better now than 12 months from now."
 
@@ -214,9 +216,9 @@ shifted and I think we can position you very well right now."
 
 SELLER MOTIVATION THESIS:
   • You've held {yrs_owned_str} years (NoVA avg hold: 7yr)
-  • Vacancy at {prop.vacancy_pct:.0f}% and {prop.lease_rollover_pct:.0f}% rolling
+  • Vacancy at {prop.vacancy_pct or 0:.0f}% and {prop.lease_rollover_pct or 0:.0f}% rolling
   • In-place rents {rent_gap_pct:.0f}% below market — a buyer absorbs that risk
-  • {prop.year_built} vintage, {(CURRENT_YEAR - (prop.last_renovation_year or prop.year_built)):.0f}yr since last reno
+  • {prop.year_built} vintage, {CURRENT_YEAR - (prop.last_renovation_year or prop.year_built or CURRENT_YEAR):.0f}yr since last reno
 
 CLOSE:
 "Would you be open to a confidential 20-minute call to hear what
@@ -227,9 +229,6 @@ DEAL STATS:
   • Owner: {prop.owner_name} (since {acq_year})
   • Est. market value: ${estimated_deal_value:,.0f}
   • Your Signal Score: {score:.0f}/100"""
-
-
-CURRENT_YEAR = 2026
 
 
 def _build_thesis(
@@ -246,11 +245,11 @@ def _build_thesis(
     if deal_type == "TENANT_DRIVEN" and company:
         sf_needed = _estimated_sf_needed(company)
         return (
-            f"{company.name} ({company.industry}) has grown {company.headcount_growth_pct:.0f}% YoY to "
-            f"{company.current_headcount} employees, is operating at {company.sf_per_head:.0f} SF/head "
-            f"(vs 175 SF standard), and their lease expires in {company.lease_expiry_months} months. "
-            f"They need ~{sf_needed:,} SF. {prop.address} has {prop.vacant_sf:,.0f} SF of vacancy at "
-            f"${prop.in_place_rent_psf:.2f}/SF — {rent_gap_pct:.0f}% below the "
+            f"{company.name} ({company.industry}) has grown {company.headcount_growth_pct or 0:.0f}% YoY to "
+            f"{company.current_headcount} employees, is operating at {company.sf_per_head or 0:.0f} SF/head "
+            f"(vs 175 SF standard), and their lease expires in {company.lease_expiry_months or 'unknown'} months. "
+            f"They need ~{sf_needed:,} SF. {prop.address} has {prop.vacant_sf or 0:,.0f} SF of vacancy at "
+            f"${prop.in_place_rent_psf or 0:.2f}/SF — {rent_gap_pct:.0f}% below the "
             f"{prop.submarket} market. Dual-side opportunity: tenant rep + landlord introduction. "
             f"Score: {score:.0f}/100."
         )
@@ -258,19 +257,19 @@ def _build_thesis(
         acq_year = prop.acquisition_date.year if prop.acquisition_date else "N/A"
         return (
             f"{prop.address} ({prop.total_sf:,} SF, {prop.submarket}) is listed at "
-            f"${prop.asking_price_psf:.2f}/SF with {prop.days_on_market or 0} days on market "
+            f"${prop.asking_price_psf or 0:.2f}/SF with {prop.days_on_market or 0} days on market "
             f"({(prop.days_on_market or 0) - (prop.submarket_avg_dom or 120):+d} vs submarket avg). "
-            f"In-place rents at ${prop.in_place_rent_psf:.2f}/SF are {rent_gap_pct:.0f}% below market "
-            f"(${prop.market_rent_psf:.2f}/SF). Owner {prop.owner_name} has held since {acq_year}. "
+            f"In-place rents at ${prop.in_place_rent_psf or 0:.2f}/SF are {rent_gap_pct:.0f}% below market "
+            f"(${prop.market_rent_psf or 0:.2f}/SF). Owner {prop.owner_name} has held since {acq_year}. "
             f"Value-add thesis: buy at compressed NOI, mark rents to market on rollover. Score: {score:.0f}/100."
         )
     else:  # PRE_MARKET
         yrs = f"{prop.years_owned:.0f}" if prop.years_owned else "?"
-        reno_gap = CURRENT_YEAR - (prop.last_renovation_year or prop.year_built)
+        reno_gap = CURRENT_YEAR - (prop.last_renovation_year or prop.year_built or CURRENT_YEAR)
         return (
             f"{prop.address} ({prop.total_sf:,} SF, {prop.submarket}) — pre-market prediction. "
-            f"Owner {prop.owner_name} has held {yrs} years (NoVA avg: 7yr). Vacancy at {prop.vacancy_pct:.0f}%, "
-            f"{prop.lease_rollover_pct:.0f}% of leases rolling in 12 months. "
+            f"Owner {prop.owner_name} has held {yrs} years (NoVA avg: 7yr). Vacancy at {prop.vacancy_pct or 0:.0f}%, "
+            f"{prop.lease_rollover_pct or 0:.0f}% of leases rolling in 12 months. "
             f"In-place rents {rent_gap_pct:.0f}% below market. Last reno: {reno_gap}yr ago. "
             f"System predicts 3-12 month sale probability. Score: {score:.0f}/100."
         )
@@ -322,7 +321,7 @@ def create_opportunity_from_match(
     if deal_type == "TENANT_DRIVEN" and company:
         # Lease TLV
         sf_needed = _estimated_sf_needed(company)
-        annual_rent = sf_needed * prop.in_place_rent_psf
+        annual_rent = sf_needed * (prop.in_place_rent_psf or 0)
         deal_value = annual_rent * AVG_LEASE_TERM_YEARS
         commission = deal_value * LEASE_COMMISSION_RATE
     else:
@@ -365,7 +364,7 @@ def _get_next_action(deal_type: str, prop: Property, company: Optional[Company])
         urgency = "TODAY" if months <= 6 else "THIS WEEK"
         return (
             f"[{urgency}] Call {company.primary_contact_name or company.name} — "
-            f"lease expires in {months}mo, company is at {company.sf_per_head:.0f} SF/head. "
+            f"lease expires in {months}mo, company is at {company.sf_per_head or 0:.0f} SF/head. "
             f"Pitch: off-market relocation to {prop.address} before they start their own search."
         )
     elif deal_type == "ACTIVE_MISPRICED":
@@ -377,7 +376,7 @@ def _get_next_action(deal_type: str, prop: Property, company: Optional[Company])
     else:
         return (
             f"[THIS WEEK] Cold approach {prop.owner_name} — owner of {prop.address}. "
-            f"Has held {prop.years_owned:.0f}yr. Position as off-market conversation "
+            f"Has held {prop.years_owned or 0:.0f}yr. Position as off-market conversation "
             f"with qualified buyers ready to close."
         )
 

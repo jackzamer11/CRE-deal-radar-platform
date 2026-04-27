@@ -35,7 +35,7 @@ NOVA_COSTAR_SUBMARKET_CODES = {
 
 # CoStar property type filter: Office = 3
 PROPERTY_TYPE_OFFICE = 3
-MAX_PRICE_FILTER = 10_000_000   # $10M ceiling
+MAX_PRICE_FILTER = 7_000_000    # $7M ceiling
 MIN_SF = 3_000
 MAX_SF = 30_000
 
