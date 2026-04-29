@@ -709,6 +709,16 @@ def seed_companies(db):
 
 
 def main():
+    from app.config import settings
+
+    if not settings.seed_on_init:
+        print(
+            "Seeding is disabled (SEED_ON_INIT=false).\n"
+            "Set the environment variable SEED_ON_INIT=true to seed on a\n"
+            "fresh database that has no real CoStar data yet."
+        )
+        sys.exit(0)
+
     print("Deal Radar OS — Initializing database and seeding Northern Virginia data")
     print("=" * 65)
 

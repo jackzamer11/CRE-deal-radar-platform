@@ -6,6 +6,10 @@ class Settings(BaseSettings):
     database_url: str = "sqlite:///./deal_radar.db"
     debug: bool = True
 
+    # Set SEED_ON_INIT=true only on first-ever bootstrap with no real data.
+    # Defaults to false so platform restarts never re-insert fake seed records.
+    seed_on_init: bool = False
+
     # Signal engine parameters
     nova_avg_hold_years: float = 7.0
     modern_sf_per_head: int = 175
