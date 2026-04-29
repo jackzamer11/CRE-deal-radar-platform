@@ -1,16 +1,16 @@
 """
 Delete Seed Data Migration
 ===========================
-Removes the 15 seed properties (NVA-*) and 8 seed companies (CO-*) that were
-inserted at platform bootstrap, along with all their dependent records.
+Removes the 15 bootstrap seed properties and 8 seed companies inserted by
+seed_data.py, along with all their dependent records.
+
+Seed identification uses EXACT address / company name matches hardcoded from
+seed_data.py — NOT property_id/company_id prefix patterns, which also appear
+on real CoStar-imported records and would cause mass data loss.
 
 Usage:
   Dry run (default):  python -m migrations.delete_seeds
   Actually delete:    python -m migrations.delete_seeds --confirm
-
-Seed identification:
-  Properties:  property_id starts with 'NVA-'
-  Companies:   company_id  starts with 'CO-'
 
 User-edit preservation (seeds excluded from deletion):
   Companies: lease_expiry_last_verified IS NOT NULL
@@ -34,8 +34,6 @@ Post-deletion: automatically re-runs signals + deal creation engine.
 import sys
 import os
 
-# Allow running as both `python -m migrations.delete_seeds`
-# and `python migrations/delete_seeds.py`
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from sqlalchemy import or_
@@ -47,7 +45,45 @@ from app.models.opportunity import Opportunity
 from app.models.activity import ActivityLog
 
 
-# ── Helpers ─────────────────────────────────────────────────────────────────
+# ── Exact seed record identifiers (sourced directly from seed_data.py) ───────
+# These are the only records that should ever be matched for deletion.
+# Add or remove entries here if seed_data.py changes in the future.
+
+SEED_PROPERTY_ADDRESSES: set[str] = {
+    "1760 Reston Pkwy, Suite 200, Reston, VA 20190",
+    "10600 Sunset Hills Rd, Suite 100, Reston, VA 20190",
+    "1875 Explorer St, Suite 400, Reston Town Center, VA 20190",
+    "8300 Boone Blvd, Suite 200, Vienna, VA 22182",
+    "7900 Westpark Dr, Suite 300, McLean, VA 22102",
+    "8000 Towers Crescent Dr, Suite 100, Vienna, VA 22182",
+    "3100 Clarendon Blvd, Suite 300, Arlington, VA 22201",
+    "1800 N Kent St, Suite 600, Arlington, VA 22209",
+    "901 N Stuart St, Suite 200, Arlington, VA 22203",
+    "3601 Wilson Blvd, Suite 100, Arlington, VA 22201",
+    "500 N Washington St, Suite 200, Alexandria, VA 22314",
+    "520 N Washington St, Alexandria, VA 22314",
+    "105 Park St, Falls Church, VA 22046",
+    "400 S Maple Ave, Suite 200, Falls Church, VA 22046",
+    "2530 Columbia Pike, Arlington, VA 22204",
+}
+
+SEED_COMPANY_NAMES: set[str] = {
+    "ClearPath Technologies",
+    "Apex Federal Solutions",
+    "DataCore Intelligence",
+    "Meridian Policy Group",
+    "Silverline Health Innovations",
+    "Skybridge Federal Advisors",
+    "NoVA Wealth Partners",
+    "Patriot Logistics Solutions",
+}
+
+# Hard safety caps — abort if identification looks wrong
+MAX_PROPERTIES_TO_DELETE = 20
+MAX_COMPANIES_TO_DELETE  = 15
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _has_user_activity(db, *, property_id=None, company_id=None) -> bool:
     """True if any non-system ActivityLog entry exists for this record."""
@@ -67,29 +103,43 @@ def _opportunity_is_user_touched(opp: Opportunity) -> bool:
     return opp.stage not in ("IDENTIFIED",)
 
 
-# ── Main ─────────────────────────────────────────────────────────────────────
+# ── Main ──────────────────────────────────────────────────────────────────────
 
 def run(confirm: bool = False) -> None:
     init_db()
     db = SessionLocal()
 
     try:
-        # ── 1. Find all seed candidates ──────────────────────────────────────
+        # ── 1. Find seed candidates by exact address / name ───────────────────
         seed_props_all = (
             db.query(Property)
-            .filter(Property.property_id.like("NVA-%"))
+            .filter(Property.address.in_(SEED_PROPERTY_ADDRESSES))
             .all()
         )
         seed_cos_all = (
             db.query(Company)
-            .filter(Company.company_id.like("CO-%"))
+            .filter(Company.name.in_(SEED_COMPANY_NAMES))
             .all()
         )
 
-        print(f"\nSeed properties found (NVA-*):  {len(seed_props_all)}")
-        print(f"Seed companies found  (CO-*):   {len(seed_cos_all)}")
+        print(f"\nSeed properties matched (exact address): {len(seed_props_all)}")
+        print(f"Seed companies matched  (exact name):    {len(seed_cos_all)}")
 
-        # ── 2. Separate deletable vs user-edited ─────────────────────────────
+        # ── 2. Safety cap — abort if identification looks wrong ───────────────
+        if len(seed_props_all) > MAX_PROPERTIES_TO_DELETE:
+            raise ValueError(
+                f"Seed identification appears wrong — {len(seed_props_all)} properties "
+                f"matched, exceeds safety cap of {MAX_PROPERTIES_TO_DELETE}. "
+                f"Review SEED_PROPERTY_ADDRESSES in delete_seeds.py before proceeding."
+            )
+        if len(seed_cos_all) > MAX_COMPANIES_TO_DELETE:
+            raise ValueError(
+                f"Seed identification appears wrong — {len(seed_cos_all)} companies "
+                f"matched, exceeds safety cap of {MAX_COMPANIES_TO_DELETE}. "
+                f"Review SEED_COMPANY_NAMES in delete_seeds.py before proceeding."
+            )
+
+        # ── 3. Separate deletable vs user-edited ──────────────────────────────
         preserved_props: list[tuple[Property, list[str]]] = []
         deletable_props: list[Property] = []
 
@@ -121,7 +171,7 @@ def run(confirm: bool = False) -> None:
         prop_ids = {p.id for p in deletable_props}
         co_ids   = {c.id for c in deletable_cos}
 
-        # ── 3. Find dependent Opportunities ──────────────────────────────────
+        # ── 4. Find dependent Opportunities ───────────────────────────────────
         candidate_opps: list[Opportunity] = []
         if prop_ids or co_ids:
             filters = []
@@ -142,7 +192,7 @@ def run(confirm: bool = False) -> None:
 
         opp_ids = {o.id for o in deletable_opps}
 
-        # ── 4. Count affected activity logs ──────────────────────────────────
+        # ── 5. Count affected activity logs ───────────────────────────────────
         act_via_opp = 0
         if opp_ids:
             act_via_opp = (
@@ -169,7 +219,7 @@ def run(confirm: bool = False) -> None:
 
         total_activity = act_via_opp + act_on_props + act_on_cos
 
-        # ── 5. Print report ───────────────────────────────────────────────────
+        # ── 6. Print report ───────────────────────────────────────────────────
         sep = "═" * 65
         print(f"\n{sep}")
         print("DRY RUN — what WOULD be deleted:" if not confirm else "DELETION PLAN")
@@ -184,22 +234,22 @@ def run(confirm: bool = False) -> None:
             print("\n  Properties queued for deletion:")
             for p in deletable_props:
                 listed = " [LISTED]" if p.is_listed else ""
-                print(f"    [{p.property_id}] {p.address}{listed}")
+                print(f"    {p.address}{listed}")
 
         if deletable_cos:
             print("\n  Companies queued for deletion:")
             for c in deletable_cos:
-                print(f"    [{c.company_id}] {c.name} ({c.industry})")
+                print(f"    {c.name} ({c.industry})")
 
         if preserved_props or preserved_cos:
             print(f"\n{'─'*65}")
             print("  PRESERVED (user-edited seeds — will NOT be deleted):")
             for prop, reasons in preserved_props:
-                print(f"    [PROPERTY] [{prop.property_id}] {prop.address}")
+                print(f"    [PROPERTY] {prop.address}")
                 for r in reasons:
                     print(f"               ↳ {r}")
             for co, reasons in preserved_cos:
-                print(f"    [COMPANY]  [{co.company_id}] {co.name}")
+                print(f"    [COMPANY]  {co.name}")
                 for r in reasons:
                     print(f"               ↳ {r}")
         else:
@@ -220,11 +270,11 @@ def run(confirm: bool = False) -> None:
             print("Re-run with --confirm to execute the deletion.")
             return
 
-        # ── 6. Execute deletion ───────────────────────────────────────────────
+        # ── 7. Execute deletion ───────────────────────────────────────────────
         print(f"\n{sep}")
         print("Executing deletion...")
 
-        # 6a. Detach preserved opportunities (null the FK pointing to deleted entity)
+        # 7a. Detach preserved opportunities (null the FK pointing to deleted entity)
         for opp in preserved_opps:
             if opp.property_id in prop_ids:
                 opp.property_id = None
@@ -234,7 +284,7 @@ def run(confirm: bool = False) -> None:
             db.flush()
             print(f"  Detached {len(preserved_opps)} preserved opportunities (FK nulled)")
 
-        # 6b. Delete activity logs via deletable opportunities
+        # 7b. Delete activity logs via deletable opportunities
         if opp_ids:
             n = (
                 db.query(ActivityLog)
@@ -243,7 +293,7 @@ def run(confirm: bool = False) -> None:
             )
             print(f"  Deleted {n} activity logs (via opportunities)")
 
-        # 6c. Delete activity logs directly on seed properties
+        # 7c. Delete activity logs directly on seed properties
         if prop_ids:
             n = (
                 db.query(ActivityLog)
@@ -252,7 +302,7 @@ def run(confirm: bool = False) -> None:
             )
             print(f"  Deleted {n} activity logs (property direct)")
 
-        # 6d. Delete activity logs directly on seed companies
+        # 7d. Delete activity logs directly on seed companies
         if co_ids:
             n = (
                 db.query(ActivityLog)
@@ -261,7 +311,7 @@ def run(confirm: bool = False) -> None:
             )
             print(f"  Deleted {n} activity logs (company direct)")
 
-        # 6e. Delete opportunities
+        # 7e. Delete opportunities
         if opp_ids:
             n = (
                 db.query(Opportunity)
@@ -270,7 +320,7 @@ def run(confirm: bool = False) -> None:
             )
             print(f"  Deleted {n} opportunities")
 
-        # 6f. Delete companies, then properties
+        # 7f. Delete companies, then properties
         if co_ids:
             n = (
                 db.query(Company)
@@ -290,7 +340,7 @@ def run(confirm: bool = False) -> None:
         db.commit()
         print("\n✓ Seed deletion complete.")
 
-        # ── 7. Re-run pipeline on remaining data ─────────────────────────────
+        # ── 8. Re-run pipeline on remaining data ──────────────────────────────
         print(f"\n{'─'*65}")
         print("Re-running pipeline on remaining real data...")
         from app.ingestion.pipeline import run_full_pipeline  # noqa: PLC0415
