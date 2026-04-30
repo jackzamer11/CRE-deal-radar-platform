@@ -408,14 +408,75 @@ def generate_outreach(company: dict) -> dict:
         "Do not project expansion if the data shows contraction."
     ) if contraction else ""
 
+    # ── Pain probe rule — tailored to trajectory + rep ────────────────────────
+    if rep_class == "MAJOR":
+        _pp_context = "MAJOR firm rep — probe for intel needs, not pain."
+        _pp_example = (
+            f"What kind of market intel would actually be useful to your team right now — "
+            f"recent {submarket} comp activity, sublease availability, or landlord concession behavior?"
+        )
+    elif trajectory == "CONTRACTING":
+        _sf_ref = f"from {current_sf:,} SF " if current_sf else ""
+        _pp_context = "Tenant is contracting — probe for the driver."
+        _pp_example = (
+            f"What drove the right-sizing {_sf_ref}— was that cost-driven, hybrid policy, "
+            f"or part of a broader restructure?"
+        )
+    elif trajectory == "GROWING":
+        _growth_ref = f"at +{growth_pct:.0f}% YoY " if growth_pct else ""
+        _pp_context = "Tenant is growing — probe for the growth driver."
+        _pp_example = (
+            f"What's driving the team expansion {_growth_ref}— "
+            f"new contract wins, M&A, or organic growth?"
+        )
+    else:  # FLAT or AUTO
+        _sf_ref = f"across {current_sf:,} SF " if current_sf else ""
+        _pp_context = "Probe for current space-planning pressures."
+        _pp_example = (
+            f"What's the biggest pressure on your space planning {_sf_ref}this cycle — "
+            f"cost, talent attraction, hybrid model, or location?"
+        )
+
+    pain_probe_rule = (
+        f"PAIN PROBE — STRICT RULES: "
+        f"(a) Write EXACTLY ONE open-ended question. Zero setup sentences. Zero pitching before the question. "
+        f"(b) The question MUST reference at least one specific data point from the tenant record "
+        f"(current SF, growth rate, submarket, lease expiry, etc.). "
+        f"(c) FORBIDDEN in the pain probe: pitching language ('a premium address can support talent retention', "
+        f"'competitive edge', 'crucial'); multi-sentence setup before asking; "
+        f"binary yes/no questions ('Are you facing challenges?', 'Are you confident in your space?'); "
+        f"generic questions with no tenant-specific anchor. "
+        f"(d) Context: {_pp_context} "
+        f"(e) CORRECT example: \"{_pp_example}\" "
+        f"(f) BAD example (never do this): 'A premium {submarket} address can support talent retention. "
+        f"Are you facing any specific challenges in your current space?' "
+        f"— that is two sentences of pitching followed by a binary question. "
+        f"Write ONE sharp, data-anchored open question only."
+    )
+
     # ── System prompt ─────────────────────────────────────────────────────────
+    rent_ref = (
+        f"${market_rent:.2f}/SF vs ${NOVA_AVG_RENT:.2f}/SF NoVA avg"
+        if market_rent else "submarket rent vs $37.49/SF NoVA avg"
+    )
     rules = [
-        "Cite '(per CBRE Q1 2026)' on the FIRST market statistic in each message (email and call script) — establishes data credibility.",
-        f"Email body: MINIMUM 6 sentences. Subject line under 9 words.",
-        "Call script: four sections (OPENING, CORE MESSAGE, PAIN PROBE, CLOSE), each MINIMUM 3 sentences with specific data.",
+        "Cite '(per CBRE Q1 2026)' on the FIRST market statistic in each message (email and call script).",
+        (
+            f"Email body: MINIMUM 6 sentences. Subject line under 9 words. "
+            f"REQUIRED in email body — both of these comparisons must appear: "
+            f"(i) submarket vacancy vs NoVA average with the specific percentage-point delta; "
+            f"(ii) submarket rent vs NoVA average — pattern: "
+            f"'[Submarket] market rent is {rent_ref} — a [premium/discount] of $X reflecting [supply/demand reason]'. "
+            f"Both comparisons are mandatory regardless of rep status."
+        ),
+        (
+            "Call script OPENING, CORE MESSAGE, and CLOSE: MINIMUM 3 sentences each with specific data. "
+            "CORE MESSAGE must include both submarket rent vs NoVA average and vacancy comparison."
+        ),
+        pain_probe_rule,
         f'Greeting: use "{greeting}" — format "Hi {greeting},"',
-        "FORBIDDEN phrases — never write these: 'happy to discuss', 'let me know if interested', 'feel free to reach out'. Replace with a specific CTA like 'Are you free Tuesday or Wednesday for a 15-minute call?'",
-        "Always include in EVERY message: (a) contact's name in greeting, (b) submarket vacancy + rent delta vs NoVA avg, (c) one industry-specific pain point.",
+        "FORBIDDEN phrases — never write: 'happy to discuss', 'let me know if interested', 'feel free to reach out'. "
+        "Replace every CTA with a specific time proposal: 'Are you free Tuesday or Wednesday for a 15-minute call?'",
         rep_instruction,
         _industry_pain(industry),
     ]
