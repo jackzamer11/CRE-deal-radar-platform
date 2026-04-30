@@ -65,15 +65,38 @@ class CompanyListOut(BaseModel):
     company_id: str
     name: str
     industry: str
-    current_headcount: Optional[int]
-    headcount_growth_pct: Optional[float]
-    current_submarket: Optional[str]
-    lease_expiry_months: Optional[int]
-    expansion_signal: bool
-    opportunity_score: float
-    priority: str
-    signals_scored_count: int
-    insufficient_data: bool
+
+    # Contact
+    primary_contact_name: Optional[str] = None   # contact_name
+    primary_contact_phone: Optional[str] = None  # contact_phone
+    primary_contact_title: Optional[str] = None  # contact_title
+
+    # Space & financials
+    current_headcount: Optional[int] = None
+    current_sf: Optional[int] = None             # current_sf_leased
+    current_rent_psf: Optional[float] = None
+    current_submarket: Optional[str] = None
+
+    # Broker rep
+    tenant_representative: Optional[str] = None
+
+    # Lease timing
+    lease_expiry_months: Optional[int] = None    # months_until_lease_expiry
+    lease_expiry_date: Optional[date] = None     # next_break_date
+    lease_expiry_source: Optional[str] = None
+
+    # Move intent
+    future_move_flag: Optional[bool] = None
+    future_move_type: Optional[str] = None
+
+    # Signals & scoring
+    headcount_growth_pct: Optional[float] = None  # growth_rate
+    expansion_signal: bool = False
+    contraction_signal: bool = False
+    opportunity_score: float = 0.0               # composite_score
+    priority: str = "IGNORE"
+    signals_scored_count: int = 0
+    insufficient_data: bool = False
 
     class Config:
         from_attributes = True

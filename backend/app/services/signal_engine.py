@@ -21,6 +21,13 @@ CURRENT_YEAR = 2026
 NOVA_AVG_HOLD_YEARS = 7.0          # Historical NoVA office avg hold period
 MODERN_SF_PER_HEAD = 175           # Modern office space standard
 
+# Firms whose presence on tenant_representative makes a solo-agent win unlikely.
+MAJOR_BROKER_FIRMS = [
+    "JLL", "CBRE", "Cushman", "Cushman & Wakefield",
+    "Newmark", "Savills", "Avison Young", "Colliers",
+    "Lincoln Property", "Transwestern", "Eastdil",
+]
+
 
 # ---------------------------------------------------------------------------
 # HELPERS
@@ -571,6 +578,25 @@ def sig_geo_clustering(
     return 15.0  # Base signal — every NoVA submarket has industry clusters
 
 
+def sig_tenant_rep(tenant_representative: Optional[str]) -> float:
+    """
+    Tenant representative adjustment — applied as a delta to the composite score.
+
+    No rep on record    → +10  (uncontested; ideal for direct representation pitch)
+    Major-firm rep      → −25  (JLL/CBRE/etc. make the deal effectively unwinnable)
+    Regional/other rep  → −5   (existing relationship reduces win probability)
+
+    Returns a signed delta, NOT a 0-100 signal score.
+    """
+    if not tenant_representative or not tenant_representative.strip():
+        return 10.0
+    rep_lower = tenant_representative.lower()
+    for firm in MAJOR_BROKER_FIRMS:
+        if firm.lower() in rep_lower:
+            return -25.0
+    return -5.0
+
+
 def compute_tenant_opportunity_score(
     headcount_growth_pct: Optional[float],
     open_positions: int,
@@ -578,10 +604,11 @@ def compute_tenant_opportunity_score(
     lease_expiry_months: Optional[int],
     current_sf: Optional[int],
     current_submarket: Optional[str],
+    tenant_representative: Optional[str] = None,
     nearby_company_count: int = 0,
 ) -> dict:
     """
-    Weighted composite of all 5 tenant opportunity signals.
+    Weighted composite of all 5 tenant opportunity signals, plus a rep adjustment.
 
     Weights:
       Lease expiry proximity ....... 30%  (creates urgency / hard deadline)
@@ -589,6 +616,9 @@ def compute_tenant_opportunity_score(
       Space utilization ............ 20%  (current squeeze pressure)
       Hiring velocity .............. 20%  (near-term growth materialization)
       Geographic clustering ........ 5%   (market activity context)
+
+    Post-composite: tenant_representative delta applied directly to composite.
+    Major-firm rep (JLL/CBRE/etc.) drops a HIGH tenant to WORKABLE or below.
     """
     scores = {
         "headcount_growth":  sig_headcount_growth(headcount_growth_pct),
@@ -604,4 +634,10 @@ def compute_tenant_opportunity_score(
         "space_utilization": 0.20,
         "geo_clustering":    0.05,
     }
-    return _weighted_composite(scores, weights)
+    result = _weighted_composite(scores, weights)
+
+    rep_delta = sig_tenant_rep(tenant_representative)
+    result["composite"] = round(_clamp(result["composite"] + rep_delta), 2)
+    result["breakdown"]["tenant_rep_adjustment"] = rep_delta
+
+    return result

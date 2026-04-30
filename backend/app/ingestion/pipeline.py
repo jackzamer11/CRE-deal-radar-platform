@@ -157,6 +157,7 @@ def refresh_company_signals(db: Session, company: Company) -> None:
         company.lease_expiry_months,
         company.current_sf,
         company.current_submarket,
+        tenant_representative=company.tenant_representative,
         nearby_company_count=1,
     )
     breakdown = result["breakdown"]
@@ -227,6 +228,7 @@ def run_deal_creation(db: Session) -> dict:
             company.lease_expiry_months,
             company.current_sf,
             company.current_submarket,
+            tenant_representative=company.tenant_representative,
         )
         tenant_composite = tenant_result["composite"]
 

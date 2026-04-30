@@ -111,10 +111,14 @@ def _next_company_id(db: Session) -> str:
 
 
 def _apply_costar_bonus(company: Company) -> None:
-    """Bonus signal: no broker rep on record (+10); confirmed future move/relocation (+15)."""
+    """
+    Post-signal bonuses from CoStar-specific fields.
+
+    Rep adjustment is handled upstream in signal_engine.sig_tenant_rep —
+    do NOT re-apply it here.  This function only applies the future-move
+    bonus (+15) which has no signal-engine equivalent.
+    """
     bonus = 0.0
-    if not company.tenant_representative:
-        bonus += 10.0
     if company.future_move_flag:
         ft = (company.future_move_type or "").lower()
         if any(kw in ft for kw in ("reloc", "expan", "move", "requir")):
@@ -206,6 +210,7 @@ def _run_signals(company: Company) -> None:
         company.lease_expiry_months,
         company.current_sf,
         company.current_submarket,
+        tenant_representative=company.tenant_representative,
         nearby_company_count=1,
     )
     breakdown = result["breakdown"]

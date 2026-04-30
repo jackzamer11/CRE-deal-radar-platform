@@ -52,6 +52,53 @@ TRACKER_SHEET_ID = os.environ.get("TRACKER_SHEET_ID", "")
 
 SF_PER_PERSON = 175   # industry standard for NoVA office
 
+# Submarket benchmarks — mirror backend/app/config.py (keep in sync)
+SUBMARKET_MARKET_RENT: dict[str, float] = {
+    "Arlington (Clarendon)":     33.0,
+    "Arlington (Rosslyn)":       34.0,
+    "Arlington (Ballston)":      34.0,
+    "Arlington (Columbia Pike)": 22.0,
+    "Alexandria (Old Town)":     26.0,
+    "Tysons":                    27.0,
+    "Reston":                    28.5,
+    "Falls Church":              23.5,
+    "McLean":                    33.0,
+    "Vienna":                    31.33,
+    "Fairfax City":              28.0,
+}
+
+SUBMARKET_AVG_VACANCY: dict[str, float] = {
+    "Arlington (Clarendon)":     18.0,
+    "Arlington (Rosslyn)":       22.0,
+    "Arlington (Ballston)":      19.0,
+    "Arlington (Columbia Pike)": 28.0,
+    "Alexandria (Old Town)":     16.0,
+    "Tysons":                    26.0,
+    "Reston":                    24.0,
+    "Falls Church":              30.0,
+    "McLean":                    21.0,
+    "Vienna":                    25.0,
+    "Fairfax City":              32.0,
+}
+
+MAJOR_BROKER_FIRMS: list[str] = [
+    "JLL", "CBRE", "Cushman", "Cushman & Wakefield",
+    "Newmark", "Savills", "Avison Young", "Colliers",
+    "Lincoln Property", "Transwestern", "Eastdil",
+]
+
+
+def classify_rep(tenant_rep: Optional[str]) -> str:
+    """Returns 'BLANK', 'MAJOR', or 'OTHER'."""
+    if not tenant_rep or not tenant_rep.strip():
+        return "BLANK"
+    rep_lower = tenant_rep.lower()
+    for firm in MAJOR_BROKER_FIRMS:
+        if firm.lower() in rep_lower:
+            return "MAJOR"
+    return "OTHER"
+
+
 # ── Google Auth ───────────────────────────────────────────────────────────────
 
 def get_google_services():
@@ -154,43 +201,175 @@ def init_tracker_sheet(sheets_svc):
 
 # ── SF Projection ─────────────────────────────────────────────────────────────
 
-def project_sf(headcount, growth_pct):
-    if growth_pct:
-        projected = headcount * (1 + growth_pct / 100)
-    else:
-        projected = headcount * 1.15
-    return math.ceil(projected * SF_PER_PERSON / 100) * 100
+def project_sf(company: dict) -> Optional[int]:
+    """
+    Project SF needed at the 12-18 month horizon using actual SF/head
+    as baseline when available, avoiding the naive headcount × 175 formula
+    that badly misfires for tenants who have already right-sized.
+
+    Tiers based on current SF per employee:
+      < 100 SF/head  → space-constrained; project up 15% from current footprint
+      100-200 SF/head → normal range; extrapolate at their actual ratio
+      > 200 SF/head  → space-rich (right-sizing trend); project up only 5%
+
+    Falls back to headcount × growth × 175 when current_sf is unknown.
+    """
+    current_sf  = company.get("current_sf")
+    headcount   = company.get("current_headcount")
+    growth_pct  = company.get("headcount_growth_pct")
+    growth_rate = (growth_pct / 100.0) if growth_pct is not None else 0.15
+
+    if current_sf and headcount:
+        sf_per_employee     = current_sf / headcount
+        projected_headcount = headcount * (1 + growth_rate)
+
+        if sf_per_employee < 100:
+            return math.ceil(current_sf * 1.15 / 100) * 100
+        elif sf_per_employee <= 200:
+            return math.ceil(projected_headcount * sf_per_employee / 100) * 100
+        else:
+            return math.ceil(current_sf * 1.05 / 100) * 100
+
+    if headcount:
+        return math.ceil(headcount * (1 + growth_rate) * SF_PER_PERSON / 100) * 100
+    return None
 
 # ── OpenAI Generation ─────────────────────────────────────────────────────────
+
+def _industry_pain(industry: str) -> str:
+    i = industry.lower()
+    if any(k in i for k in ("federal", "government", "defense", "contractor", "dod")):
+        return (
+            "Federal contractor frame: contract pipeline uncertainty and the cost of a forced "
+            "move during a re-compete or ramp period. Emphasize optionality and speed to execute."
+        )
+    if any(k in i for k in ("health", "clinical", "medical", "pharma", "biotech")):
+        return (
+            "Healthcare frame: clinical space specs, ADA compliance, build-out lead times, "
+            "and operational disruption risk of an unplanned relocation."
+        )
+    if any(k in i for k in ("consult", "advisory", "law", "legal", "accounting", "cpa")):
+        return (
+            "Professional services frame: hybrid-work density trends, client-facing image, "
+            "and right-sizing opportunities available in the current sublease market."
+        )
+    if any(k in i for k in ("tech", "software", "cyber", "data", "ai", "cloud", "saas")):
+        return (
+            "Tech frame: collaboration-first floorplates, fiber/power infrastructure, "
+            "and talent-retention value of a premium submarket address."
+        )
+    return (
+        "NoVA office frame: flight-to-quality trend, growing sublease supply, "
+        "and landlord concession packages (free rent, TI allowances) available now."
+    )
+
 
 def generate_outreach(company: dict) -> dict:
     client = OpenAI()   # reads OPENAI_API_KEY from environment
 
-    headcount    = company["current_headcount"]
-    growth_pct   = company.get("headcount_growth_pct")
-    projected_sf = project_sf(headcount, growth_pct)
-    lease_mo     = company.get("lease_expiry_months", "unknown")
-    submarket    = company["current_submarket"]
-    industry     = company["industry"].split("(")[0].strip()
+    # ── Core data ─────────────────────────────────────────────────────────────
     company_name = company["name"]
-    growth_str   = f"+{growth_pct:.0f}%" if growth_pct else "stable"
+    submarket    = company.get("current_submarket") or ""
+    headcount    = company.get("current_headcount")
+    growth_pct   = company.get("headcount_growth_pct")
+    current_sf   = company.get("current_sf")
+    projected_sf = project_sf(company)
+    lease_mo     = company.get("lease_expiry_months")
+    lease_date   = company.get("lease_expiry_date") or ""
+    industry     = (company.get("industry") or "").split("(")[0].strip()
+    contact_name = company.get("primary_contact_name") or ""
+    contact_title = company.get("primary_contact_title") or ""
+    tenant_rep   = company.get("tenant_representative") or ""
+    rep_class    = classify_rep(tenant_rep)
+    current_rent = company.get("current_rent_psf")
+    future_flag  = company.get("future_move_flag")
+    future_type  = company.get("future_move_type") or ""
 
-    prompt = f"""You are {AGENT_NAME} from {FIRM_NAME}, a commercial real estate broker
-specializing in Northern Virginia office leasing.
+    # ── Market benchmarks ─────────────────────────────────────────────────────
+    market_rent  = SUBMARKET_MARKET_RENT.get(submarket)
+    avg_vacancy  = SUBMARKET_AVG_VACANCY.get(submarket)
 
-Generate TWO pieces of outreach for this tenant lead. Use ONLY the data provided.
-Be specific, confident, and direct. No fluff. Sound like a sharp broker, not a template.
+    # ── Formatted strings ─────────────────────────────────────────────────────
+    growth_str = f"+{growth_pct:.1f}%" if growth_pct else "stable"
+    lease_str  = f"{lease_mo} months" if lease_mo is not None else "unknown"
+    if lease_date:
+        lease_str += f" (break date {lease_date})"
 
-COMPANY DATA:
-- Name: {company_name}
-- Industry: {industry}
-- Headcount: {headcount} employees, growing at {growth_str}
-- Projected SF needed (12-18 mo): {projected_sf:,} SF
-- Lease expiry: {lease_mo} months
-- Submarket: {submarket}
-- Opportunity score: {company['opportunity_score']:.0f}/100
+    sf_line = f"{current_sf:,} SF currently" if current_sf else "SF unknown"
+    if projected_sf and current_sf:
+        delta     = projected_sf - current_sf
+        sign      = "+" if delta >= 0 else ""
+        sf_line  += f" → projected {projected_sf:,} SF ({sign}{delta:,} SF)"
+    elif projected_sf:
+        sf_line  += f"; projected need {projected_sf:,} SF"
 
-OUTPUT FORMAT — return valid JSON only, no markdown, no extra text:
+    rent_line = "in-place rent unknown"
+    if current_rent and market_rent:
+        diff = round(current_rent - market_rent, 2)
+        sign = "+" if diff >= 0 else ""
+        if diff > 2:
+            context = "above market — renegotiation pressure likely at renewal"
+        elif diff < -2:
+            context = "below market — favorable rate they'll want to preserve"
+        else:
+            context = "at-market"
+        rent_line = f"${current_rent:.2f}/SF in-place vs ${market_rent:.2f}/SF market ({sign}${diff:.2f} — {context})"
+    elif market_rent:
+        rent_line = f"in-place rate unknown; {submarket} market benchmark ${market_rent:.2f}/SF"
+
+    vacancy_line = f"{avg_vacancy:.0f}% avg submarket vacancy" if avg_vacancy else ""
+    future_line  = f"Future move flagged: YES — {future_type}" if future_flag else ""
+    greeting     = contact_name if contact_name else "there"
+
+    # Contraction signal: SF/head > 230 = likely right-sizing
+    contraction = bool(
+        company.get("contraction_signal")
+        or (current_sf and headcount and headcount > 0 and (current_sf / headcount) > 230)
+    )
+
+    # ── Rep-specific framing instruction ──────────────────────────────────────
+    if rep_class == "MAJOR":
+        rep_instruction = (
+            f"Tenant is already represented by {tenant_rep} (major brokerage). "
+            "Do NOT pitch direct representation — you will lose that battle. "
+            f"Pivot to market resource framing: 'I'd love to be a resource — happy to share "
+            f"recent {submarket} comps and deal activity if useful as a local complement.' "
+            "Never position yourself against a major firm."
+        )
+    elif rep_class == "OTHER":
+        rep_instruction = (
+            f"Tenant has a regional rep on record ({tenant_rep}). Lead with your specific "
+            f"{submarket} deal flow knowledge; let value open the door rather than challenging "
+            "the existing relationship directly."
+        )
+    else:
+        rep_instruction = (
+            "Tenant has NO broker rep on record. "
+            "Pitch direct tenant representation explicitly and confidently."
+        )
+
+    contraction_note = (
+        "Tenant shows right-sizing signals (high SF/employee or contraction flag). "
+        "Acknowledge this: 'I noticed your footprint has evolved — happy to walk "
+        "through current availability that fits your actual operating model.' "
+        "Do not project expansion if the data shows contraction."
+    ) if contraction else ""
+
+    # ── Prompts ───────────────────────────────────────────────────────────────
+    system_prompt = f"""You are {AGENT_NAME} from {FIRM_NAME}, a senior commercial real estate broker
+specializing in Northern Virginia office tenant representation.
+You write precise, data-driven outreach. Every message cites real numbers. No boilerplate.
+
+RULES:
+1. Reference AT LEAST TWO specific data points (rent delta, SF projection, lease timing, vacancy %).
+2. Email body: 4-6 sentences. Subject line under 9 words.
+3. Call script: four sections (OPENING, CORE MESSAGE, PAIN PROBE, CLOSE), each 2-3 sentences with specific data.
+4. Greeting: use "{greeting}" — format "Hi {greeting},"
+5. {rep_instruction}
+6. {_industry_pain(industry)}
+{('7. ' + contraction_note) if contraction_note else ''}
+
+Return valid JSON only — no markdown fences, no extra text:
 {{
   "call_script": {{
     "opening": "...",
@@ -202,25 +381,39 @@ OUTPUT FORMAT — return valid JSON only, no markdown, no extra text:
     "subject": "...",
     "body": "..."
   }}
-}}
+}}"""
 
-RULES:
-- Call script opening asks for 3 minutes. Core message cites the projected SF number
-  and lease window. Pain probe asks one open question about their real hiring/space constraint.
-  Close offers a specific next step (30-min meeting, specific submarket buildings).
-- Email: subject under 8 words, body under 150 words, same data points, ends with one CTA.
-  Sign off as {AGENT_NAME} | {FIRM_NAME}.
-- Do NOT invent contact names. Greeting should be "Hi there," if no name available.
-- Return ONLY the JSON object. No markdown fences. No preamble.
-"""
+    user_prompt = f"""Generate personalized outreach for this NoVA office tenant:
+
+COMPANY: {company_name}
+INDUSTRY: {industry}
+CONTACT: {contact_name or 'Unknown'}{(' — ' + contact_title) if contact_title else ''}
+SUBMARKET: {submarket}
+
+MARKET CONTEXT:
+  Market rent:    ${market_rent:.2f}/SF/yr NNN
+  {vacancy_line}
+
+TENANT DATA:
+  Headcount:      {headcount or 'unknown'} employees
+  Growth rate:    {growth_str} YoY
+  SF footprint:   {sf_line}
+  Rent situation: {rent_line}
+  Lease expiry:   {lease_str}
+  Broker rep:     {tenant_rep or 'NONE ON RECORD'} [{rep_class}]
+  {future_line}
+
+SIGNAL SCORE: {company.get('opportunity_score', 0):.0f}/100 ({company.get('priority', '')})
+
+Sign off as {AGENT_NAME} | {FIRM_NAME}."""
 
     response = client.chat.completions.create(
         model=OPENAI_MODEL,
         messages=[
-            {"role": "system", "content": "You are a precise commercial real estate outreach assistant. Return only valid JSON."},
-            {"role": "user",   "content": prompt},
+            {"role": "system", "content": system_prompt},
+            {"role": "user",   "content": user_prompt},
         ],
-        temperature=0.7,
+        temperature=0.4,
         response_format={"type": "json_object"},
     )
 
@@ -242,7 +435,7 @@ COMPANY SNAPSHOT
 Priority: {company['priority']} | Score: {company['opportunity_score']:.0f}/100
 Headcount: {company['current_headcount']} | Growth: {company.get('headcount_growth_pct', 'N/A')}%
 Submarket: {company['current_submarket']} | Lease Expiry: {company.get('lease_expiry_months', 'N/A')} months
-Projected SF needed: {project_sf(company['current_headcount'], company.get('headcount_growth_pct')):,} SF
+Projected SF needed: {f"{project_sf(company):,} SF" if project_sf(company) else "N/A"}
 
 {'='*60}
 TENANT CALL SCRIPT
