@@ -75,6 +75,9 @@ class Company(Base):
     # Timestamps
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    # Set to utcnow() on every user-initiated PATCH; used to guard against
+    # automated pipeline overwrites on manually-verified records.
+    last_modified_by_user = Column(DateTime, nullable=True)
 
     # Relationships
     opportunities = relationship("Opportunity", back_populates="company")

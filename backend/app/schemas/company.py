@@ -56,6 +56,7 @@ class CompanyOut(CompanyBase):
     insufficient_data: bool
     created_at: datetime
     updated_at: datetime
+    last_modified_by_user: Optional[datetime] = None
 
     class Config:
         from_attributes = True

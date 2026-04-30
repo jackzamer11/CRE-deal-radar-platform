@@ -13,6 +13,10 @@ OPTION B — Raw SQLite shell:
     sqlite3 deal_radar.db
     ALTER TABLE companies ADD COLUMN lease_trajectory TEXT NOT NULL DEFAULT 'AUTO';
     .quit
+
+IMPORTANT: This migration does not modify any existing column values.
+           It only adds the new column with a DEFAULT — all existing rows
+           retain their current values verbatim.
 """
 import os
 import sqlite3

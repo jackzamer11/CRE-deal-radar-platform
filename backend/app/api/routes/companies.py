@@ -39,7 +39,19 @@ COSTAR_SUBMARKET_MAP: dict = {
     "tysons/vienna":        "Vienna",
     "fairfax city":         "Fairfax City",
     "fairfax":              "Fairfax City",
+    # Mappings observed from CoStar Tenant Locations exports as of 2026-04-30.
+    # When new "unmapped submarket" warnings appear in import results, append new entries here.
+    # I-395 Corridor: heuristic mapping to Arlington (Columbia Pike); CoStar's I-395 Corridor
+    # without borough qualifier is ambiguous — verify per-row addresses if accuracy matters.
+    "clarendon/courthouse":   "Arlington (Clarendon)",
+    "i-395 corridor":         "Arlington (Columbia Pike)",
+    "tysons corner/mclean":   "Tysons",
 }
+
+# Sources that represent user-verified data — never overwritten by automated imports.
+PROTECTED_LEASE_SOURCES = frozenset(
+    {"manual", "compstak", "sec_filing", "landlord_confirmed", "public_record"}
+)
 
 COSTAR_TENANT_COLS = [
     "Address", "Tenant Name", "Industry", "Employees", "Website",
@@ -435,9 +447,17 @@ async def costar_tenant_import(
             c.current_address       = payload["current_address"]
             c.current_submarket     = payload["current_submarket"]
             c.current_sf            = payload["current_sf"]
-            c.lease_expiry_months   = payload["lease_expiry_months"]
-            if payload["lease_expiry_months"] is not None:
-                c.lease_expiry_source = "costar"
+            # Guard: never overwrite user-verified lease data with CoStar's value.
+            # If the existing record has a protected source AND a verified date,
+            # the user has manually confirmed this data — CoStar cannot override it.
+            _lease_protected = (
+                c.lease_expiry_source in PROTECTED_LEASE_SOURCES
+                and c.lease_expiry_last_verified is not None
+            )
+            if not _lease_protected:
+                c.lease_expiry_months = payload["lease_expiry_months"]
+                if payload["lease_expiry_months"] is not None:
+                    c.lease_expiry_source = "costar"
             c.primary_contact_name  = payload["primary_contact_name"] or c.primary_contact_name
             c.primary_contact_phone = payload["primary_contact_phone"] or c.primary_contact_phone
             c.tenant_representative = payload["tenant_representative"]
@@ -509,7 +529,7 @@ def get_company(company_id: str, db: Session = Depends(get_db)):
     return company
 
 
-VALID_LEASE_SOURCES = {"costar", "manual", "sec_filing", "landlord_confirmed", "public_record"}
+VALID_LEASE_SOURCES = {"costar", "manual", "compstak", "sec_filing", "landlord_confirmed", "public_record"}
 
 
 class LeaseExpiryUpdate(BaseModel):
@@ -553,6 +573,7 @@ def update_lease_expiry(
 
     company.lease_expiry_source        = payload.lease_expiry_source
     company.lease_expiry_last_verified = date.today()
+    company.last_modified_by_user      = datetime.utcnow()
 
     _run_signals(company)
     db.commit()
@@ -582,7 +603,8 @@ def update_lease_trajectory(
             status_code=422,
             detail=f"Invalid lease_trajectory; must be one of {sorted(VALID_TRAJECTORIES)}",
         )
-    company.lease_trajectory = payload.lease_trajectory
+    company.lease_trajectory      = payload.lease_trajectory
+    company.last_modified_by_user = datetime.utcnow()
     db.commit()
     db.refresh(company)
     return company
