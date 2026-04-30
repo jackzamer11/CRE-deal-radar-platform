@@ -75,6 +75,12 @@ export const updateCompanyLease = (
 ): Promise<CompanyOut> =>
   api.patch(`/companies/${companyId}/lease`, payload).then(r => r.data)
 
+export const updateCompanyTrajectory = (
+  companyId: string,
+  lease_trajectory: string,
+): Promise<CompanyOut> =>
+  api.patch(`/companies/${companyId}/trajectory`, { lease_trajectory }).then(r => r.data)
+
 // ── Opportunities ──────────────────────────────────────────────────────────
 
 export interface OpportunityFilters {

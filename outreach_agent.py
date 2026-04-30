@@ -52,33 +52,41 @@ TRACKER_SHEET_ID = os.environ.get("TRACKER_SHEET_ID", "")
 
 SF_PER_PERSON = 175   # industry standard for NoVA office
 
-# Submarket benchmarks — mirror backend/app/config.py (keep in sync)
+# ── CBRE Q1 2026 Northern Virginia Office Benchmarks ──────────────────────────
+# Source: CBRE Research, Q1 2026 (Northern Virginia Office Figures)
+# Update quarterly when new CBRE report releases (sync with backend/app/config.py)
+
+NOVA_AVG_RENT    = 37.49   # $/SF/yr NNN, market-wide NoVA average
+NOVA_AVG_VACANCY = 21.8    # % vacancy, market-wide NoVA average
+NOVA_AVG_FREE_RENT_MONTHS = 6    # estimate — update when CompStak active
+NOVA_AVG_TI_PSF           = 60   # estimate — update when CompStak active
+
 SUBMARKET_MARKET_RENT: dict[str, float] = {
-    "Arlington (Clarendon)":     33.0,
-    "Arlington (Rosslyn)":       34.0,
-    "Arlington (Ballston)":      34.0,
-    "Arlington (Columbia Pike)": 22.0,
-    "Alexandria (Old Town)":     26.0,
-    "Tysons":                    27.0,
-    "Reston":                    28.5,
-    "Falls Church":              23.5,
-    "McLean":                    33.0,
-    "Vienna":                    31.33,
-    "Fairfax City":              28.0,
+    "Arlington (Clarendon)":     42.93,
+    "Arlington (Rosslyn)":       46.85,
+    "Arlington (Ballston)":      43.19,
+    "Arlington (Columbia Pike)": 28.22,
+    "Alexandria (Old Town)":     36.73,
+    "Tysons":                    39.10,
+    "Reston":                    37.84,
+    "Falls Church":              27.87,
+    "McLean":                    39.21,
+    "Vienna":                    24.16,
+    "Fairfax City":              26.23,
 }
 
 SUBMARKET_AVG_VACANCY: dict[str, float] = {
-    "Arlington (Clarendon)":     18.0,
-    "Arlington (Rosslyn)":       22.0,
-    "Arlington (Ballston)":      19.0,
-    "Arlington (Columbia Pike)": 28.0,
-    "Alexandria (Old Town)":     16.0,
-    "Tysons":                    26.0,
-    "Reston":                    24.0,
-    "Falls Church":              30.0,
-    "McLean":                    21.0,
-    "Vienna":                    25.0,
-    "Fairfax City":              32.0,
+    "Arlington (Clarendon)":     26.5,
+    "Arlington (Rosslyn)":       20.6,
+    "Arlington (Ballston)":      21.1,
+    "Arlington (Columbia Pike)": 32.1,
+    "Alexandria (Old Town)":     17.6,
+    "Tysons":                    27.3,
+    "Reston":                    22.9,
+    "Falls Church":              10.4,
+    "McLean":                     7.4,
+    "Vienna":                     5.2,
+    "Fairfax City":               8.5,
 }
 
 MAJOR_BROKER_FIRMS: list[str] = [
@@ -203,28 +211,37 @@ def init_tracker_sheet(sheets_svc):
 
 def project_sf(company: dict) -> Optional[int]:
     """
-    Project SF needed at the 12-18 month horizon using actual SF/head
-    as baseline when available, avoiding the naive headcount × 175 formula
-    that badly misfires for tenants who have already right-sized.
+    Project SF needed at the 12-18 month horizon.
 
-    Tiers based on current SF per employee:
+    lease_trajectory overrides:
+      CONTRACTING → return current_sf (tenant right-sizing; no growth multiplier)
+      FLAT        → return current_sf (steady-state footprint)
+      GROWING     → force tiered SF/head growth logic regardless of SF/head ratio
+      AUTO / null → tiered logic based on actual SF/employee
+
+    Tiered logic (AUTO or GROWING):
       < 100 SF/head  → space-constrained; project up 15% from current footprint
-      100-200 SF/head → normal range; extrapolate at their actual ratio
-      > 200 SF/head  → space-rich (right-sizing trend); project up only 5%
+      100-200 SF/head → extrapolate at actual SF/head ratio × projected headcount
+      > 200 SF/head  → space-rich; project up only 5%
 
     Falls back to headcount × growth × 175 when current_sf is unknown.
     """
-    current_sf  = company.get("current_sf")
-    headcount   = company.get("current_headcount")
-    growth_pct  = company.get("headcount_growth_pct")
-    growth_rate = (growth_pct / 100.0) if growth_pct is not None else 0.15
+    current_sf   = company.get("current_sf")
+    headcount    = company.get("current_headcount")
+    growth_pct   = company.get("headcount_growth_pct")
+    trajectory   = (company.get("lease_trajectory") or "AUTO").upper()
+    growth_rate  = (growth_pct / 100.0) if growth_pct is not None else 0.15
+
+    # Broker-set trajectory overrides
+    if trajectory in ("CONTRACTING", "FLAT"):
+        return current_sf  # no change; may be None if SF unknown
 
     if current_sf and headcount:
         sf_per_employee     = current_sf / headcount
         projected_headcount = headcount * (1 + growth_rate)
 
-        if sf_per_employee < 100:
-            return math.ceil(current_sf * 1.15 / 100) * 100
+        if trajectory == "GROWING" or sf_per_employee < 100:
+            return math.ceil(current_sf * (1 + growth_rate) / 100) * 100
         elif sf_per_employee <= 200:
             return math.ceil(projected_headcount * sf_per_employee / 100) * 100
         else:
@@ -268,26 +285,31 @@ def generate_outreach(company: dict) -> dict:
     client = OpenAI()   # reads OPENAI_API_KEY from environment
 
     # ── Core data ─────────────────────────────────────────────────────────────
-    company_name = company["name"]
-    submarket    = company.get("current_submarket") or ""
-    headcount    = company.get("current_headcount")
-    growth_pct   = company.get("headcount_growth_pct")
-    current_sf   = company.get("current_sf")
-    projected_sf = project_sf(company)
-    lease_mo     = company.get("lease_expiry_months")
-    lease_date   = company.get("lease_expiry_date") or ""
-    industry     = (company.get("industry") or "").split("(")[0].strip()
-    contact_name = company.get("primary_contact_name") or ""
+    company_name  = company["name"]
+    submarket     = company.get("current_submarket") or ""
+    headcount     = company.get("current_headcount")
+    growth_pct    = company.get("headcount_growth_pct")
+    current_sf    = company.get("current_sf")
+    projected_sf  = project_sf(company)
+    lease_mo      = company.get("lease_expiry_months")
+    lease_date    = company.get("lease_expiry_date") or ""
+    industry      = (company.get("industry") or "").split("(")[0].strip()
+    contact_name  = company.get("primary_contact_name") or ""
     contact_title = company.get("primary_contact_title") or ""
-    tenant_rep   = company.get("tenant_representative") or ""
-    rep_class    = classify_rep(tenant_rep)
-    current_rent = company.get("current_rent_psf")
-    future_flag  = company.get("future_move_flag")
-    future_type  = company.get("future_move_type") or ""
+    tenant_rep    = company.get("tenant_representative") or ""
+    rep_class     = classify_rep(tenant_rep)
+    current_rent  = company.get("current_rent_psf")
+    future_flag   = company.get("future_move_flag")
+    future_type   = company.get("future_move_type") or ""
+    trajectory    = (company.get("lease_trajectory") or "AUTO").upper()
 
     # ── Market benchmarks ─────────────────────────────────────────────────────
     market_rent  = SUBMARKET_MARKET_RENT.get(submarket)
     avg_vacancy  = SUBMARKET_AVG_VACANCY.get(submarket)
+
+    # Deltas vs NoVA-wide average (per CBRE Q1 2026)
+    rent_vs_nova    = round(market_rent - NOVA_AVG_RENT, 2)    if market_rent  else None
+    vacancy_vs_nova = round(avg_vacancy  - NOVA_AVG_VACANCY, 1) if avg_vacancy else None
 
     # ── Formatted strings ─────────────────────────────────────────────────────
     growth_str = f"+{growth_pct:.1f}%" if growth_pct else "stable"
@@ -297,11 +319,11 @@ def generate_outreach(company: dict) -> dict:
 
     sf_line = f"{current_sf:,} SF currently" if current_sf else "SF unknown"
     if projected_sf and current_sf:
-        delta     = projected_sf - current_sf
-        sign      = "+" if delta >= 0 else ""
-        sf_line  += f" → projected {projected_sf:,} SF ({sign}{delta:,} SF)"
+        delta    = projected_sf - current_sf
+        sign     = "+" if delta >= 0 else ""
+        sf_line += f" → projected {projected_sf:,} SF ({sign}{delta:,} SF)"
     elif projected_sf:
-        sf_line  += f"; projected need {projected_sf:,} SF"
+        sf_line += f"; projected need {projected_sf:,} SF"
 
     rent_line = "in-place rent unknown"
     if current_rent and market_rent:
@@ -315,25 +337,51 @@ def generate_outreach(company: dict) -> dict:
             context = "at-market"
         rent_line = f"${current_rent:.2f}/SF in-place vs ${market_rent:.2f}/SF market ({sign}${diff:.2f} — {context})"
     elif market_rent:
-        rent_line = f"in-place rate unknown; {submarket} market benchmark ${market_rent:.2f}/SF"
+        rent_line = f"in-place rate unknown; {submarket} market benchmark ${market_rent:.2f}/SF (per CBRE Q1 2026)"
 
-    vacancy_line = f"{avg_vacancy:.0f}% avg submarket vacancy" if avg_vacancy else ""
+    vacancy_str = f"{avg_vacancy:.1f}%" if avg_vacancy else "unknown"
+    if vacancy_vs_nova is not None:
+        vac_sign = "+" if vacancy_vs_nova >= 0 else ""
+        vacancy_str += f" ({vac_sign}{vacancy_vs_nova:.1f}pp vs {NOVA_AVG_VACANCY:.1f}% NoVA avg, per CBRE Q1 2026)"
+
+    rent_vs_nova_str = ""
+    if rent_vs_nova is not None:
+        r_sign = "+" if rent_vs_nova >= 0 else ""
+        rent_vs_nova_str = f"{submarket} rent ${market_rent:.2f}/SF is {r_sign}${rent_vs_nova:.2f} vs ${NOVA_AVG_RENT:.2f}/SF NoVA avg"
+
     future_line  = f"Future move flagged: YES — {future_type}" if future_flag else ""
     greeting     = contact_name if contact_name else "there"
 
-    # Contraction signal: SF/head > 230 = likely right-sizing
+    # Contraction signal: explicit flag, broker override, or SF/head > 230
     contraction = bool(
-        company.get("contraction_signal")
+        trajectory == "CONTRACTING"
+        or company.get("contraction_signal")
         or (current_sf and headcount and headcount > 0 and (current_sf / headcount) > 230)
     )
 
-    # ── Rep-specific framing instruction ──────────────────────────────────────
+    trajectory_note = ""
+    if trajectory == "CONTRACTING":
+        trajectory_note = (
+            "Broker has confirmed this tenant is contracting. Acknowledge the right-sizing: "
+            "'I noticed your footprint has evolved — I'm seeing a lot of quality smaller suites "
+            "come to market in {submarket} right now that fit a leaner operating model.' "
+            "Do NOT project expansion."
+        ).format(submarket=submarket)
+    elif trajectory == "FLAT":
+        trajectory_note = "Tenant is in steady-state mode. Focus on lease timing and market rate opportunity, not expansion."
+
+    # ── Rep-specific framing ───────────────────────────────────────────────────
     if rep_class == "MAJOR":
         rep_instruction = (
             f"Tenant is already represented by {tenant_rep} (major brokerage). "
-            "Do NOT pitch direct representation — you will lose that battle. "
-            f"Pivot to market resource framing: 'I'd love to be a resource — happy to share "
-            f"recent {submarket} comps and deal activity if useful as a local complement.' "
+            "Do NOT pitch direct representation. "
+            f"Pivot to market resource framing: position yourself as a {submarket}-specialist complement. "
+            "REQUIRED: Reference at least one quantitative comparison vs. the NoVA average. "
+            f"Example: '{submarket} vacancy is sitting at {avg_vacancy:.1f}% — "
+            f"well above the {NOVA_AVG_VACANCY:.1f}% NoVA average (per CBRE Q1 2026) — "
+            "which means landlords have lost negotiating leverage. "
+            f"Recent NoVA renewals are seeing {NOVA_AVG_FREE_RENT_MONTHS}+ months free rent "
+            f"and ${NOVA_AVG_TI_PSF}+/SF TI on average.' "
             "Never position yourself against a major firm."
         )
     elif rep_class == "OTHER":
@@ -344,30 +392,46 @@ def generate_outreach(company: dict) -> dict:
         )
     else:
         rep_instruction = (
-            "Tenant has NO broker rep on record. "
-            "Pitch direct tenant representation explicitly and confidently."
+            "Tenant has NO broker rep on record. Pitch direct tenant representation explicitly and confidently. "
+            "REQUIRED: Reference one specific market dislocation. "
+            f"Example: If in-place rent is known, calculate annual savings vs. market rate. "
+            f"If unknown, reference the {submarket} market rate of ${market_rent:.2f}/SF vs the "
+            f"${NOVA_AVG_RENT:.2f}/SF NoVA average (per CBRE Q1 2026)."
+        ) if market_rent else (
+            "Tenant has NO broker rep on record. Pitch direct tenant representation explicitly and confidently."
         )
 
     contraction_note = (
-        "Tenant shows right-sizing signals (high SF/employee or contraction flag). "
-        "Acknowledge this: 'I noticed your footprint has evolved — happy to walk "
+        "Tenant shows right-sizing signals. "
+        "Acknowledge this gracefully: 'I noticed your footprint has evolved — happy to walk "
         "through current availability that fits your actual operating model.' "
         "Do not project expansion if the data shows contraction."
     ) if contraction else ""
 
-    # ── Prompts ───────────────────────────────────────────────────────────────
+    # ── System prompt ─────────────────────────────────────────────────────────
+    rules = [
+        "Cite '(per CBRE Q1 2026)' on the FIRST market statistic in each message (email and call script) — establishes data credibility.",
+        f"Email body: MINIMUM 6 sentences. Subject line under 9 words.",
+        "Call script: four sections (OPENING, CORE MESSAGE, PAIN PROBE, CLOSE), each MINIMUM 3 sentences with specific data.",
+        f'Greeting: use "{greeting}" — format "Hi {greeting},"',
+        "FORBIDDEN phrases — never write these: 'happy to discuss', 'let me know if interested', 'feel free to reach out'. Replace with a specific CTA like 'Are you free Tuesday or Wednesday for a 15-minute call?'",
+        "Always include in EVERY message: (a) contact's name in greeting, (b) submarket vacancy + rent delta vs NoVA avg, (c) one industry-specific pain point.",
+        rep_instruction,
+        _industry_pain(industry),
+    ]
+    if trajectory_note:
+        rules.append(trajectory_note)
+    if contraction_note:
+        rules.append(contraction_note)
+
+    numbered_rules = "\n".join(f"{i+1}. {r}" for i, r in enumerate(rules))
+
     system_prompt = f"""You are {AGENT_NAME} from {FIRM_NAME}, a senior commercial real estate broker
 specializing in Northern Virginia office tenant representation.
-You write precise, data-driven outreach. Every message cites real numbers. No boilerplate.
+You write precise, data-driven outreach backed by CBRE Q1 2026 market data. No boilerplate.
 
 RULES:
-1. Reference AT LEAST TWO specific data points (rent delta, SF projection, lease timing, vacancy %).
-2. Email body: 4-6 sentences. Subject line under 9 words.
-3. Call script: four sections (OPENING, CORE MESSAGE, PAIN PROBE, CLOSE), each 2-3 sentences with specific data.
-4. Greeting: use "{greeting}" — format "Hi {greeting},"
-5. {rep_instruction}
-6. {_industry_pain(industry)}
-{('7. ' + contraction_note) if contraction_note else ''}
+{numbered_rules}
 
 Return valid JSON only — no markdown fences, no extra text:
 {{
@@ -383,16 +447,29 @@ Return valid JSON only — no markdown fences, no extra text:
   }}
 }}"""
 
+    # ── User prompt ───────────────────────────────────────────────────────────
+    nova_context = f"""NoVA MARKET BENCHMARKS (CBRE Q1 2026):
+  NoVA avg rent:        ${NOVA_AVG_RENT:.2f}/SF/yr NNN
+  NoVA avg vacancy:     {NOVA_AVG_VACANCY:.1f}%
+  Avg free rent:        {NOVA_AVG_FREE_RENT_MONTHS} months (estimate)
+  Avg TI allowance:     ${NOVA_AVG_TI_PSF}/SF (estimate)
+  Avg lease term:       7 years"""
+
+    submarket_context = f"""SUBMARKET BENCHMARKS — {submarket} (CBRE Q1 2026):
+  Market rent:          ${market_rent:.2f}/SF/yr NNN  ({rent_vs_nova_str})
+  Submarket vacancy:    {vacancy_str}""" if market_rent else f"SUBMARKET: {submarket} (no benchmark data)"
+
     user_prompt = f"""Generate personalized outreach for this NoVA office tenant:
 
 COMPANY: {company_name}
 INDUSTRY: {industry}
 CONTACT: {contact_name or 'Unknown'}{(' — ' + contact_title) if contact_title else ''}
 SUBMARKET: {submarket}
+LEASE TRAJECTORY: {trajectory}
 
-MARKET CONTEXT:
-  Market rent:    ${market_rent:.2f}/SF/yr NNN
-  {vacancy_line}
+{nova_context}
+
+{submarket_context}
 
 TENANT DATA:
   Headcount:      {headcount or 'unknown'} employees

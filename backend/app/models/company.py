@@ -68,6 +68,10 @@ class Company(Base):
     future_move_type = Column(String, nullable=True)
     linked_property_id = Column(Integer, nullable=True)
 
+    # Lease trajectory — manually set by broker; drives SF projection in outreach agent
+    # Values: AUTO | CONTRACTING | FLAT | GROWING
+    lease_trajectory = Column(String, default="AUTO", nullable=False, server_default="AUTO")
+
     # Timestamps
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

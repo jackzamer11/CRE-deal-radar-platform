@@ -10,7 +10,7 @@ from app.database import get_db
 from app.database import init_db
 from app.api.routes import properties, companies, opportunities, activity, dashboard
 from app.ingestion.scheduler import start_scheduler, stop_scheduler
-from app.config import settings
+from app.config import settings, NOVA_OFFICE_BENCHMARKS, SUBMARKET_BENCHMARKS
 
 # Path to the built React frontend (relative to this file → ../../frontend/dist)
 FRONTEND_DIST = os.path.join(
@@ -61,6 +61,14 @@ def create_app() -> FastAPI:
         from app.ingestion.pipeline import refresh_public_records
         enriched = refresh_public_records(db)
         return {"status": "ok", "properties_enriched": enriched}
+
+    @app.get("/api/benchmarks/nova", tags=["benchmarks"])
+    def nova_benchmarks():
+        """Return CBRE Q1 2026 NoVA office benchmarks (market-wide and per submarket)."""
+        return {
+            "nova": NOVA_OFFICE_BENCHMARKS,
+            "submarkets": SUBMARKET_BENCHMARKS,
+        }
 
     @app.get("/health")
     def health():

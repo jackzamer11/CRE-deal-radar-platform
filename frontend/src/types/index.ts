@@ -78,8 +78,20 @@ export interface CompanyListOut {
   current_headcount: number | null
   headcount_growth_pct: number | null
   current_submarket: string | null
+  current_sf: number | null
+  current_rent_psf: number | null
   lease_expiry_months: number | null
+  lease_expiry_date: string | null
+  lease_expiry_source: string | null
+  lease_trajectory: string
+  tenant_representative: string | null
+  primary_contact_name: string | null
+  primary_contact_title: string | null
+  primary_contact_phone: string | null
+  future_move_flag: boolean | null
+  future_move_type: string | null
   expansion_signal: boolean
+  contraction_signal: boolean
   opportunity_score: number
   priority: Priority
   signals_scored_count: number

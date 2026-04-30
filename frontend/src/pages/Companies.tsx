@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Users, Filter, X, TrendingUp, Clock, MapPin, Plus, RefreshCw, Upload, Pencil, Check, AlertTriangle } from 'lucide-react'
-import { getCompanies, updateCompanyLease } from '../api/client'
+import { getCompanies, updateCompanyLease, updateCompanyTrajectory } from '../api/client'
 import type { CompanyListOut, CompanyOut } from '../types'
 import { PriorityBadge } from '../components/PriorityBadge'
 import ScoreBadge from '../components/ScoreBadge'
@@ -19,6 +19,13 @@ const LEASE_SOURCES = [
   { value: 'sec_filing',         label: 'SEC filing' },
   { value: 'landlord_confirmed', label: 'Landlord confirmed' },
   { value: 'public_record',      label: 'Public record' },
+]
+
+const TRAJECTORY_OPTIONS = [
+  { value: 'AUTO',        label: 'Auto (tiered SF/head)',   color: 'text-ink-secondary' },
+  { value: 'GROWING',     label: 'Growing',                 color: 'text-emerald-400'   },
+  { value: 'FLAT',        label: 'Flat (steady-state)',     color: 'text-blue-400'       },
+  { value: 'CONTRACTING', label: 'Contracting',             color: 'text-amber-400'      },
 ]
 
 function GrowthBadge({ pct }: { pct: number | null }) {
@@ -43,6 +50,21 @@ export default function Companies() {
   const [selected, setSelected] = useState<CompanyListOut | null>(null)
   const [showAddModal, setShowAddModal] = useState(false)
   const [showTenantImportModal, setShowTenantImportModal] = useState(false)
+
+  // Trajectory inline save state
+  const [trajectorySaving, setTrajectorySaving] = useState(false)
+
+  const saveTrajectory = async (company: typeof selected, value: string) => {
+    if (!company) return
+    setTrajectorySaving(true)
+    try {
+      await updateCompanyTrajectory(company.company_id, value)
+      setSelected({ ...company, lease_trajectory: value })
+      load()
+    } finally {
+      setTrajectorySaving(false)
+    }
+  }
 
   // Lease expiry inline edit state
   const [editingLease, setEditingLease] = useState(false)
@@ -421,6 +443,26 @@ export default function Companies() {
 
                   <Row label="Submarket" value={selected.current_submarket || '—'} />
                   <Row label="Expansion Signal" value={selected.expansion_signal ? '✓ Active' : '—'} />
+
+                  {/* Lease Trajectory dropdown */}
+                  <div className="flex justify-between items-center">
+                    <span className="text-xs text-ink-muted flex-shrink-0">Lease Trajectory</span>
+                    <select
+                      value={selected.lease_trajectory || 'AUTO'}
+                      disabled={trajectorySaving}
+                      onChange={e => saveTrajectory(selected, e.target.value)}
+                      className={`text-xs bg-surface-card border border-surface-border rounded-lg px-2 py-1
+                                  focus:outline-none focus:border-accent-blue/50 disabled:opacity-50
+                                  ${selected.lease_trajectory === 'CONTRACTING' ? 'text-amber-400'
+                                    : selected.lease_trajectory === 'GROWING' ? 'text-emerald-400'
+                                    : selected.lease_trajectory === 'FLAT' ? 'text-blue-400'
+                                    : 'text-ink-secondary'}`}
+                    >
+                      {TRAJECTORY_OPTIONS.map(opt => (
+                        <option key={opt.value} value={opt.value}>{opt.label}</option>
+                      ))}
+                    </select>
+                  </div>
                 </div>
               </div>
 

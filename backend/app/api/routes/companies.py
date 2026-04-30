@@ -560,6 +560,34 @@ def update_lease_expiry(
     return company
 
 
+VALID_TRAJECTORIES = {"AUTO", "CONTRACTING", "FLAT", "GROWING"}
+
+
+class TrajectoryUpdate(BaseModel):
+    lease_trajectory: str
+
+
+@router.patch("/{company_id}/trajectory", response_model=CompanyOut)
+def update_lease_trajectory(
+    company_id: str,
+    payload: TrajectoryUpdate,
+    db: Session = Depends(get_db),
+):
+    """Set the broker-defined lease trajectory override for a company."""
+    company = db.query(Company).filter(Company.company_id == company_id).first()
+    if not company:
+        raise HTTPException(status_code=404, detail="Company not found")
+    if payload.lease_trajectory not in VALID_TRAJECTORIES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid lease_trajectory; must be one of {sorted(VALID_TRAJECTORIES)}",
+        )
+    company.lease_trajectory = payload.lease_trajectory
+    db.commit()
+    db.refresh(company)
+    return company
+
+
 @router.post("/refresh-signals", response_model=dict)
 def refresh_all_signals(db: Session = Depends(get_db)):
     companies = db.query(Company).all()

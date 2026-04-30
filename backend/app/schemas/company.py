@@ -32,6 +32,7 @@ class CompanyBase(BaseModel):
     future_move_flag: Optional[bool] = None
     future_move_type: Optional[str] = None
     linked_property_id: Optional[int] = None
+    lease_trajectory: str = "AUTO"
 
 
 class CompanyCreate(CompanyBase):
@@ -88,6 +89,9 @@ class CompanyListOut(BaseModel):
     # Move intent
     future_move_flag: Optional[bool] = None
     future_move_type: Optional[str] = None
+
+    # Lease trajectory (broker-set override for SF projection)
+    lease_trajectory: str = "AUTO"
 
     # Signals & scoring
     headcount_growth_pct: Optional[float] = None  # growth_rate
