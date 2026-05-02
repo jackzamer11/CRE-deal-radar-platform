@@ -1,7 +1,7 @@
 # backend/app/schemas/company.py
 from datetime import date, datetime
 from typing import Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 
 class CompanyBase(BaseModel):
@@ -102,6 +102,15 @@ class CompanyListOut(BaseModel):
     priority: str = "IGNORE"
     signals_scored_count: int = 0
     insufficient_data: bool = False
+
+    # Computed from tenant_representative — not stored in DB
+    rep_class: str = "BLANK"
+
+    @model_validator(mode="after")
+    def _compute_rep_class(self) -> "CompanyListOut":
+        from app.services.rep_classification import classify_rep
+        self.rep_class = classify_rep(self.tenant_representative)
+        return self
 
     class Config:
         from_attributes = True

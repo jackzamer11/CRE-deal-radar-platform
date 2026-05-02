@@ -16,17 +16,7 @@ Composites are weighted averages over scored (non-None) signals only.
 from datetime import date
 from typing import Optional
 
-
-CURRENT_YEAR = 2026
-NOVA_AVG_HOLD_YEARS = 7.0          # Historical NoVA office avg hold period
-MODERN_SF_PER_HEAD = 175           # Modern office space standard
-
-# Firms whose presence on tenant_representative makes a solo-agent win unlikely.
-MAJOR_BROKER_FIRMS = [
-    "JLL", "CBRE", "Cushman", "Cushman & Wakefield",
-    "Newmark", "Savills", "Avison Young", "Colliers",
-    "Lincoln Property", "Transwestern", "Eastdil",
-]
+from app.services.rep_classification import MAJOR_BROKER_FIRMS, classify_rep as _classify_rep
 
 
 # ---------------------------------------------------------------------------
@@ -578,6 +568,11 @@ def sig_geo_clustering(
     return 15.0  # Base signal — every NoVA submarket has industry clusters
 
 
+CURRENT_YEAR = 2026
+NOVA_AVG_HOLD_YEARS = 7.0
+MODERN_SF_PER_HEAD = 175
+
+
 def sig_tenant_rep(tenant_representative: Optional[str]) -> float:
     """
     Tenant representative adjustment — applied as a delta to the composite score.
@@ -588,12 +583,11 @@ def sig_tenant_rep(tenant_representative: Optional[str]) -> float:
 
     Returns a signed delta, NOT a 0-100 signal score.
     """
-    if not tenant_representative or not tenant_representative.strip():
+    rep_class = _classify_rep(tenant_representative)
+    if rep_class == "BLANK":
         return 10.0
-    rep_lower = tenant_representative.lower()
-    for firm in MAJOR_BROKER_FIRMS:
-        if firm.lower() in rep_lower:
-            return -25.0
+    if rep_class == "MAJOR":
+        return -25.0
     return -5.0
 
 

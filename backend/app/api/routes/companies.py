@@ -1,6 +1,6 @@
 import io
+from datetime import datetime, date, timedelta
 from typing import List, Optional
-from datetime import datetime, date
 
 import pandas as pd
 from dateutil import parser as _dateparser
@@ -11,10 +11,13 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models.company import Company
+from app.models.outreach_log import OutreachLog
 from app.models.property import Property
 from app.schemas.company import CompanyOut, CompanyListOut
+from app.schemas.outreach import OutreachDraft, OutreachLogCreate, OutreachLogOut, CallScript
 from app.services import signal_engine as se
 from app.services.scoring_model import score_property
+from app.services.rep_classification import classify_rep
 
 router = APIRouter(prefix="/companies", tags=["companies"])
 
@@ -333,6 +336,8 @@ def list_companies(
     priority: Optional[str] = None,
     expansion_only: bool = False,
     min_score: Optional[float] = None,
+    rep_filter: Optional[str] = None,          # BLANK | MAJOR | OTHER
+    outreach_status: Optional[str] = None,     # needs-outreach
     db: Session = Depends(get_db),
 ):
     q = db.query(Company)
@@ -344,7 +349,28 @@ def list_companies(
         q = q.filter(Company.expansion_signal == True)
     if min_score is not None:
         q = q.filter(Company.opportunity_score >= min_score)
+
     companies = q.order_by(Company.opportunity_score.desc()).all()
+
+    # Rep filter — applied post-query since rep_class is computed
+    if rep_filter in ("BLANK", "MAJOR", "OTHER"):
+        companies = [c for c in companies if classify_rep(c.tenant_representative) == rep_filter]
+
+    # Outreach status filter: companies with no log entry in the last 90 days
+    # Excludes MAJOR-rep tenants (resource-framing only, not direct-rep targets)
+    if outreach_status == "needs-outreach":
+        cutoff = datetime.utcnow() - timedelta(days=90)
+        recent_company_ids = {
+            row[0] for row in db.query(OutreachLog.company_id)
+            .filter(OutreachLog.generated_at >= cutoff).all()
+        }
+        companies = [
+            c for c in companies
+            if c.id not in recent_company_ids
+            and classify_rep(c.tenant_representative) != "MAJOR"
+            and c.priority != "IGNORE"
+        ]
+
     return companies
 
 
@@ -617,3 +643,111 @@ def refresh_all_signals(db: Session = Depends(get_db)):
         _run_signals(c)
     db.commit()
     return {"refreshed": len(companies)}
+
+
+# ── Outreach endpoints ────────────────────────────────────────────────────────
+
+@router.post("/{company_id}/draft-outreach")
+def draft_outreach(company_id: str, db: Session = Depends(get_db)):
+    """
+    Generate a GPT-4o outreach draft for a company.
+    Does NOT persist to the database — call /log-outreach to save.
+    Requires OPENAI_API_KEY in the environment.
+    """
+    from app.services.outreach_service import generate_outreach
+
+    company = db.query(Company).filter(Company.company_id == company_id).first()
+    if not company:
+        raise HTTPException(status_code=404, detail="Company not found")
+
+    company_dict = {
+        "name":                 company.name,
+        "industry":             company.industry,
+        "current_headcount":    company.current_headcount,
+        "headcount_growth_pct": company.headcount_growth_pct,
+        "current_sf":           company.current_sf,
+        "current_submarket":    company.current_submarket,
+        "lease_expiry_months":  company.lease_expiry_months,
+        "lease_expiry_date":    str(company.lease_expiry_date) if company.lease_expiry_date else None,
+        "primary_contact_name": company.primary_contact_name,
+        "primary_contact_title":company.primary_contact_title,
+        "tenant_representative":company.tenant_representative,
+        "current_rent_psf":     company.current_rent_psf,
+        "future_move_flag":     company.future_move_flag,
+        "future_move_type":     company.future_move_type,
+        "lease_trajectory":     company.lease_trajectory,
+        "contraction_signal":   company.contraction_signal,
+        "opportunity_score":    company.opportunity_score,
+        "priority":             company.priority,
+    }
+
+    try:
+        result = generate_outreach(company_dict)
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Generation failed: {e}")
+
+    cs = result.get("call_script", {})
+    email = result.get("email", {})
+
+    return {
+        "email_subject": email.get("subject", ""),
+        "email_body":    email.get("body", ""),
+        "call_script": {
+            "opening":     cs.get("opening", ""),
+            "core_message":cs.get("core_message", ""),
+            "pain_probe":  cs.get("pain_probe", ""),
+            "the_close":   cs.get("the_close", ""),
+        },
+        "projected_sf":  result.get("projected_sf"),
+        "score":         company.opportunity_score,
+        "priority":      company.priority,
+        "generated_at":  datetime.utcnow().isoformat(),
+    }
+
+
+@router.post("/{company_id}/log-outreach", response_model=OutreachLogOut)
+def log_outreach(
+    company_id: str,
+    payload: OutreachLogCreate,
+    db: Session = Depends(get_db),
+):
+    """Persist a generated outreach package to the outreach_log table."""
+    company = db.query(Company).filter(Company.company_id == company_id).first()
+    if not company:
+        raise HTTPException(status_code=404, detail="Company not found")
+
+    log = OutreachLog(
+        company_id             = company.id,
+        email_subject          = payload.email_subject,
+        email_body             = payload.email_body,
+        call_script_opening    = payload.call_script_opening,
+        call_script_core       = payload.call_script_core,
+        call_script_pain_probe = payload.call_script_pain_probe,
+        call_script_close      = payload.call_script_close,
+        projected_sf           = payload.projected_sf,
+        score_at_generation    = payload.score_at_generation,
+        priority_at_generation = payload.priority_at_generation,
+        email_sent             = payload.email_sent,
+        call_made              = payload.call_made,
+    )
+    db.add(log)
+    db.commit()
+    db.refresh(log)
+    return log
+
+
+@router.get("/{company_id}/outreach-history", response_model=List[OutreachLogOut])
+def outreach_history(company_id: str, db: Session = Depends(get_db)):
+    """Return all outreach log entries for a company, newest first."""
+    company = db.query(Company).filter(Company.company_id == company_id).first()
+    if not company:
+        raise HTTPException(status_code=404, detail="Company not found")
+    logs = (
+        db.query(OutreachLog)
+        .filter(OutreachLog.company_id == company.id)
+        .order_by(OutreachLog.generated_at.desc())
+        .all()
+    )
+    return logs

@@ -8,6 +8,8 @@ import type {
   OpportunityListOut,
   OpportunityOut,
   ActivityLog,
+  OutreachDraft,
+  OutreachLog,
 } from '../types'
 
 const api = axios.create({
@@ -52,6 +54,8 @@ export interface CompanyFilters {
   priority?: string
   expansion_only?: boolean
   min_score?: number
+  rep_filter?: string         // BLANK | MAJOR | OTHER
+  outreach_status?: string    // needs-outreach
 }
 
 export const getCompanies = (filters?: CompanyFilters): Promise<CompanyListOut[]> =>
@@ -80,6 +84,30 @@ export const updateCompanyTrajectory = (
   lease_trajectory: string,
 ): Promise<CompanyOut> =>
   api.patch(`/companies/${companyId}/trajectory`, { lease_trajectory }).then(r => r.data)
+
+export const draftOutreach = (companyId: string): Promise<OutreachDraft> =>
+  api.post(`/companies/${companyId}/draft-outreach`).then(r => r.data)
+
+export const logOutreach = (
+  companyId: string,
+  payload: {
+    email_subject: string; email_body: string
+    call_script_opening: string; call_script_core: string
+    call_script_pain_probe: string; call_script_close: string
+    projected_sf: number | null; score_at_generation: number
+    priority_at_generation: string; email_sent: boolean; call_made: boolean
+  },
+): Promise<OutreachLog> =>
+  api.post(`/companies/${companyId}/log-outreach`, payload).then(r => r.data)
+
+export const updateOutreachLog = (
+  logId: number,
+  payload: { outcome_notes?: string; marked_contacted?: boolean; email_sent?: boolean; call_made?: boolean },
+): Promise<OutreachLog> =>
+  api.patch(`/outreach-log/${logId}`, payload).then(r => r.data)
+
+export const getOutreachHistory = (companyId: string): Promise<OutreachLog[]> =>
+  api.get(`/companies/${companyId}/outreach-history`).then(r => r.data)
 
 // ── Opportunities ──────────────────────────────────────────────────────────
 

@@ -80,5 +80,6 @@ class Company(Base):
     last_modified_by_user = Column(DateTime, nullable=True)
 
     # Relationships
-    opportunities = relationship("Opportunity", back_populates="company")
-    activity_logs = relationship("ActivityLog", back_populates="company")
+    opportunities  = relationship("Opportunity", back_populates="company")
+    activity_logs  = relationship("ActivityLog", back_populates="company")
+    outreach_logs  = relationship("OutreachLog", back_populates="company")

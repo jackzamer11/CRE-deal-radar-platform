@@ -1,11 +1,15 @@
 import { useEffect, useState } from 'react'
-import { Users, Filter, X, TrendingUp, Clock, MapPin, Plus, RefreshCw, Upload, Pencil, Check, AlertTriangle } from 'lucide-react'
+import {
+  Users, Filter, X, TrendingUp, Clock, MapPin, Plus, RefreshCw,
+  Upload, Pencil, Check, AlertTriangle, Zap, Send,
+} from 'lucide-react'
 import { getCompanies, updateCompanyLease, updateCompanyTrajectory } from '../api/client'
-import type { CompanyListOut, CompanyOut } from '../types'
+import type { CompanyListOut, CompanyOut, RepClass } from '../types'
 import { PriorityBadge } from '../components/PriorityBadge'
 import ScoreBadge from '../components/ScoreBadge'
 import AddCompanyModal from '../components/AddCompanyModal'
 import CoStarTenantImportModal from '../components/CoStarTenantImportModal'
+import OutreachDraftModal from '../components/OutreachDraftModal'
 
 const SUBMARKETS = [
   'Arlington (Clarendon)', 'Arlington (Rosslyn)', 'Arlington (Ballston)',
@@ -40,19 +44,85 @@ function ExpiryBadge({ months }: { months: number | null }) {
   return <span className={`mono text-xs ${color}`}>{months}mo</span>
 }
 
-export default function Companies() {
-  const [companies, setCompanies] = useState<CompanyListOut[]>([])
-  const [loading, setLoading] = useState(true)
-  const [submarket, setSubmarket] = useState('')
-  const [priority, setPriority] = useState('')
-  const [expansionOnly, setExpansionOnly] = useState(false)
-  const [topExpiryMode, setTopExpiryMode] = useState(false)
-  const [selected, setSelected] = useState<CompanyListOut | null>(null)
-  const [showAddModal, setShowAddModal] = useState(false)
-  const [showTenantImportModal, setShowTenantImportModal] = useState(false)
+function RepBadge({ repClass, repName }: { repClass: RepClass; repName: string | null }) {
+  if (repClass === 'BLANK') {
+    return (
+      <span className="flex items-center gap-1 text-[10px] text-emerald-400">
+        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 flex-shrink-0" />
+        No Rep
+      </span>
+    )
+  }
+  if (repClass === 'MAJOR') {
+    const name = repName ? repName.split(/[\s,/]/)[0] : 'Major'
+    return (
+      <span className="flex items-center gap-1 text-[10px] text-red-400">
+        <span className="w-1.5 h-1.5 rounded-full bg-red-400 flex-shrink-0" />
+        {name}
+      </span>
+    )
+  }
+  const name = repName ? repName.split(/[\s,/]/)[0] : 'Rep'
+  return (
+    <span className="flex items-center gap-1 text-[10px] text-amber-400">
+      <span className="w-1.5 h-1.5 rounded-full bg-amber-400 flex-shrink-0" />
+      {name}
+    </span>
+  )
+}
 
-  // Trajectory inline save state
+export default function Companies() {
+  const [companies, setCompanies]   = useState<CompanyListOut[]>([])
+  const [loading, setLoading]       = useState(true)
+  const [submarket, setSubmarket]   = useState('')
+  const [priority, setPriority]     = useState('')
+  const [repFilter, setRepFilter]   = useState('')
+  const [expansionOnly, setExpansionOnly]         = useState(false)
+  const [topExpiryMode, setTopExpiryMode]         = useState(false)
+  const [topOutreachMode, setTopOutreachMode]     = useState(false)
+  const [selected, setSelected]     = useState<CompanyListOut | null>(null)
+  const [showAddModal, setShowAddModal]             = useState(false)
+  const [showTenantImportModal, setShowTenantImportModal] = useState(false)
+  const [showOutreachModal, setShowOutreachModal]   = useState(false)
+
+  // Trajectory state
   const [trajectorySaving, setTrajectorySaving] = useState(false)
+
+  // Lease expiry inline edit state
+  const [editingLease, setEditingLease]     = useState(false)
+  const [leaseMonthsInput, setLeaseMonthsInput] = useState('')
+  const [leaseDateInput, setLeaseDateInput]   = useState('')
+  const [leaseInputMode, setLeaseInputMode]   = useState<'months' | 'date'>('months')
+  const [leaseSource, setLeaseSource]         = useState('manual')
+  const [leaseSaving, setLeaseSaving]         = useState(false)
+
+  const load = async () => {
+    setLoading(true)
+    try {
+      const params: Record<string, string | boolean | undefined> = {
+        submarket:    submarket || undefined,
+        priority:     priority  || undefined,
+        expansion_only: expansionOnly || undefined,
+        rep_filter:   repFilter || undefined,
+        outreach_status: topOutreachMode ? 'needs-outreach' : undefined,
+      }
+      const data = await getCompanies(params)
+      setCompanies(data)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => { load() }, [submarket, priority, expansionOnly, repFilter, topOutreachMode])
+
+  const displayedCompanies = topExpiryMode
+    ? companies.filter(c => c.lease_expiry_months === null).slice(0, 20)
+    : topOutreachMode
+      ? companies.slice(0, 20)
+      : companies
+
+  const needingExpiryCount   = companies.filter(c => c.lease_expiry_months === null).length
+  const needingOutreachCount = companies.length
 
   const saveTrajectory = async (company: typeof selected, value: string) => {
     if (!company) return
@@ -66,37 +136,6 @@ export default function Companies() {
     }
   }
 
-  // Lease expiry inline edit state
-  const [editingLease, setEditingLease] = useState(false)
-  const [leaseMonthsInput, setLeaseMonthsInput] = useState('')
-  const [leaseDateInput, setLeaseDateInput] = useState('')
-  const [leaseInputMode, setLeaseInputMode] = useState<'months' | 'date'>('months')
-  const [leaseSource, setLeaseSource] = useState('manual')
-  const [leaseSaving, setLeaseSaving] = useState(false)
-
-  const load = async () => {
-    setLoading(true)
-    try {
-      const data = await getCompanies({
-        submarket: submarket || undefined,
-        priority: priority || undefined,
-        expansion_only: expansionOnly || undefined,
-      })
-      setCompanies(data)
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  useEffect(() => { load() }, [submarket, priority, expansionOnly])
-
-  // Companies to display — apply Top 20 Needing Expiry filter on the frontend
-  const displayedCompanies = topExpiryMode
-    ? companies.filter(c => c.lease_expiry_months === null).slice(0, 20)
-    : companies
-
-  const needingExpiryCount = companies.filter(c => c.lease_expiry_months === null).length
-
   const openLeaseEdit = () => {
     setLeaseMonthsInput('')
     setLeaseDateInput('')
@@ -105,9 +144,7 @@ export default function Companies() {
     setEditingLease(true)
   }
 
-  const cancelLeaseEdit = () => {
-    setEditingLease(false)
-  }
+  const cancelLeaseEdit = () => setEditingLease(false)
 
   const saveLease = async () => {
     if (!selected) return
@@ -125,7 +162,6 @@ export default function Companies() {
     setLeaseSaving(true)
     try {
       await updateCompanyLease(selected.company_id, payload)
-      // Compute updated months for optimistic UI update
       const updatedMonths = leaseInputMode === 'months'
         ? parseInt(leaseMonthsInput)
         : (() => {
@@ -135,7 +171,7 @@ export default function Companies() {
           })()
       setSelected({ ...selected, lease_expiry_months: updatedMonths })
       setEditingLease(false)
-      load()  // refresh list scores in background
+      load()
     } finally {
       setLeaseSaving(false)
     }
@@ -145,6 +181,12 @@ export default function Companies() {
     setSelected(c)
     setEditingLease(false)
   }
+
+  const clearFilters = () => {
+    setSubmarket(''); setPriority(''); setRepFilter('')
+    setExpansionOnly(false); setTopExpiryMode(false); setTopOutreachMode(false)
+  }
+  const hasActiveFilters = submarket || priority || repFilter || expansionOnly || topExpiryMode || topOutreachMode
 
   return (
     <div className="p-6">
@@ -194,6 +236,16 @@ export default function Companies() {
           <option value="">All Priorities</option>
           {['IMMEDIATE','HIGH','WORKABLE','IGNORE'].map(p => <option key={p} value={p}>{p}</option>)}
         </select>
+        <select
+          value={repFilter}
+          onChange={e => setRepFilter(e.target.value)}
+          className="bg-surface-card border border-surface-border text-ink-secondary text-xs rounded-lg px-3 py-1.5"
+        >
+          <option value="">All Reps</option>
+          <option value="BLANK">No Rep (direct pitch)</option>
+          <option value="MAJOR">Major Firm</option>
+          <option value="OTHER">Regional / Other</option>
+        </select>
         <label className="flex items-center gap-2 text-xs text-ink-secondary cursor-pointer">
           <input
             type="checkbox"
@@ -204,9 +256,9 @@ export default function Companies() {
           Expansion Signal Only
         </label>
 
-        {/* Top 20 Needing Expiry toggle */}
+        {/* Top 20 Needing Expiry */}
         <button
-          onClick={() => setTopExpiryMode(v => !v)}
+          onClick={() => { setTopExpiryMode(v => !v); if (topOutreachMode) setTopOutreachMode(false) }}
           className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors
             ${topExpiryMode
               ? 'bg-amber-500/20 border-amber-500/50 text-amber-300'
@@ -214,17 +266,28 @@ export default function Companies() {
         >
           <Clock size={12} />
           Top 20 Needing Expiry
-          {needingExpiryCount > 0 && (
-            <span className={`ml-0.5 rounded-full px-1.5 py-0.5 text-[10px] font-bold
-              ${topExpiryMode ? 'bg-amber-500/30 text-amber-200' : 'bg-surface-muted text-ink-muted'}`}>
+          {needingExpiryCount > 0 && !topExpiryMode && (
+            <span className="ml-0.5 rounded-full px-1.5 py-0.5 text-[10px] font-bold bg-surface-muted text-ink-muted">
               {needingExpiryCount}
             </span>
           )}
         </button>
 
-        {(submarket || priority || expansionOnly || topExpiryMode) && (
+        {/* Top 20 Needing Outreach */}
+        <button
+          onClick={() => { setTopOutreachMode(v => !v); if (topExpiryMode) setTopExpiryMode(false) }}
+          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors
+            ${topOutreachMode
+              ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-300'
+              : 'bg-surface-card border-surface-border text-ink-secondary hover:text-ink-primary'}`}
+        >
+          <Send size={12} />
+          Top 20 Needing Outreach
+        </button>
+
+        {hasActiveFilters && (
           <button
-            onClick={() => { setSubmarket(''); setPriority(''); setExpansionOnly(false); setTopExpiryMode(false) }}
+            onClick={clearFilters}
             className="flex items-center gap-1 text-xs text-ink-muted hover:text-red-400"
           >
             <X size={12} /> Clear
@@ -235,8 +298,13 @@ export default function Companies() {
       {topExpiryMode && (
         <div className="mb-3 flex items-center gap-2 text-xs text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded-lg px-3 py-2">
           <Clock size={13} />
-          Showing top {Math.min(needingExpiryCount, 20)} of {needingExpiryCount} companies missing lease expiry data, ranked by opportunity score.
-          Click a card to enter lease expiry manually.
+          Showing top {Math.min(needingExpiryCount, 20)} of {needingExpiryCount} companies missing lease expiry data. Click a card to enter manually.
+        </div>
+      )}
+      {topOutreachMode && (
+        <div className="mb-3 flex items-center gap-2 text-xs text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 rounded-lg px-3 py-2">
+          <Send size={13} />
+          Showing top {Math.min(needingOutreachCount, 20)} companies needing outreach — no contact in 90 days, MAJOR firm reps excluded.
         </div>
       )}
 
@@ -254,16 +322,17 @@ export default function Companies() {
             onClick={() => handleSelectCompany(c)}
           >
             <div className="flex items-start justify-between mb-3">
-              <div className="flex-1">
-                <div className="font-semibold text-ink-primary text-sm">{c.name}</div>
+              <div className="flex-1 min-w-0">
+                <div className="font-semibold text-ink-primary text-sm truncate">{c.name}</div>
                 <div className="text-[11px] text-ink-muted mt-0.5">{c.industry}</div>
               </div>
-              <div className="flex items-center gap-1.5">
+              <div className="flex items-center gap-1.5 flex-shrink-0 ml-2">
                 {c.insufficient_data && (
                   <span title={`Only ${c.signals_scored_count} signal(s) scored`}>
                     <AlertTriangle size={12} className="text-amber-400" />
                   </span>
                 )}
+                <RepBadge repClass={c.rep_class} repName={c.tenant_representative} />
                 <PriorityBadge priority={c.priority} />
               </div>
             </div>
@@ -282,22 +351,19 @@ export default function Companies() {
             <div className="space-y-1.5">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-1.5 text-[11px] text-ink-muted">
-                  <TrendingUp size={11} />
-                  Growth
+                  <TrendingUp size={11} /> Growth
                 </div>
                 <GrowthBadge pct={c.headcount_growth_pct} />
               </div>
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-1.5 text-[11px] text-ink-muted">
-                  <Clock size={11} />
-                  Lease Expiry
+                  <Clock size={11} /> Lease Expiry
                 </div>
                 <ExpiryBadge months={c.lease_expiry_months} />
               </div>
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-1.5 text-[11px] text-ink-muted">
-                  <MapPin size={11} />
-                  Submarket
+                  <MapPin size={11} /> Submarket
                 </div>
                 <span className="text-[11px] text-ink-secondary">{c.current_submarket || '—'}</span>
               </div>
@@ -319,16 +385,22 @@ export default function Companies() {
           onSaved={(_saved: CompanyOut) => { setShowAddModal(false); load() }}
         />
       )}
-
       {showTenantImportModal && (
         <CoStarTenantImportModal
           onClose={() => setShowTenantImportModal(false)}
           onDone={load}
         />
       )}
+      {showOutreachModal && selected && (
+        <OutreachDraftModal
+          company={selected}
+          onClose={() => setShowOutreachModal(false)}
+          onSaved={() => { setShowOutreachModal(false); load() }}
+        />
+      )}
 
       {/* Detail panel */}
-      {selected && (
+      {selected && !showOutreachModal && (
         <div className="fixed inset-y-0 right-0 w-96 bg-surface-card border-l border-surface-border shadow-2xl z-50 overflow-y-auto">
           <div className="p-5">
             <div className="flex items-start justify-between mb-4">
@@ -340,6 +412,16 @@ export default function Companies() {
                 <X size={18} />
               </button>
             </div>
+
+            {/* Draft Outreach CTA */}
+            <button
+              onClick={() => setShowOutreachModal(true)}
+              className="w-full flex items-center justify-center gap-2 mb-4 px-4 py-2.5 rounded-xl
+                         bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-semibold transition-colors"
+            >
+              <Zap size={15} />
+              Draft Outreach
+            </button>
 
             <div className="space-y-3">
               <div className="flex items-center gap-2">
@@ -363,62 +445,40 @@ export default function Companies() {
                     <span className="text-xs text-ink-muted flex-shrink-0">Lease Expiry</span>
                     {editingLease ? (
                       <div className="flex flex-col gap-2 items-end ml-2 w-full">
-                        {/* Mode toggle */}
                         <div className="flex rounded-lg overflow-hidden border border-surface-border text-[10px] self-end">
                           <button
                             onClick={() => setLeaseInputMode('months')}
                             className={`px-2 py-1 ${leaseInputMode === 'months' ? 'bg-accent-blue/20 text-accent-blue' : 'text-ink-muted hover:text-ink-secondary'}`}
-                          >
-                            Months
-                          </button>
+                          >Months</button>
                           <button
                             onClick={() => setLeaseInputMode('date')}
                             className={`px-2 py-1 ${leaseInputMode === 'date' ? 'bg-accent-blue/20 text-accent-blue' : 'text-ink-muted hover:text-ink-secondary'}`}
-                          >
-                            Date
-                          </button>
+                          >Date</button>
                         </div>
-
                         {leaseInputMode === 'months' ? (
                           <input
-                            type="number"
-                            min="0"
-                            placeholder="Months (e.g. 18)"
-                            value={leaseMonthsInput}
-                            onChange={e => setLeaseMonthsInput(e.target.value)}
+                            type="number" min="0" placeholder="Months (e.g. 18)"
+                            value={leaseMonthsInput} onChange={e => setLeaseMonthsInput(e.target.value)}
                             className="w-full text-xs bg-surface-card border border-surface-border rounded-lg px-2 py-1.5 text-ink-primary focus:outline-none focus:border-accent-blue/50"
                             autoFocus
                           />
                         ) : (
                           <input
-                            type="date"
-                            value={leaseDateInput}
-                            onChange={e => setLeaseDateInput(e.target.value)}
+                            type="date" value={leaseDateInput} onChange={e => setLeaseDateInput(e.target.value)}
                             className="w-full text-xs bg-surface-card border border-surface-border rounded-lg px-2 py-1.5 text-ink-primary focus:outline-none focus:border-accent-blue/50"
                             autoFocus
                           />
                         )}
-
                         <select
-                          value={leaseSource}
-                          onChange={e => setLeaseSource(e.target.value)}
+                          value={leaseSource} onChange={e => setLeaseSource(e.target.value)}
                           className="w-full text-xs bg-surface-card border border-surface-border rounded-lg px-2 py-1.5 text-ink-secondary"
                         >
-                          {LEASE_SOURCES.map(s => (
-                            <option key={s.value} value={s.value}>{s.label}</option>
-                          ))}
+                          {LEASE_SOURCES.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
                         </select>
-
                         <div className="flex gap-1.5 self-end">
+                          <button onClick={cancelLeaseEdit} className="text-[10px] px-2 py-1 rounded-lg border border-surface-border text-ink-muted hover:text-ink-primary">Cancel</button>
                           <button
-                            onClick={cancelLeaseEdit}
-                            className="text-[10px] px-2 py-1 rounded-lg border border-surface-border text-ink-muted hover:text-ink-primary"
-                          >
-                            Cancel
-                          </button>
-                          <button
-                            onClick={saveLease}
-                            disabled={leaseSaving}
+                            onClick={saveLease} disabled={leaseSaving}
                             className="flex items-center gap-1 text-[10px] px-2 py-1 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50"
                           >
                             <Check size={10} /> {leaseSaving ? 'Saving…' : 'Save & Re-score'}
@@ -430,11 +490,7 @@ export default function Companies() {
                         <span className="text-xs text-ink-secondary font-medium mono">
                           {selected.lease_expiry_months != null ? `${selected.lease_expiry_months} months` : '—'}
                         </span>
-                        <button
-                          onClick={openLeaseEdit}
-                          title="Enter lease expiry"
-                          className="text-ink-muted hover:text-accent-blue transition-colors"
-                        >
+                        <button onClick={openLeaseEdit} title="Enter lease expiry" className="text-ink-muted hover:text-accent-blue transition-colors">
                           <Pencil size={11} />
                         </button>
                       </div>
@@ -462,6 +518,31 @@ export default function Companies() {
                         <option key={opt.value} value={opt.value}>{opt.label}</option>
                       ))}
                     </select>
+                  </div>
+
+                  {/* Tenant Rep */}
+                  <div className="flex justify-between items-start pt-0.5">
+                    <span className="text-xs text-ink-muted flex-shrink-0">Tenant Rep</span>
+                    <div className="text-right ml-2">
+                      {selected.rep_class === 'BLANK' && (
+                        <div>
+                          <div className="text-xs text-emerald-400 font-medium">None — open opportunity</div>
+                          <div className="text-[10px] text-ink-muted">+10 score (no rep penalty)</div>
+                        </div>
+                      )}
+                      {selected.rep_class === 'MAJOR' && (
+                        <div>
+                          <div className="text-xs text-red-400 font-medium">{selected.tenant_representative}</div>
+                          <div className="text-[10px] text-ink-muted">−25 score (major firm representation)</div>
+                        </div>
+                      )}
+                      {selected.rep_class === 'OTHER' && (
+                        <div>
+                          <div className="text-xs text-amber-400 font-medium">{selected.tenant_representative}</div>
+                          <div className="text-[10px] text-ink-muted">−5 score (regional/independent rep)</div>
+                        </div>
+                      )}
+                    </div>
                   </div>
                 </div>
               </div>

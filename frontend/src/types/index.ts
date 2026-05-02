@@ -70,6 +70,8 @@ export interface PropertyOut extends PropertyListOut {
   signal_breakdown: SignalBreakdown | null
 }
 
+export type RepClass = 'BLANK' | 'MAJOR' | 'OTHER'
+
 export interface CompanyListOut {
   id: number
   company_id: string
@@ -85,6 +87,7 @@ export interface CompanyListOut {
   lease_expiry_source: string | null
   lease_trajectory: string
   tenant_representative: string | null
+  rep_class: RepClass
   primary_contact_name: string | null
   primary_contact_title: string | null
   primary_contact_phone: string | null
@@ -96,6 +99,43 @@ export interface CompanyListOut {
   priority: Priority
   signals_scored_count: number
   insufficient_data: boolean
+}
+
+export interface OutreachCallScript {
+  opening: string
+  core_message: string
+  pain_probe: string
+  the_close: string
+}
+
+export interface OutreachDraft {
+  email_subject: string
+  email_body: string
+  call_script: OutreachCallScript
+  projected_sf: number | null
+  score: number
+  priority: Priority
+  generated_at: string
+}
+
+export interface OutreachLog {
+  id: number
+  company_id: number
+  generated_at: string
+  email_subject: string
+  email_body: string
+  call_script_opening: string
+  call_script_core: string
+  call_script_pain_probe: string
+  call_script_close: string
+  projected_sf: number | null
+  score_at_generation: number
+  priority_at_generation: string
+  marked_contacted: boolean
+  email_sent: boolean
+  call_made: boolean
+  outcome_notes: string | null
+  contacted_at: string | null
 }
 
 export interface CompanyOut extends CompanyListOut {
