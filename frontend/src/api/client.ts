@@ -30,6 +30,8 @@ export interface PropertyFilters {
   is_listed?: boolean
   min_score?: number
   sort_by?: string
+  dominant_score_type?: string
+  needs_outreach?: boolean
 }
 
 export const getProperties = (filters?: PropertyFilters): Promise<PropertyListOut[]> =>
@@ -108,6 +110,39 @@ export const updateOutreachLog = (
 
 export const getOutreachHistory = (companyId: string): Promise<OutreachLog[]> =>
   api.get(`/companies/${companyId}/outreach-history`).then(r => r.data)
+
+// Property-side outreach (Part 4)
+export const draftPropertyOutreach = (
+  propertyId: string,
+  outreachType: string,
+  tenantContext?: string,
+): Promise<OutreachDraft> =>
+  api.post(`/properties/${propertyId}/draft-outreach`, null, {
+    params: { outreach_type: outreachType, ...(tenantContext ? { tenant_context: tenantContext } : {}) },
+  }).then(r => r.data)
+
+export const logPropertyOutreach = (
+  propertyId: string,
+  payload: {
+    email_subject: string; email_body: string
+    call_script_opening: string; call_script_core: string
+    call_script_pain_probe: string; call_script_close: string
+    projected_sf: number | null; score_at_generation: number
+    priority_at_generation: string; email_sent: boolean; call_made: boolean
+    outreach_type?: string
+  },
+): Promise<OutreachLog> =>
+  api.post(`/properties/${propertyId}/log-outreach`, payload).then(r => r.data)
+
+export const getPropertyOutreachHistory = (propertyId: string): Promise<OutreachLog[]> =>
+  api.get(`/properties/${propertyId}/outreach-history`).then(r => r.data)
+
+// In-Place Rent pencil update (Part 7)
+export const updatePropertyInPlaceRent = (
+  propertyId: string,
+  payload: { in_place_rent_psf: number; in_place_rent_source?: string },
+): Promise<PropertyOut> =>
+  api.patch(`/properties/${propertyId}/in-place-rent`, payload).then(r => r.data)
 
 // ── Opportunities ──────────────────────────────────────────────────────────
 

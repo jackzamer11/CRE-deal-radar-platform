@@ -2,14 +2,40 @@ import { useEffect, useState, useCallback } from 'react'
 import {
   X, Copy, Check, Mail, Phone, Loader2, Save, ExternalLink, ChevronDown, ChevronRight,
 } from 'lucide-react'
-import { draftOutreach, logOutreach, updateOutreachLog } from '../api/client'
-import type { CompanyListOut, OutreachDraft } from '../types'
+import {
+  draftOutreach, logOutreach,
+  draftPropertyOutreach, logPropertyOutreach,
+  updateOutreachLog,
+} from '../api/client'
+import type { CompanyListOut, PropertyListOut, OutreachDraft } from '../types'
 
-interface Props {
+const OUTREACH_TYPE_LABELS: Record<string, string> = {
+  tenant_match: 'Tenant Match',
+  listing_rep:  'Listing Rep',
+  acquisition:  'Acquisition',
+  broker:       'Broker Intro',
+  tenant:       'Tenant Outreach',
+}
+
+interface CompanyProps {
+  entity_type: 'company'
   company: CompanyListOut
+  property?: never
+  outreach_type?: never
   onClose: () => void
   onSaved: () => void
 }
+
+interface PropertyProps {
+  entity_type: 'property'
+  property: PropertyListOut
+  company?: never
+  outreach_type: string
+  onClose: () => void
+  onSaved: () => void
+}
+
+type Props = CompanyProps | PropertyProps
 
 function CopyButton({ text, label = 'Copy' }: { text: string; label?: string }) {
   const [copied, setCopied] = useState(false)
@@ -55,26 +81,44 @@ function Section({
   )
 }
 
-export default function OutreachDraftModal({ company, onClose, onSaved }: Props) {
-  const [draft, setDraft] = useState<OutreachDraft | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  const [emailSent, setEmailSent]   = useState(false)
-  const [callMade, setCallMade]     = useState(false)
-  const [notes, setNotes]           = useState('')
-  const [saving, setSaving]         = useState(false)
-  const [savedLogId, setSavedLogId] = useState<number | null>(null)
+export default function OutreachDraftModal(props: Props) {
+  const { entity_type, onClose, onSaved } = props
+
+  const entityLabel = entity_type === 'company'
+    ? `${props.company.name} · ${props.company.current_submarket}`
+    : `${props.property.property_id} · ${props.property.submarket}`
+
+  const typeLabel = entity_type === 'property'
+    ? OUTREACH_TYPE_LABELS[props.outreach_type] ?? props.outreach_type
+    : 'Tenant Outreach'
+
+  const [draft, setDraft]         = useState<OutreachDraft | null>(null)
+  const [error, setError]         = useState<string | null>(null)
+  const [emailSent, setEmailSent] = useState(false)
+  const [callMade, setCallMade]   = useState(false)
+  const [notes, setNotes]         = useState('')
+  const [saving, setSaving]       = useState(false)
 
   const load = useCallback(async () => {
     setError(null)
     try {
-      const result = await draftOutreach(company.company_id)
+      let result: OutreachDraft
+      if (entity_type === 'company') {
+        result = await draftOutreach(props.company.company_id)
+      } else {
+        result = await draftPropertyOutreach(props.property.property_id, props.outreach_type)
+      }
       setDraft(result)
     } catch (e: unknown) {
       const msg = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
         || 'Generation failed. Check that OPENAI_API_KEY is set and try again.'
       setError(msg)
     }
-  }, [company.company_id])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [entity_type,
+    entity_type === 'company' ? props.company.company_id : props.property.property_id,
+    entity_type === 'property' ? props.outreach_type : null,
+  ])
 
   useEffect(() => { load() }, [load])
 
@@ -98,24 +142,34 @@ export default function OutreachDraftModal({ company, onClose, onSaved }: Props)
     if (!draft) return
     setSaving(true)
     try {
-      const log = await logOutreach(company.company_id, {
+      const base = {
         email_subject:          draft.email_subject,
         email_body:             draft.email_body,
         call_script_opening:    draft.call_script.opening,
         call_script_core:       draft.call_script.core_message,
         call_script_pain_probe: draft.call_script.pain_probe,
         call_script_close:      draft.call_script.the_close,
-        projected_sf:           draft.projected_sf,
+        projected_sf:           draft.projected_sf ?? null,
         score_at_generation:    draft.score,
         priority_at_generation: draft.priority,
         email_sent:             emailSent,
         call_made:              callMade,
-      })
-      setSavedLogId(log.id)
+      }
 
-      // Update outcome notes if present
+      let logId: number
+      if (entity_type === 'company') {
+        const log = await logOutreach(props.company.company_id, base)
+        logId = log.id
+      } else {
+        const log = await logPropertyOutreach(props.property.property_id, {
+          ...base,
+          outreach_type: props.outreach_type,
+        })
+        logId = log.id
+      }
+
       if (notes.trim() || emailSent || callMade) {
-        await updateOutreachLog(log.id, {
+        await updateOutreachLog(logId, {
           outcome_notes:    notes.trim() || undefined,
           marked_contacted: emailSent || callMade,
         })
@@ -133,8 +187,13 @@ export default function OutreachDraftModal({ company, onClose, onSaved }: Props)
         {/* Header */}
         <div className="flex items-start justify-between p-5 border-b border-surface-border flex-shrink-0">
           <div>
-            <div className="font-bold text-ink-primary text-base">Outreach Package</div>
-            <div className="text-xs text-ink-muted mt-0.5">{company.name} · {company.current_submarket}</div>
+            <div className="flex items-center gap-2">
+              <span className="font-bold text-ink-primary text-base">Outreach Package</span>
+              <span className="text-[10px] px-2 py-0.5 rounded-full bg-accent-blue/15 text-accent-blue font-medium">
+                {typeLabel}
+              </span>
+            </div>
+            <div className="text-xs text-ink-muted mt-0.5">{entityLabel}</div>
           </div>
           <button onClick={onClose} className="text-ink-muted hover:text-ink-primary p-1">
             <X size={18} />

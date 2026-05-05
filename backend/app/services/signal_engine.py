@@ -573,6 +573,274 @@ NOVA_AVG_HOLD_YEARS = 7.0
 MODERN_SF_PER_HEAD = 175
 
 
+# ===========================================================================
+# E. PROPERTY-SIDE OUTREACH SCORES
+# Three independent 0-100 scores; the highest determines `dominant_score_type`,
+# which drives the right outreach template (tenant_match | listing_rep |
+# acquisition). Each signal returns None to abstain when its inputs are
+# missing; the composite normalises across whatever scored.
+# ===========================================================================
+
+def _pscore(scores: dict, weights: dict) -> Optional[float]:
+    """Property-score composite: weighted avg over scored signals only.
+
+    Returns None when no signal could score (insufficient data).
+    """
+    scored = {k: v for k, v in scores.items() if v is not None}
+    if not scored:
+        return None
+    total_weight = sum(weights[k] for k in scored)
+    if total_weight <= 0:
+        return None
+    composite = sum(scored[k] * weights[k] for k in scored) / total_weight
+    return round(_clamp(composite), 2)
+
+
+def compute_tenant_match_score(
+    vacancy_pct: Optional[float],
+    sf_avail: Optional[int],
+    total_sf: int,
+    submarket_vacancy_avg: Optional[float],
+    market_rent_psf: float,
+    in_place_rent_psf: Optional[float],
+    asking_rent_psf: Optional[float],
+    tenancy: Optional[str],
+) -> Optional[float]:
+    """Likelihood this property is a strong target for a hybrid tenant pitch
+    to the owner. High vacancy + abundant available SF + multi-tenant +
+    asking rent at-or-below market = stronger match.
+    """
+    sigs: dict = {}
+
+    # Vacancy headroom — landlord has rooms to fill
+    if vacancy_pct is not None:
+        if vacancy_pct >= 40:   sigs["vacancy"] = 100.0
+        elif vacancy_pct >= 25: sigs["vacancy"] = 75.0
+        elif vacancy_pct >= 15: sigs["vacancy"] = 50.0
+        elif vacancy_pct >= 8:  sigs["vacancy"] = 25.0
+        else:                   sigs["vacancy"] = 5.0
+    else:
+        sigs["vacancy"] = None
+
+    # Available SF as proportion of total
+    if sf_avail and total_sf > 0:
+        avail_pct = sf_avail / total_sf * 100
+        if avail_pct >= 30:   sigs["avail_sf"] = 100.0
+        elif avail_pct >= 15: sigs["avail_sf"] = 70.0
+        elif avail_pct >= 5:  sigs["avail_sf"] = 40.0
+        else:                 sigs["avail_sf"] = 15.0
+    else:
+        sigs["avail_sf"] = None
+
+    # Submarket activity — high submarket vacancy = soft demand, easier deal
+    if submarket_vacancy_avg is not None:
+        if submarket_vacancy_avg >= 25:   sigs["submarket"] = 80.0
+        elif submarket_vacancy_avg >= 18: sigs["submarket"] = 55.0
+        else:                              sigs["submarket"] = 30.0
+    else:
+        sigs["submarket"] = None
+
+    # Asking vs market rent (lower asking vs market = pricing flexibility)
+    asking = asking_rent_psf or in_place_rent_psf
+    if asking and market_rent_psf > 0:
+        delta_pct = (market_rent_psf - asking) / market_rent_psf * 100
+        if delta_pct >= 10:  sigs["rent_gap"] = 80.0
+        elif delta_pct >= 0: sigs["rent_gap"] = 55.0
+        elif delta_pct >= -5: sigs["rent_gap"] = 35.0
+        else:                 sigs["rent_gap"] = 15.0
+    else:
+        sigs["rent_gap"] = None
+
+    # Tenancy — multi-tenant buildings absorb hybrid tenants more easily
+    if tenancy:
+        sigs["tenancy"] = 80.0 if tenancy.lower().startswith("multi") else 35.0
+    else:
+        sigs["tenancy"] = None
+
+    weights = {
+        "vacancy":   0.30,
+        "avail_sf":  0.25,
+        "submarket": 0.15,
+        "rent_gap":  0.20,
+        "tenancy":   0.10,
+    }
+    return _pscore(sigs, weights)
+
+
+def compute_listing_rep_score(
+    years_owned: Optional[float],
+    in_place_rent_psf: Optional[float],
+    market_rent_psf: float,
+    year_built: int,
+    last_renovation_year: Optional[int],
+    estimated_loan_maturity_year: Optional[int],
+    owner_type: Optional[str],
+) -> Optional[float]:
+    """Likelihood this owner is ready to list — and would value a quiet,
+    relationship-first conversation with a listing broker. Long hold +
+    rent below market + capex gap + debt pressure + LLC ownership all
+    push the score up.
+    """
+    sigs: dict = {}
+
+    # Hold period
+    if years_owned is not None:
+        if years_owned >= 20:   sigs["hold"] = 100.0
+        elif years_owned >= 12: sigs["hold"] = 75.0
+        elif years_owned >= 8:  sigs["hold"] = 45.0
+        elif years_owned >= 5:  sigs["hold"] = 20.0
+        else:                   sigs["hold"] = 5.0
+    else:
+        sigs["hold"] = None
+
+    # In-place rent vs market — lower = stronger mark-to-market motivation
+    if in_place_rent_psf and market_rent_psf > 0:
+        gap_pct = (market_rent_psf - in_place_rent_psf) / market_rent_psf * 100
+        sigs["rent_spread"] = _clamp(gap_pct * 3.0)
+    else:
+        sigs["rent_spread"] = None
+
+    # Capex gap — years since renovation (or built)
+    baseline = last_renovation_year if last_renovation_year else year_built
+    years_stale = CURRENT_YEAR - baseline
+    if years_stale >= 25:   sigs["capex"] = 100.0
+    elif years_stale >= 18: sigs["capex"] = 70.0
+    elif years_stale >= 12: sigs["capex"] = 45.0
+    elif years_stale >= 6:  sigs["capex"] = 20.0
+    else:                   sigs["capex"] = 5.0
+
+    # Debt pressure — loan maturity within 24 months
+    if estimated_loan_maturity_year is not None:
+        years_to_maturity = estimated_loan_maturity_year - CURRENT_YEAR
+        if years_to_maturity <= 0:   sigs["debt"] = 100.0
+        elif years_to_maturity <= 1: sigs["debt"] = 80.0
+        elif years_to_maturity <= 2: sigs["debt"] = 60.0
+        elif years_to_maturity <= 3: sigs["debt"] = 30.0
+        else:                        sigs["debt"] = 0.0
+    else:
+        sigs["debt"] = None
+
+    # Owner type — small LLCs are more receptive than institutional capital
+    if owner_type:
+        ot = owner_type.lower()
+        if "llc" in ot or "individual" in ot: sigs["owner"] = 75.0
+        elif "lp" in ot or "partnership" in ot: sigs["owner"] = 55.0
+        elif "reit" in ot or "institutional" in ot or "private equity" in ot: sigs["owner"] = 25.0
+        else: sigs["owner"] = 50.0
+    else:
+        sigs["owner"] = None
+
+    weights = {
+        "hold":        0.30,
+        "rent_spread": 0.20,
+        "capex":       0.20,
+        "debt":        0.20,
+        "owner":       0.10,
+    }
+    return _pscore(sigs, weights)
+
+
+def compute_acquisition_score(
+    cap_rate: Optional[float],
+    market_cap_rate: float,
+    asking_price_psf: Optional[float],
+    submarket_avg_psf: float,
+    sf_avail: Optional[int],
+    total_sf: int,
+    is_listed: bool,
+    years_owned: Optional[float],
+    star_rating: Optional[int],
+    year_built: int,
+    last_renovation_year: Optional[int],
+) -> Optional[float]:
+    """Likelihood the property has a value-add / repositioning thesis a
+    principal buyer would underwrite. Cap rate spread, price/SF discount,
+    sublease overhang, hold + listed status, and condition (low star + capex
+    gap = value-add) all factor in.
+    """
+    sigs: dict = {}
+
+    # Cap rate spread vs submarket avg
+    if cap_rate and market_cap_rate > 0:
+        spread = cap_rate - market_cap_rate
+        if spread >= 1.5:  sigs["cap_spread"] = 100.0
+        elif spread >= 1.0: sigs["cap_spread"] = 75.0
+        elif spread >= 0.5: sigs["cap_spread"] = 45.0
+        elif spread > 0:    sigs["cap_spread"] = _clamp(spread * 40.0)
+        else:               sigs["cap_spread"] = 0.0
+    else:
+        sigs["cap_spread"] = None
+
+    # Asking price/SF vs submarket comp avg
+    if asking_price_psf and submarket_avg_psf > 0:
+        discount_pct = (submarket_avg_psf - asking_price_psf) / submarket_avg_psf * 100
+        sigs["price_psf"] = _clamp(discount_pct * 2.5)
+    else:
+        sigs["price_psf"] = None
+
+    # Sublease / available SF overhang — value-add via re-leasing
+    if sf_avail and total_sf > 0:
+        avail_pct = sf_avail / total_sf * 100
+        if avail_pct >= 30: sigs["sublease"] = 90.0
+        elif avail_pct >= 15: sigs["sublease"] = 60.0
+        elif avail_pct >= 5:  sigs["sublease"] = 30.0
+        else:                 sigs["sublease"] = 0.0
+    else:
+        sigs["sublease"] = None
+
+    # Listed × hold — long hold listings are negotiable
+    if is_listed and years_owned is not None:
+        if years_owned >= 12:   sigs["hold_listed"] = 90.0
+        elif years_owned >= 8:  sigs["hold_listed"] = 60.0
+        elif years_owned >= 5:  sigs["hold_listed"] = 30.0
+        else:                   sigs["hold_listed"] = 10.0
+    elif is_listed:
+        sigs["hold_listed"] = 25.0
+    else:
+        sigs["hold_listed"] = None
+
+    # Building condition — low star rating + capex gap = value-add play
+    baseline = last_renovation_year if last_renovation_year else year_built
+    years_stale = CURRENT_YEAR - baseline
+    if star_rating is not None:
+        condition = (5 - star_rating) * 15.0  # 1-star → 60, 5-star → 0
+        capex_bonus = 30.0 if years_stale >= 18 else (15.0 if years_stale >= 10 else 0.0)
+        sigs["condition"] = _clamp(condition + capex_bonus)
+    elif years_stale >= 18:
+        sigs["condition"] = 50.0
+    elif years_stale >= 10:
+        sigs["condition"] = 25.0
+    else:
+        sigs["condition"] = None
+
+    weights = {
+        "cap_spread":  0.30,
+        "price_psf":   0.20,
+        "sublease":    0.15,
+        "hold_listed": 0.15,
+        "condition":   0.20,
+    }
+    return _pscore(sigs, weights)
+
+
+def determine_dominant_score_type(
+    tenant_match: Optional[float],
+    listing_rep:  Optional[float],
+    acquisition:  Optional[float],
+) -> Optional[str]:
+    """Pick the highest-scoring outreach axis. Returns None if nothing scored
+    or all three are below an actionable threshold (15)."""
+    candidates = [
+        ("tenant_match", tenant_match or 0.0),
+        ("listing_rep",  listing_rep  or 0.0),
+        ("acquisition",  acquisition  or 0.0),
+    ]
+    best_name, best_value = max(candidates, key=lambda x: x[1])
+    if best_value < 15:
+        return None
+    return best_name
+
+
 def sig_tenant_rep(tenant_representative: Optional[str]) -> float:
     """
     Tenant representative adjustment — applied as a delta to the composite score.

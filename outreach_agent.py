@@ -1,15 +1,17 @@
 """
 CRE Outreach Agent — Jack Zamer, The Commercial Real Estate Group
 -----------------------------------------------------------------
-Batch outreach CLI. Pulls companies from the Deal Radar platform,
-calls the platform's draft-outreach endpoint (GPT-4o logic lives
-there), saves each package to Google Docs, and logs to the platform.
+Batch outreach CLI. Pulls companies OR properties from the Deal Radar
+platform, calls the platform's draft-outreach endpoint (GPT-4o logic
+lives there), saves each package to Google Docs, and logs to the platform.
 
 Usage:
-  python outreach_agent.py                        # All IMMEDIATE + HIGH
-  python outreach_agent.py --priority IMMEDIATE   # Only IMMEDIATE
-  python outreach_agent.py --company CO-001       # Single company
-  python outreach_agent.py --dry-run              # Preview only, no saving
+  python outreach_agent.py                             # All IMMEDIATE + HIGH companies
+  python outreach_agent.py --priority IMMEDIATE        # Only IMMEDIATE companies
+  python outreach_agent.py --company CO-001            # Single company
+  python outreach_agent.py --property NVA-001          # Single property (auto-selects best outreach type)
+  python outreach_agent.py --property NVA-001 --outreach-type listing_rep
+  python outreach_agent.py --dry-run                   # Preview only, no saving
 """
 
 import argparse
@@ -106,6 +108,26 @@ def draft_outreach_via_api(company_id: str) -> dict:
     return resp.json()
 
 
+def draft_property_outreach_via_api(property_id: str, outreach_type: str) -> dict:
+    """
+    Calls POST /api/properties/{property_id}/draft-outreach?type=...
+    Returns the OutreachDraft dict from the platform.
+    """
+    resp = requests.post(
+        _api(f"/properties/{property_id}/draft-outreach"),
+        params={"outreach_type": outreach_type},
+        timeout=60,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def fetch_property(property_id: str) -> dict:
+    resp = requests.get(_api(f"/properties/{property_id}"), timeout=10)
+    resp.raise_for_status()
+    return resp.json()
+
+
 def log_outreach_via_api(company_id: str, draft: dict) -> Optional[int]:
     """
     Persists a draft to the platform's outreach_log table.
@@ -126,6 +148,27 @@ def log_outreach_via_api(company_id: str, draft: dict) -> Optional[int]:
         "call_made":              False,
     }
     resp = requests.post(_api(f"/companies/{company_id}/log-outreach"), json=payload, timeout=15)
+    resp.raise_for_status()
+    return resp.json().get("id")
+
+
+def log_property_outreach_via_api(property_id: str, draft: dict) -> Optional[int]:
+    script = draft["call_script"]
+    payload = {
+        "email_subject":          draft["email_subject"],
+        "email_body":             draft["email_body"],
+        "call_script_opening":    script["opening"],
+        "call_script_core":       script["core_message"],
+        "call_script_pain_probe": script["pain_probe"],
+        "call_script_close":      script["the_close"],
+        "projected_sf":           draft.get("projected_sf"),
+        "score_at_generation":    draft["score"],
+        "priority_at_generation": draft["priority"],
+        "outreach_type":          draft.get("outreach_type", "broker"),
+        "email_sent":             False,
+        "call_made":              False,
+    }
+    resp = requests.post(_api(f"/properties/{property_id}/log-outreach"), json=payload, timeout=15)
     resp.raise_for_status()
     return resp.json().get("id")
 
@@ -252,11 +295,62 @@ def open_outlook_draft(draft: dict):
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
-def run(args):
+def _print_header():
     print(f"\n{'='*60}")
     print(f"  CRE Outreach Agent | {AGENT_NAME} | {FIRM_NAME}")
     print(f"  Powered by Deal Radar Platform (GPT-4o)")
     print(f"{'='*60}\n")
+
+
+def run_property_outreach(args):
+    """Handle --property NVA-XXX flow."""
+    _print_header()
+    pid = args.property
+
+    try:
+        prop = fetch_property(pid)
+    except Exception as e:
+        print(f"[ERROR] Cannot fetch property {pid}: {e}")
+        return
+
+    outreach_type = args.outreach_type or prop.get("dominant_score_type") or "broker"
+    print(f"  [PROPERTY]  {prop['address']} ({pid})")
+    print(f"  [TYPE]      {outreach_type}")
+    print(f"  [GENERATING] Calling GPT-4o via platform...\n")
+
+    try:
+        draft = draft_property_outreach_via_api(pid, outreach_type)
+    except Exception as e:
+        print(f"  [ERROR] Draft generation failed: {e}")
+        return
+
+    if args.dry_run:
+        print(f"  ── DRY RUN ──")
+        print(f"  OPENING:  {draft['call_script']['opening'][:120]}...")
+        print(f"  SUBJECT:  {draft['email_subject']}")
+        print()
+        return
+
+    try:
+        log_id = log_property_outreach_via_api(pid, draft)
+        print(f"  [PLATFORM] Logged outreach (id={log_id})")
+    except Exception as e:
+        print(f"  [WARN]    Platform log failed: {e}")
+
+    open_outlook_draft(draft)
+    print(f"  [EMAIL]   Outlook draft opened\n")
+
+    print(f"\n{'='*60}")
+    print(f"  Done — property outreach for {pid} ({outreach_type})")
+    print(f"{'='*60}\n")
+
+
+def run(args):
+    if getattr(args, 'property', None):
+        run_property_outreach(args)
+        return
+
+    _print_header()
 
     companies = fetch_companies(
         priority_filter=args.priority,
@@ -305,14 +399,12 @@ def run(args):
             processed += 1
             continue
 
-        # Log to platform so it appears in outreach history
         try:
             log_id = log_outreach_via_api(cid, draft)
             print(f"    [PLATFORM] Logged outreach (id={log_id})")
         except Exception as e:
             print(f"    [WARN]    Platform log failed: {e}")
 
-        # Google Doc
         try:
             doc_url = save_to_google_doc(docs_svc, drive_svc, company, draft)
             print(f"    [DOC]     {doc_url}")
@@ -320,11 +412,9 @@ def run(args):
             print(f"    [ERROR]   Google Doc failed: {e}")
             doc_url = ""
 
-        # Outlook draft
         open_outlook_draft(draft)
         print(f"    [EMAIL]   Outlook draft opened")
 
-        # Tracker
         try:
             log_to_tracker(sheets_svc, company, doc_url)
             print(f"    [TRACKER] Logged")
@@ -343,6 +433,13 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="CRE Outreach Agent — Deal Radar Platform")
     parser.add_argument("--priority", choices=["IMMEDIATE", "HIGH", "WORKABLE"])
     parser.add_argument("--company", help="Single company ID, e.g. CO-001")
+    parser.add_argument("--property", help="Single property ID, e.g. NVA-001")
+    parser.add_argument(
+        "--outreach-type",
+        choices=["tenant_match", "listing_rep", "acquisition", "broker"],
+        default=None,
+        help="Property outreach type (default: auto-select from dominant_score_type)",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Preview without saving")
     args = parser.parse_args()
     run(args)

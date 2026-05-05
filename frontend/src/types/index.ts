@@ -40,6 +40,16 @@ export interface PropertyListOut {
   notes: string | null
   signals_scored_count: number
   insufficient_data: boolean
+  // Part 1/3 enrichment + scores
+  in_place_rent_psf: number | null
+  market_rent_psf: number | null
+  tenant_match_score: number
+  listing_rep_score: number
+  acquisition_score: number
+  dominant_score_type: string | null
+  star_rating: number | null
+  sf_avail: number | null
+  landlord_representative: string | null
 }
 
 export interface PropertyOut extends PropertyListOut {
@@ -52,8 +62,10 @@ export interface PropertyOut extends PropertyListOut {
   acquisition_price: number | null
   asking_price: number | null
   asking_price_psf: number | null
-  in_place_rent_psf: number
-  market_rent_psf: number
+  in_place_rent_psf: number | null
+  market_rent_psf: number | null
+  in_place_rent_source: string | null
+  in_place_rent_last_verified: string | null
   noi: number | null
   cap_rate: number | null
   market_cap_rate: number
@@ -68,6 +80,13 @@ export interface PropertyOut extends PropertyListOut {
   owner_behavior_score: number
   deal_type: string | null
   signal_breakdown: SignalBreakdown | null
+  // CoStar enrichment fields
+  landlord_rep_contact: string | null
+  sales_company: string | null
+  sales_contact: string | null
+  tenancy: string | null
+  stories: number | null
+  parking_ratio: number | null
 }
 
 export type RepClass = 'BLANK' | 'MAJOR' | 'OTHER'
@@ -116,11 +135,14 @@ export interface OutreachDraft {
   score: number
   priority: Priority
   generated_at: string
+  outreach_type?: string
 }
 
 export interface OutreachLog {
   id: number
-  company_id: number
+  company_id: number | null
+  property_id: number | null
+  outreach_type: string
   generated_at: string
   email_subject: string
   email_body: string
@@ -237,11 +259,28 @@ export interface DashboardStats {
   avg_signal_score: number
 }
 
+export interface TenantMatchTarget {
+  rank: number
+  property_id: string
+  address: string
+  submarket: string
+  asset_class: string
+  total_sf: number
+  owner_name: string
+  vacancy_pct: number | null
+  sf_avail: number | null
+  tenant_match_score: number
+  in_place_rent_psf: number | null
+  market_rent_psf: number | null
+}
+
 export interface DailyBriefing {
   briefing_date: string
   stats: DashboardStats
   immediate_deals: CallTarget[]
+  high_priority_deals: CallTarget[]
   pre_market_predictions: CallTarget[]
   tenant_opportunities: CallTarget[]
+  tenant_match_properties: TenantMatchTarget[]
   signal_refresh_timestamp: string | null
 }

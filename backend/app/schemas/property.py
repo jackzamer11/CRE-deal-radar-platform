@@ -42,6 +42,8 @@ class PropertyBase(BaseModel):
     noi: Optional[float] = None
     cap_rate: Optional[float] = None
     market_cap_rate: float
+    in_place_rent_source: Optional[str] = None
+    in_place_rent_last_verified: Optional[date] = None
     occupancy_pct: Optional[float] = None
     vacancy_pct: Optional[float] = None
     vacancy_12mo_ago: Optional[float] = None
@@ -60,6 +62,17 @@ class PropertyBase(BaseModel):
     estimated_ltv: Optional[float] = None
     notes: Optional[str] = None
 
+    # CoStar enrichment fields
+    star_rating: Optional[int] = None
+    sf_avail: Optional[int] = None
+    landlord_representative: Optional[str] = None
+    landlord_rep_contact: Optional[str] = None
+    sales_company: Optional[str] = None
+    sales_contact: Optional[str] = None
+    tenancy: Optional[str] = None
+    stories: Optional[int] = None
+    parking_ratio: Optional[float] = None
+
 
 class PropertyCreate(PropertyBase):
     pass
@@ -71,6 +84,10 @@ class PropertyOut(PropertyBase):
     owner_behavior_score: float
     mispricing_score: float
     signal_score: float
+    tenant_match_score: float = 0.0
+    listing_rep_score: float = 0.0
+    acquisition_score: float = 0.0
+    dominant_score_type: Optional[str] = None
     priority: str
     deal_type: Optional[str] = None
     signal_breakdown: Optional[SignalBreakdown] = None
@@ -94,14 +111,30 @@ class PropertyListOut(BaseModel):
     occupancy_pct: Optional[float]
     years_owned: Optional[float]
     lease_rollover_pct: float
+    in_place_rent_psf: float
+    market_rent_psf: float
     prediction_score: float
     mispricing_score: float
     signal_score: float
+    tenant_match_score: float = 0.0
+    listing_rep_score: float = 0.0
+    acquisition_score: float = 0.0
+    dominant_score_type: Optional[str] = None
     priority: str
     is_listed: bool
     notes: Optional[str]
+    star_rating: Optional[int] = None
+    sf_avail: Optional[int] = None
+    landlord_representative: Optional[str] = None
     signals_scored_count: int = 0
     insufficient_data: bool = False
 
     class Config:
         from_attributes = True
+
+
+# ── In-place rent enrichment ─────────────────────────────────────────────────
+
+class InPlaceRentUpdate(BaseModel):
+    in_place_rent_psf: float
+    in_place_rent_source: str = "manual"  # manual | costar | compstak | public_record

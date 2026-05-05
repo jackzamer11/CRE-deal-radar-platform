@@ -9,7 +9,11 @@ class OutreachLog(Base):
     __tablename__ = "outreach_log"
 
     id                    = Column(Integer, primary_key=True, index=True)
-    company_id            = Column(Integer, ForeignKey("companies.id"), nullable=False, index=True)
+    # Either company_id OR property_id is set, depending on outreach_type.
+    company_id            = Column(Integer, ForeignKey("companies.id"),  nullable=True, index=True)
+    property_id           = Column(Integer, ForeignKey("properties.id"), nullable=True, index=True)
+    # tenant | tenant_match | listing_rep | acquisition | broker
+    outreach_type         = Column(String, nullable=False, default="tenant")
     generated_at          = Column(DateTime, default=datetime.utcnow)
 
     # Generated content
@@ -32,4 +36,5 @@ class OutreachLog(Base):
     outcome_notes    = Column(Text, nullable=True)
     contacted_at     = Column(DateTime, nullable=True)
 
-    company = relationship("Company", back_populates="outreach_logs")
+    company  = relationship("Company",  back_populates="outreach_logs")
+    property = relationship("Property", back_populates="outreach_logs")

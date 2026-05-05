@@ -1,57 +1,151 @@
-import { useEffect, useState } from 'react'
-import { Building2, Filter, RefreshCw, X, Plus, Upload } from 'lucide-react'
-import { getProperties } from '../api/client'
-import type { PropertyListOut, PropertyOut } from '../types'
+import { useEffect, useState, useRef } from 'react'
+import { Building2, Filter, RefreshCw, X, Plus, Upload, Pencil, Check, MessageSquarePlus } from 'lucide-react'
+import {
+  getProperties, updatePropertyInPlaceRent, getPropertyOutreachHistory,
+} from '../api/client'
+import type { PropertyListOut, PropertyOut, OutreachLog } from '../types'
 import { PriorityBadge } from '../components/PriorityBadge'
 import ScoreBadge from '../components/ScoreBadge'
 import AddPropertyModal from '../components/AddPropertyModal'
 import BulkUploadModal from '../components/BulkUploadModal'
 import CoStarImportModal from '../components/CoStarImportModal'
+import OutreachDraftModal from '../components/OutreachDraftModal'
 
 const SUBMARKETS = [
-  'Arlington (Clarendon)',
-  'Arlington (Rosslyn)',
-  'Arlington (Ballston)',
-  'Arlington (Columbia Pike)',
-  'Alexandria (Old Town)',
-  'Tysons',
-  'Reston',
-  'Falls Church',
-  'McLean',
-  'Vienna',
-  'Fairfax City',
+  'Arlington (Clarendon)', 'Arlington (Rosslyn)', 'Arlington (Ballston)',
+  'Arlington (Columbia Pike)', 'Alexandria (Old Town)',
+  'Tysons', 'Reston', 'Falls Church', 'McLean', 'Vienna', 'Fairfax City',
 ]
 
 const PRIORITIES = ['IMMEDIATE', 'HIGH', 'WORKABLE', 'IGNORE']
+
+const SCORE_TYPE_LABELS: Record<string, string> = {
+  tenant_match: 'Tenant Match',
+  listing_rep:  'Listing Rep',
+  acquisition:  'Acquisition',
+}
 
 function fmt(n: number | null | undefined, prefix = '', suffix = ''): string {
   if (n == null) return '—'
   return `${prefix}${n.toLocaleString()}${suffix}`
 }
-
 function fmtK(n: number | null | undefined): string {
   if (n == null) return '—'
   return `${(n / 1000).toFixed(0)}K`
 }
+function fmtRent(n: number | null | undefined): string {
+  if (n == null) return '—'
+  return `$${n.toFixed(2)}`
+}
+
+// ── Inline rent pencil ─────────────────────────────────────────────────────
+
+function RentPencilCell({
+  propertyId,
+  value,
+  onUpdated,
+}: {
+  propertyId: string
+  value: number | null | undefined
+  onUpdated: (newVal: number) => void
+}) {
+  const [editing, setEditing]   = useState(false)
+  const [input, setInput]       = useState(value != null ? String(value) : '')
+  const [saving, setSaving]     = useState(false)
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  const commit = async () => {
+    const parsed = parseFloat(input)
+    if (isNaN(parsed) || parsed <= 0) { setEditing(false); return }
+    setSaving(true)
+    try {
+      await updatePropertyInPlaceRent(propertyId, { in_place_rent_psf: parsed, in_place_rent_source: 'manual' })
+      onUpdated(parsed)
+    } finally {
+      setSaving(false)
+      setEditing(false)
+    }
+  }
+
+  if (editing) {
+    return (
+      <div className="flex items-center gap-1">
+        <input
+          ref={inputRef}
+          autoFocus
+          value={input}
+          onChange={e => setInput(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter') commit(); if (e.key === 'Escape') setEditing(false) }}
+          className="w-16 text-xs mono bg-surface-muted border border-accent-blue/50 rounded px-1 py-0.5 text-ink-primary outline-none"
+          placeholder="$/SF"
+        />
+        <button onClick={commit} disabled={saving} className="text-emerald-400 hover:text-emerald-300">
+          {saving ? '…' : <Check size={11} />}
+        </button>
+        <button onClick={() => setEditing(false)} className="text-ink-muted hover:text-red-400">
+          <X size={11} />
+        </button>
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex items-center gap-1 group">
+      <span className="mono text-xs text-ink-secondary">{fmtRent(value)}</span>
+      <button
+        onClick={e => { e.stopPropagation(); setEditing(true) }}
+        title="Edit in-place rent"
+        className={`opacity-0 group-hover:opacity-100 text-ink-muted hover:text-accent-blue transition-opacity ${value == null ? 'opacity-60' : ''}`}
+      >
+        <Pencil size={10} />
+      </button>
+    </div>
+  )
+}
+
+// ── Score type badge ───────────────────────────────────────────────────────
+
+function DominantBadge({ type }: { type: string | null | undefined }) {
+  if (!type) return <span className="text-xs text-ink-muted">—</span>
+  const colours: Record<string, string> = {
+    tenant_match: 'bg-violet-500/15 text-violet-400 border-violet-500/30',
+    listing_rep:  'bg-amber-500/15 text-amber-400 border-amber-500/30',
+    acquisition:  'bg-emerald-500/15 text-emerald-400 border-emerald-500/30',
+  }
+  const cls = colours[type] ?? 'bg-surface-muted text-ink-muted border-surface-border'
+  return (
+    <span className={`text-[10px] px-2 py-0.5 rounded border font-semibold ${cls}`}>
+      {SCORE_TYPE_LABELS[type] ?? type}
+    </span>
+  )
+}
+
+// ── Main component ─────────────────────────────────────────────────────────
 
 export default function Properties() {
-  const [properties, setProperties] = useState<PropertyListOut[]>([])
-  const [loading, setLoading] = useState(true)
-  const [submarket, setSubmarket] = useState('')
-  const [priority, setPriority] = useState('')
-  const [listedOnly, setListedOnly] = useState<boolean | undefined>()
-  const [selected, setSelected] = useState<PropertyListOut | null>(null)
-  const [showAddModal, setShowAddModal] = useState(false)
-  const [showBulkModal, setShowBulkModal] = useState(false)
+  const [properties, setProperties]         = useState<PropertyListOut[]>([])
+  const [loading, setLoading]               = useState(true)
+  const [submarket, setSubmarket]           = useState('')
+  const [priority, setPriority]             = useState('')
+  const [listedOnly, setListedOnly]         = useState<boolean | undefined>()
+  const [scoreTypeFilter, setScoreTypeFilter] = useState('')
+  const [needsOutreach, setNeedsOutreach]   = useState(false)
+  const [selected, setSelected]             = useState<PropertyListOut | null>(null)
+  const [selectedLogs, setSelectedLogs]     = useState<OutreachLog[]>([])
+  const [showAddModal, setShowAddModal]     = useState(false)
+  const [showBulkModal, setShowBulkModal]   = useState(false)
   const [showCoStarModal, setShowCoStarModal] = useState(false)
+  const [outreachModal, setOutreachModal]   = useState<{ prop: PropertyListOut; type: string } | null>(null)
 
   const load = async () => {
     setLoading(true)
     try {
       const data = await getProperties({
         submarket: submarket || undefined,
-        priority: priority || undefined,
+        priority:  priority  || undefined,
         is_listed: listedOnly,
+        dominant_score_type: scoreTypeFilter || undefined,
+        needs_outreach: needsOutreach || undefined,
       })
       setProperties(data)
     } finally {
@@ -59,7 +153,39 @@ export default function Properties() {
     }
   }
 
-  useEffect(() => { load() }, [submarket, priority, listedOnly])
+  useEffect(() => { load() }, [submarket, priority, listedOnly, scoreTypeFilter, needsOutreach])
+
+  const handleSelect = async (p: PropertyListOut) => {
+    setSelected(p)
+    try {
+      const logs = await getPropertyOutreachHistory(p.property_id)
+      setSelectedLogs(logs)
+    } catch {
+      setSelectedLogs([])
+    }
+  }
+
+  const handleRentUpdated = (propertyId: string, newVal: number) => {
+    setProperties(ps => ps.map(p =>
+      p.property_id === propertyId ? { ...p, in_place_rent_psf: newVal } : p
+    ))
+    if (selected?.property_id === propertyId) {
+      setSelected(s => s ? { ...s, in_place_rent_psf: newVal } : s)
+    }
+  }
+
+  const bestOutreachType = (p: PropertyListOut): string => {
+    return p.dominant_score_type ?? 'broker'
+  }
+
+  const clearFilters = () => {
+    setSubmarket(''); setPriority(''); setListedOnly(undefined)
+    setScoreTypeFilter(''); setNeedsOutreach(false)
+  }
+
+  const anyFilter = submarket || priority || listedOnly !== undefined || scoreTypeFilter || needsOutreach
+
+  const colCount = 18
 
   return (
     <div className="p-6">
@@ -69,6 +195,11 @@ export default function Properties() {
           <Building2 size={20} className="text-accent-blue" />
           <h1 className="text-xl font-bold text-ink-primary">Properties</h1>
           <span className="text-ink-muted text-sm">({properties.length})</span>
+          {needsOutreach && (
+            <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-400 border border-amber-500/30 font-semibold">
+              Top 20 Needing Outreach
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-2">
           <button
@@ -90,7 +221,7 @@ export default function Properties() {
             className="flex items-center gap-2 px-4 py-2 rounded-lg bg-surface-card border border-surface-border
                        text-ink-secondary hover:text-ink-primary text-xs font-semibold transition-colors"
           >
-            <Upload size={13} /> Import CoStar Export
+            <Upload size={13} /> Import CoStar
           </button>
           <button onClick={load} className="p-2 rounded-lg hover:bg-surface-card text-ink-muted hover:text-ink-primary">
             <RefreshCw size={15} className={loading ? 'animate-spin' : ''} />
@@ -126,9 +257,29 @@ export default function Properties() {
           <option value="true">Listed Only</option>
           <option value="false">Off-Market Only</option>
         </select>
-        {(submarket || priority || listedOnly !== undefined) && (
+        <select
+          value={scoreTypeFilter}
+          onChange={e => setScoreTypeFilter(e.target.value)}
+          className="bg-surface-card border border-surface-border text-ink-secondary text-xs rounded-lg px-3 py-1.5"
+        >
+          <option value="">All Score Types</option>
+          <option value="tenant_match">Tenant Match</option>
+          <option value="listing_rep">Listing Rep</option>
+          <option value="acquisition">Acquisition</option>
+        </select>
+        <button
+          onClick={() => setNeedsOutreach(v => !v)}
+          className={`flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border font-medium transition-colors
+            ${needsOutreach
+              ? 'bg-amber-500/15 text-amber-400 border-amber-500/40'
+              : 'bg-surface-card border-surface-border text-ink-muted hover:text-ink-primary'}`}
+        >
+          <MessageSquarePlus size={12} />
+          Top 20 Needing Outreach
+        </button>
+        {anyFilter && (
           <button
-            onClick={() => { setSubmarket(''); setPriority(''); setListedOnly(undefined) }}
+            onClick={clearFilters}
             className="flex items-center gap-1 text-xs text-ink-muted hover:text-red-400"
           >
             <X size={12} /> Clear
@@ -147,25 +298,30 @@ export default function Properties() {
                 <th>Submarket</th>
                 <th>SF</th>
                 <th>Owner</th>
-                <th>Yrs Owned</th>
-                <th>Vacancy</th>
-                <th>Rollover %</th>
+                <th>Yrs</th>
+                <th>Vac%</th>
+                <th>Rollover</th>
                 <th>In-Place $/SF</th>
                 <th>Mkt $/SF</th>
+                <th>Avail SF</th>
                 <th>Status</th>
                 <th>Prediction</th>
                 <th>Mispricing</th>
                 <th>Signal</th>
+                <th>TM</th>
+                <th>LR</th>
+                <th>Acq</th>
+                <th>Dominant</th>
                 <th>Priority</th>
               </tr>
             </thead>
             <tbody>
               {loading ? (
-                <tr><td colSpan={15} className="text-center py-8 text-ink-muted">Loading...</td></tr>
+                <tr><td colSpan={colCount} className="text-center py-8 text-ink-muted">Loading...</td></tr>
               ) : properties.length === 0 ? (
-                <tr><td colSpan={15} className="text-center py-8 text-ink-muted">No properties found</td></tr>
+                <tr><td colSpan={colCount} className="text-center py-8 text-ink-muted">No properties found</td></tr>
               ) : properties.map(p => (
-                <tr key={p.id} onClick={() => setSelected(p)}>
+                <tr key={p.id} onClick={() => handleSelect(p)}>
                   <td className="mono text-xs text-accent-blue">{p.property_id}</td>
                   <td className="max-w-xs">
                     <div className="truncate text-ink-primary font-medium" title={p.address}>{p.address}</div>
@@ -173,7 +329,7 @@ export default function Properties() {
                   </td>
                   <td className="text-ink-secondary text-xs">{p.submarket}</td>
                   <td className="mono text-xs">{fmtK(p.total_sf)}</td>
-                  <td className="max-w-[140px]">
+                  <td className="max-w-[120px]">
                     <div className="truncate text-xs" title={p.owner_name}>{p.owner_name}</div>
                   </td>
                   <td className="mono text-xs">
@@ -192,8 +348,15 @@ export default function Properties() {
                     )}
                   </td>
                   <td className="mono text-xs">{p.lease_rollover_pct.toFixed(0)}%</td>
-                  <td className="mono text-xs text-ink-secondary">—</td>
-                  <td className="mono text-xs text-ink-secondary">—</td>
+                  <td onClick={e => e.stopPropagation()}>
+                    <RentPencilCell
+                      propertyId={p.property_id}
+                      value={p.in_place_rent_psf}
+                      onUpdated={v => handleRentUpdated(p.property_id, v)}
+                    />
+                  </td>
+                  <td className="mono text-xs text-ink-secondary">{fmtRent(p.market_rent_psf)}</td>
+                  <td className="mono text-xs text-ink-secondary">{fmt(p.sf_avail, '', ' SF')}</td>
                   <td>
                     {p.is_listed ? (
                       <span className="text-[10px] bg-amber-500/15 text-amber-400 border border-amber-500/30 px-2 py-0.5 rounded font-semibold">
@@ -208,6 +371,10 @@ export default function Properties() {
                   <td><ScoreBadge score={p.prediction_score} size="sm" showBar /></td>
                   <td><ScoreBadge score={p.mispricing_score} size="sm" showBar /></td>
                   <td><ScoreBadge score={p.signal_score} size="sm" showBar /></td>
+                  <td><ScoreBadge score={p.tenant_match_score} size="sm" showBar /></td>
+                  <td><ScoreBadge score={p.listing_rep_score}  size="sm" showBar /></td>
+                  <td><ScoreBadge score={p.acquisition_score}  size="sm" showBar /></td>
+                  <td><DominantBadge type={p.dominant_score_type} /></td>
                   <td><PriorityBadge priority={p.priority} /></td>
                 </tr>
               ))}
@@ -216,30 +383,32 @@ export default function Properties() {
         </div>
       </div>
 
+      {/* Modals */}
       {showAddModal && (
         <AddPropertyModal
           onClose={() => setShowAddModal(false)}
           onSaved={(_saved: PropertyOut) => { setShowAddModal(false); load() }}
         />
       )}
-
       {showBulkModal && (
-        <BulkUploadModal
-          onClose={() => setShowBulkModal(false)}
-          onDone={load}
-        />
+        <BulkUploadModal onClose={() => setShowBulkModal(false)} onDone={load} />
       )}
-
       {showCoStarModal && (
-        <CoStarImportModal
-          onClose={() => setShowCoStarModal(false)}
-          onDone={load}
+        <CoStarImportModal onClose={() => setShowCoStarModal(false)} onDone={load} />
+      )}
+      {outreachModal && (
+        <OutreachDraftModal
+          entity_type="property"
+          property={outreachModal.prop}
+          outreach_type={outreachModal.type}
+          onClose={() => setOutreachModal(null)}
+          onSaved={() => { setOutreachModal(null); load() }}
         />
       )}
 
       {/* Detail panel */}
       {selected && (
-        <div className="fixed inset-y-0 right-0 w-96 bg-surface-card border-l border-surface-border
+        <div className="fixed inset-y-0 right-0 w-[420px] bg-surface-card border-l border-surface-border
                         shadow-2xl z-50 overflow-y-auto">
           <div className="p-5">
             <div className="flex items-start justify-between mb-4">
@@ -254,11 +423,15 @@ export default function Properties() {
             </div>
 
             <div className="space-y-3">
-              <PriorityBadge priority={selected.priority} />
+              <div className="flex items-center gap-2 flex-wrap">
+                <PriorityBadge priority={selected.priority} />
+                <DominantBadge type={selected.dominant_score_type} />
+              </div>
 
-              <div className="grid grid-cols-2 gap-3">
+              {/* Traditional scores */}
+              <div className="grid grid-cols-2 gap-2">
                 <div className="bg-surface-muted rounded-lg p-3">
-                  <div className="text-[10px] text-ink-muted uppercase tracking-wider mb-1">Signal Score</div>
+                  <div className="text-[10px] text-ink-muted uppercase tracking-wider mb-1">Signal</div>
                   <ScoreBadge score={selected.signal_score} size="lg" showBar />
                 </div>
                 <div className="bg-surface-muted rounded-lg p-3">
@@ -267,20 +440,94 @@ export default function Properties() {
                 </div>
               </div>
 
+              {/* Outreach scores */}
+              <div className="grid grid-cols-3 gap-2">
+                <div className="bg-violet-500/8 border border-violet-500/20 rounded-lg p-2">
+                  <div className="text-[9px] text-violet-400 uppercase tracking-wider mb-1">Tenant Match</div>
+                  <ScoreBadge score={selected.tenant_match_score} size="sm" showBar />
+                </div>
+                <div className="bg-amber-500/8 border border-amber-500/20 rounded-lg p-2">
+                  <div className="text-[9px] text-amber-400 uppercase tracking-wider mb-1">Listing Rep</div>
+                  <ScoreBadge score={selected.listing_rep_score} size="sm" showBar />
+                </div>
+                <div className="bg-emerald-500/8 border border-emerald-500/20 rounded-lg p-2">
+                  <div className="text-[9px] text-emerald-400 uppercase tracking-wider mb-1">Acquisition</div>
+                  <ScoreBadge score={selected.acquisition_score} size="sm" showBar />
+                </div>
+              </div>
+
+              {/* Draft Outreach button */}
+              <button
+                onClick={() => setOutreachModal({ prop: selected, type: bestOutreachType(selected) })}
+                className="w-full flex items-center justify-center gap-2 py-2 rounded-lg
+                           bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold transition-colors"
+              >
+                <MessageSquarePlus size={13} />
+                Draft Outreach
+                {selected.dominant_score_type && (
+                  <span className="opacity-75">({SCORE_TYPE_LABELS[selected.dominant_score_type] ?? selected.dominant_score_type})</span>
+                )}
+              </button>
+
+              {/* Other outreach type buttons */}
+              <div className="flex gap-2">
+                {(['tenant_match', 'listing_rep', 'acquisition', 'broker'] as const)
+                  .filter(t => t !== selected.dominant_score_type)
+                  .map(t => (
+                    <button
+                      key={t}
+                      onClick={() => setOutreachModal({ prop: selected, type: t })}
+                      className="flex-1 text-[10px] py-1.5 rounded-lg border border-surface-border
+                                 text-ink-muted hover:text-ink-primary hover:border-accent-blue/40 transition-colors"
+                    >
+                      {SCORE_TYPE_LABELS[t] ?? t}
+                    </button>
+                  ))}
+              </div>
+
               <div className="bg-surface-muted rounded-lg p-3 space-y-2">
                 <div className="text-[10px] text-ink-muted uppercase tracking-wider mb-2">Property Details</div>
                 <Row label="Total SF"    value={fmt(selected.total_sf, '', ' SF')} />
+                <Row label="Avail SF"    value={fmt(selected.sf_avail, '', ' SF')} />
                 <Row label="Vacancy"     value={selected.occupancy_pct == null ? '—' : `${(100 - selected.occupancy_pct).toFixed(0)}%`} />
+                <Row label="In-Place $/SF" value={fmtRent(selected.in_place_rent_psf)} />
+                <Row label="Market $/SF"   value={fmtRent(selected.market_rent_psf)} />
                 <Row label="Rollover"    value={`${selected.lease_rollover_pct.toFixed(0)}% (12mo)`} />
                 <Row label="Owner"       value={selected.owner_name} />
                 <Row label="Held"        value={selected.years_owned ? `${selected.years_owned.toFixed(1)} years` : '—'} />
                 <Row label="Listed"      value={selected.is_listed ? 'Yes' : 'Off-Market'} />
+                {selected.landlord_representative && (
+                  <Row label="Landlord Rep" value={selected.landlord_representative} />
+                )}
+                {selected.star_rating != null && (
+                  <Row label="Star Rating" value={`${selected.star_rating}★`} />
+                )}
               </div>
 
-              {selected.notes && (
+              {/* Outreach history */}
+              {selectedLogs.length > 0 && (
                 <div className="bg-surface-muted rounded-lg p-3">
-                  <div className="text-[10px] text-ink-muted uppercase tracking-wider mb-1">Intel</div>
-                  <p className="text-xs text-ink-secondary leading-relaxed">{selected.notes}</p>
+                  <div className="text-[10px] text-ink-muted uppercase tracking-wider mb-2">
+                    Outreach History ({selectedLogs.length})
+                  </div>
+                  <div className="space-y-2">
+                    {selectedLogs.slice(0, 5).map(log => (
+                      <div key={log.id} className="text-xs border-b border-surface-border pb-2 last:border-0 last:pb-0">
+                        <div className="flex items-center justify-between">
+                          <span className="text-ink-secondary font-medium truncate">{log.email_subject}</span>
+                          <span className="text-[9px] text-ink-muted ml-2 shrink-0">
+                            {new Date(log.generated_at).toLocaleDateString()}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-2 mt-0.5">
+                          <span className="text-[9px] text-ink-muted">{log.outreach_type}</span>
+                          {log.marked_contacted && (
+                            <span className="text-[9px] text-emerald-400">contacted</span>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               )}
             </div>

@@ -40,6 +40,19 @@ class Property(Base):
     noi = Column(Float, nullable=True)
     cap_rate = Column(Float, nullable=True)             # In-place cap rate
     market_cap_rate = Column(Float, nullable=False)     # Submarket avg cap rate
+    in_place_rent_source = Column(String, nullable=True)        # manual | costar | compstak | public_record
+    in_place_rent_last_verified = Column(Date, nullable=True)
+
+    # CoStar enrichment
+    star_rating = Column(Integer, nullable=True)                 # CoStar 1-5 quality rating
+    sf_avail = Column(Integer, nullable=True)                    # Total available SF
+    landlord_representative = Column(String, nullable=True)
+    landlord_rep_contact = Column(String, nullable=True)
+    sales_company = Column(String, nullable=True)
+    sales_contact = Column(String, nullable=True)
+    tenancy = Column(String, nullable=True)                      # 'single' | 'multi'
+    stories = Column(Integer, nullable=True)
+    parking_ratio = Column(Float, nullable=True)                 # spaces per 1,000 SF
 
     # Occupancy & Leasing
     occupancy_pct = Column(Float, nullable=True)
@@ -68,6 +81,12 @@ class Property(Base):
     owner_behavior_score = Column(Float, default=0.0)
     mispricing_score = Column(Float, default=0.0)
     signal_score = Column(Float, default=0.0)           # Weighted composite
+
+    # Property-side outreach scores (each 0-100; max becomes the dominant_score_type)
+    tenant_match_score = Column(Float, default=0.0)
+    listing_rep_score  = Column(Float, default=0.0)
+    acquisition_score  = Column(Float, default=0.0)
+    dominant_score_type = Column(String, nullable=True)  # 'tenant_match' | 'listing_rep' | 'acquisition'
 
     # Signal sub-scores stored for transparency
     sig_lease_rollover = Column(Float, default=0.0)
@@ -98,7 +117,10 @@ class Property(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     last_signal_run = Column(DateTime, nullable=True)
+    # Set on every user-initiated PATCH; guards against pipeline overwrites.
+    last_modified_by_user = Column(DateTime, nullable=True)
 
     # Relationships
     opportunities = relationship("Opportunity", back_populates="property", cascade="all, delete-orphan")
     activity_logs = relationship("ActivityLog", back_populates="property")
+    outreach_logs = relationship("OutreachLog", back_populates="property")

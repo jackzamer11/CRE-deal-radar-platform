@@ -33,10 +33,27 @@ class CallTarget(BaseModel):
     estimated_commission: Optional[float]
 
 
+class TenantMatchTarget(BaseModel):
+    rank: int
+    property_id: str
+    address: str
+    submarket: str
+    asset_class: str
+    total_sf: int
+    owner_name: str
+    vacancy_pct: Optional[float]
+    sf_avail: Optional[int]
+    tenant_match_score: float
+    in_place_rent_psf: Optional[float]
+    market_rent_psf: Optional[float]
+
+
 class DailyBriefing(BaseModel):
     briefing_date: date
     stats: DashboardStats
     immediate_deals: List[CallTarget]
+    high_priority_deals: List[CallTarget]
     pre_market_predictions: List[CallTarget]
     tenant_opportunities: List[CallTarget]
+    tenant_match_properties: List[TenantMatchTarget]
     signal_refresh_timestamp: Optional[str] = None

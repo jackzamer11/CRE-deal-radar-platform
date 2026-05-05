@@ -393,6 +393,7 @@ export default function Companies() {
       )}
       {showOutreachModal && selected && (
         <OutreachDraftModal
+          entity_type="company"
           company={selected}
           onClose={() => setShowOutreachModal(false)}
           onSaved={() => { setShowOutreachModal(false); load() }}

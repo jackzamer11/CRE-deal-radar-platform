@@ -19,6 +19,8 @@ class OutreachDraft(BaseModel):
     score:         float
     priority:      str
     generated_at:  datetime
+    # Property-side outreach: which template variant was used
+    outreach_type: Optional[str] = None
 
 
 class OutreachLogCreate(BaseModel):
@@ -34,6 +36,8 @@ class OutreachLogCreate(BaseModel):
     priority_at_generation: str
     email_sent:            bool = False
     call_made:             bool = False
+    # Property-side: 'tenant_match' | 'listing_rep' | 'acquisition' | 'broker'
+    outreach_type:         Optional[str] = None
 
 
 class OutreachLogUpdate(BaseModel):
@@ -46,7 +50,9 @@ class OutreachLogUpdate(BaseModel):
 
 class OutreachLogOut(BaseModel):
     id:                    int
-    company_id:            int
+    company_id:            Optional[int] = None
+    property_id:           Optional[int] = None
+    outreach_type:         str = "tenant"
     generated_at:          datetime
     email_subject:         str
     email_body:            str

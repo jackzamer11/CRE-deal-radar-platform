@@ -12,9 +12,12 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models.property import Property
-from app.schemas.property import PropertyOut, PropertyListOut, PropertyCreate, SignalBreakdown
+from app.models.outreach_log import OutreachLog
+from app.schemas.property import PropertyOut, PropertyListOut, PropertyCreate, SignalBreakdown, InPlaceRentUpdate
+from app.schemas.outreach import OutreachLogCreate, OutreachLogOut, OutreachDraft, CallScript
 from app.services import signal_engine as se
 from app.services.scoring_model import score_property
+from app.services.property_outreach_service import generate_property_outreach
 from app.config import settings
 
 CURRENT_YEAR = 2026
@@ -126,6 +129,32 @@ COSTAR_REQUIRED_COLS = [
     "For Sale Price", "True Owner Contact", "True Owner Name",
     "True Owner Phone",
 ]
+
+# Optional CoStar enrichment columns (Part 2). Importer maps any that are
+# present; absent columns are silently skipped (kept null).
+COSTAR_OPTIONAL_COLS = [
+    "Star Rating", "SF Avail",
+    "Landlord Representative", "Landlord Rep Contact",
+    "Sales Company", "Sales Contact",
+    "Price/SF", "Tenancy", "Stories", "Parking Ratio",
+]
+
+# Fields on Property that are protected from CoStar overwrite once a user has
+# manually edited them. Mirrors the tenant-side PROTECTED_LEASE_SOURCES guard.
+PROTECTED_RENT_SOURCES = frozenset(
+    {"manual", "compstak", "sec_filing", "landlord_confirmed", "public_record"}
+)
+
+
+def _normalize_tenancy(raw: Optional[str]) -> Optional[str]:
+    if not raw:
+        return None
+    r = raw.strip().lower()
+    if r.startswith("multi") or r in ("multiple", "multi-tenant", "multi tenant"):
+        return "multi"
+    if r.startswith("single") or r in ("single tenant", "single-tenant"):
+        return "single"
+    return None
 
 
 def _costar_str(row: dict, col: str) -> Optional[str]:
@@ -252,6 +281,17 @@ def _parse_costar_row(row: dict, row_num: int) -> tuple:
         asking_price=_costar_float(row, "For Sale Price"),
         estimated_loan_maturity_year=maturity_year,
         notes=notes,
+        # Optional enrichment columns (Part 2)
+        star_rating=_costar_int(row, "Star Rating"),
+        sf_avail=_costar_int(row, "SF Avail"),
+        landlord_representative=_costar_str(row, "Landlord Representative"),
+        landlord_rep_contact=_costar_str(row, "Landlord Rep Contact"),
+        sales_company=_costar_str(row, "Sales Company"),
+        sales_contact=_costar_str(row, "Sales Contact"),
+        asking_price_psf=_costar_float(row, "Price/SF"),
+        tenancy=_normalize_tenancy(_costar_str(row, "Tenancy")),
+        stories=_costar_int(row, "Stories"),
+        parking_ratio=_costar_float(row, "Parking Ratio"),
     ), None
 
 
@@ -278,6 +318,17 @@ class PropertyManualCreate(BaseModel):
     days_on_market: Optional[int] = None
     estimated_loan_maturity_year: Optional[int] = None
     notes: Optional[str] = None
+    # CoStar enrichment (optional)
+    star_rating: Optional[int] = None
+    sf_avail: Optional[int] = None
+    landlord_representative: Optional[str] = None
+    landlord_rep_contact: Optional[str] = None
+    sales_company: Optional[str] = None
+    sales_contact: Optional[str] = None
+    asking_price_psf: Optional[float] = None
+    tenancy: Optional[str] = None
+    stories: Optional[int] = None
+    parking_ratio: Optional[float] = None
 
 
 router = APIRouter(prefix="/properties", tags=["properties"])
@@ -338,6 +389,44 @@ def _run_signals(prop: Property) -> None:
     )
     prop.insufficient_data    = prop.signals_scored_count < 3
 
+    # Property-side outreach scores (Parts 3 / 4)
+    tm = se.compute_tenant_match_score(
+        vacancy_pct=prop.vacancy_pct,
+        sf_avail=prop.sf_avail,
+        total_sf=prop.total_sf or 1,
+        submarket_vacancy_avg=None,
+        market_rent_psf=prop.market_rent_psf or 0.0,
+        in_place_rent_psf=prop.in_place_rent_psf,
+        asking_rent_psf=None,
+        tenancy=prop.tenancy,
+    )
+    lr = se.compute_listing_rep_score(
+        years_owned=prop.years_owned,
+        in_place_rent_psf=prop.in_place_rent_psf,
+        market_rent_psf=prop.market_rent_psf or 0.0,
+        year_built=prop.year_built or 1980,
+        last_renovation_year=prop.last_renovation_year,
+        estimated_loan_maturity_year=prop.estimated_loan_maturity_year,
+        owner_type=prop.owner_type,
+    )
+    ac = se.compute_acquisition_score(
+        cap_rate=prop.cap_rate,
+        market_cap_rate=prop.market_cap_rate or 6.5,
+        asking_price_psf=prop.asking_price_psf,
+        submarket_avg_psf=settings.submarket_avg_psf.get(prop.submarket, 250),
+        sf_avail=prop.sf_avail,
+        total_sf=prop.total_sf or 1,
+        is_listed=bool(prop.is_listed),
+        years_owned=prop.years_owned,
+        star_rating=prop.star_rating,
+        year_built=prop.year_built or 1980,
+        last_renovation_year=prop.last_renovation_year,
+    )
+    prop.tenant_match_score  = tm or 0.0
+    prop.listing_rep_score   = lr or 0.0
+    prop.acquisition_score   = ac or 0.0
+    prop.dominant_score_type = se.determine_dominant_score_type(tm, lr, ac)
+
 
 def _enrich(prop: Property) -> PropertyOut:
     breakdown = SignalBreakdown(
@@ -395,6 +484,9 @@ def _build_property(payload: PropertyManualCreate, property_id: str) -> Property
     if payload.asking_price and payload.in_place_rent_psf and leased_sf:
         cap_rate = round(payload.in_place_rent_psf * leased_sf * 0.55 / payload.asking_price * 100, 2)
 
+    # Prefer payload.asking_price_psf (e.g. CoStar Price/SF) over the derived value.
+    final_asking_psf = payload.asking_price_psf if payload.asking_price_psf is not None else asking_psf
+
     return Property(
         property_id=property_id, address=payload.address, submarket=payload.submarket,
         asset_class=payload.asset_class, total_sf=payload.total_sf,
@@ -403,7 +495,7 @@ def _build_property(payload: PropertyManualCreate, property_id: str) -> Property
         owner_phone=payload.owner_phone, owner_email=payload.owner_email,
         acquisition_date=acq_date, acquisition_price=payload.acquisition_price,
         years_owned=years_owned, asking_price=payload.asking_price,
-        asking_price_psf=asking_psf, in_place_rent_psf=payload.in_place_rent_psf,
+        asking_price_psf=final_asking_psf, in_place_rent_psf=payload.in_place_rent_psf,
         market_rent_psf=market_rent, market_cap_rate=market_cap,
         cap_rate=cap_rate, occupancy_pct=payload.occupancy_pct,
         vacancy_pct=vacancy_pct, leased_sf=leased_sf, vacant_sf=vacant_sf,
@@ -413,6 +505,16 @@ def _build_property(payload: PropertyManualCreate, property_id: str) -> Property
         days_on_market=payload.days_on_market, submarket_avg_dom=avg_dom,
         estimated_loan_maturity_year=payload.estimated_loan_maturity_year,
         notes=payload.notes,
+        # CoStar enrichment fields
+        star_rating=payload.star_rating,
+        sf_avail=payload.sf_avail,
+        landlord_representative=payload.landlord_representative,
+        landlord_rep_contact=payload.landlord_rep_contact,
+        sales_company=payload.sales_company,
+        sales_contact=payload.sales_contact,
+        tenancy=payload.tenancy,
+        stories=payload.stories,
+        parking_ratio=payload.parking_ratio,
     )
 
 
@@ -602,6 +704,8 @@ def list_properties(
     is_listed: Optional[bool] = None,
     min_score: Optional[float] = None,
     sort_by: str = Query("signal_score", pattern="^(signal_score|prediction_score|vacancy_pct|years_owned)$"),
+    dominant_score_type: Optional[str] = None,
+    needs_outreach: Optional[bool] = None,
     db: Session = Depends(get_db),
 ):
     q = db.query(Property)
@@ -609,6 +713,27 @@ def list_properties(
     if priority:    q = q.filter(Property.priority == priority)
     if is_listed is not None: q = q.filter(Property.is_listed == is_listed)
     if min_score is not None: q = q.filter(Property.signal_score >= min_score)
+    if dominant_score_type:   q = q.filter(Property.dominant_score_type == dominant_score_type)
+    if needs_outreach:
+        # Properties with no outreach logged in the last 90 days, sorted by composite score
+        from sqlalchemy import func as sqlfunc
+        ninety_days_ago = (datetime.utcnow().replace(hour=0, minute=0, second=0)
+                           .isoformat()[:10])
+        recent_ids = (
+            db.query(OutreachLog.property_id)
+            .filter(
+                OutreachLog.property_id.isnot(None),
+                OutreachLog.generated_at >= ninety_days_ago,
+            )
+            .subquery()
+        )
+        q = (q.filter(~Property.id.in_(recent_ids))
+              .filter(Property.dominant_score_type.isnot(None))
+              .order_by(
+                  (Property.tenant_match_score + Property.listing_rep_score + Property.acquisition_score).desc()
+              )
+              .limit(20))
+        return q.all()
     col = getattr(Property, sort_by, Property.signal_score)
     return q.order_by(col.desc()).all()
 
@@ -835,6 +960,9 @@ async def costar_import(
             if payload.asking_price:
                 prop.asking_price     = payload.asking_price
                 prop.asking_price_psf = round(payload.asking_price / payload.total_sf, 2) if payload.total_sf else None
+            # CoStar Price/SF takes precedence when present
+            if payload.asking_price_psf is not None:
+                prop.asking_price_psf = payload.asking_price_psf
             if payload.acquisition_price:
                 prop.acquisition_price = payload.acquisition_price
             if payload.acquisition_year:
@@ -843,6 +971,41 @@ async def costar_import(
                 prop.years_owned = round((date.today() - acq_date).days / 365.25, 1)
             if payload.estimated_loan_maturity_year:
                 prop.estimated_loan_maturity_year = payload.estimated_loan_maturity_year
+
+            # ── User-data protection (Part 2) ─────────────────────────────────
+            # Never overwrite an in-place rent that was manually entered or
+            # sourced from a trusted feed (compstak, public_record, etc.) —
+            # CoStar exports often have a stale or aggregated value.
+            _rent_protected = (
+                prop.in_place_rent_source in PROTECTED_RENT_SOURCES
+                and prop.in_place_rent_last_verified is not None
+            )
+            # CoStar import doesn't carry an in_place_rent value (see notes
+            # below), so we only re-stamp the source if the field is empty.
+            if not _rent_protected and prop.in_place_rent_psf in (None, 0, 0.0):
+                # Fall through — manual update required (notes flag already added).
+                pass
+
+            # Enrichment fields: only fill blanks (do not stomp on user edits).
+            if payload.star_rating is not None and prop.star_rating is None:
+                prop.star_rating = payload.star_rating
+            if payload.sf_avail is not None and prop.sf_avail is None:
+                prop.sf_avail = payload.sf_avail
+            if payload.landlord_representative and not prop.landlord_representative:
+                prop.landlord_representative = payload.landlord_representative
+            if payload.landlord_rep_contact and not prop.landlord_rep_contact:
+                prop.landlord_rep_contact = payload.landlord_rep_contact
+            if payload.sales_company and not prop.sales_company:
+                prop.sales_company = payload.sales_company
+            if payload.sales_contact and not prop.sales_contact:
+                prop.sales_contact = payload.sales_contact
+            if payload.tenancy and not prop.tenancy:
+                prop.tenancy = payload.tenancy
+            if payload.stories is not None and prop.stories is None:
+                prop.stories = payload.stories
+            if payload.parking_ratio is not None and prop.parking_ratio is None:
+                prop.parking_ratio = payload.parking_ratio
+
             # Append CoStar note without overwriting existing notes
             costar_note = "in_place_rent_psf not imported from CoStar — update manually."
             if not prop.notes:
@@ -897,6 +1060,120 @@ def refresh_property_signals(property_id: str, db: Session = Depends(get_db)):
     prop = db.query(Property).filter(Property.property_id == property_id).first()
     if not prop:
         raise HTTPException(status_code=404, detail="Property not found")
+    _run_signals(prop)
+    db.commit()
+    db.refresh(prop)
+    return _enrich(prop)
+
+
+# ── Property outreach endpoints (Part 4) ───────────────────────────────────
+
+@router.post("/{property_id}/draft-outreach", response_model=OutreachDraft)
+def draft_property_outreach(
+    property_id: str,
+    outreach_type: str = Query("tenant_match", regex="^(tenant_match|listing_rep|acquisition|broker)$"),
+    tenant_context: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+):
+    prop = db.query(Property).filter(Property.property_id == property_id).first()
+    if not prop:
+        raise HTTPException(status_code=404, detail="Property not found")
+
+    prop_dict = {c.key: getattr(prop, c.key) for c in prop.__table__.columns}
+    result = generate_property_outreach(prop_dict, outreach_type, tenant_context)
+
+    score_map = {
+        "tenant_match": prop.tenant_match_score or 0.0,
+        "listing_rep":  prop.listing_rep_score  or 0.0,
+        "acquisition":  prop.acquisition_score  or 0.0,
+        "broker":       prop.signal_score        or 0.0,
+    }
+    score = score_map.get(outreach_type, 0.0)
+    priority = prop.priority or "Medium"
+
+    return OutreachDraft(
+        email_subject=result["email_subject"],
+        email_body=result["email_body"],
+        call_script=CallScript(
+            opening=result["call_script_opening"],
+            core_message=result["call_script_core"],
+            pain_probe=result["call_script_pain_probe"],
+            the_close=result["call_script_close"],
+        ),
+        score=score,
+        priority=priority,
+        generated_at=datetime.utcnow(),
+        outreach_type=outreach_type,
+    )
+
+
+@router.post("/{property_id}/log-outreach", response_model=OutreachLogOut)
+def log_property_outreach(
+    property_id: str,
+    payload: OutreachLogCreate,
+    db: Session = Depends(get_db),
+):
+    prop = db.query(Property).filter(Property.property_id == property_id).first()
+    if not prop:
+        raise HTTPException(status_code=404, detail="Property not found")
+
+    log = OutreachLog(
+        property_id=prop.id,
+        company_id=None,
+        outreach_type=payload.outreach_type or "broker",
+        email_subject=payload.email_subject,
+        email_body=payload.email_body,
+        call_script_opening=payload.call_script_opening,
+        call_script_core=payload.call_script_core,
+        call_script_pain_probe=payload.call_script_pain_probe,
+        call_script_close=payload.call_script_close,
+        projected_sf=payload.projected_sf,
+        score_at_generation=payload.score_at_generation,
+        priority_at_generation=payload.priority_at_generation,
+        email_sent=int(payload.email_sent),
+        call_made=int(payload.call_made),
+        generated_at=datetime.utcnow(),
+    )
+    db.add(log)
+    db.commit()
+    db.refresh(log)
+    return log
+
+
+@router.get("/{property_id}/outreach-history", response_model=List[OutreachLogOut])
+def property_outreach_history(
+    property_id: str,
+    db: Session = Depends(get_db),
+):
+    prop = db.query(Property).filter(Property.property_id == property_id).first()
+    if not prop:
+        raise HTTPException(status_code=404, detail="Property not found")
+    logs = (
+        db.query(OutreachLog)
+        .filter(OutreachLog.property_id == prop.id)
+        .order_by(OutreachLog.generated_at.desc())
+        .all()
+    )
+    return logs
+
+
+# ── In-Place Rent pencil update (Part 7) ───────────────────────────────────
+
+@router.patch("/{property_id}/in-place-rent", response_model=PropertyOut)
+def update_in_place_rent(
+    property_id: str,
+    payload: InPlaceRentUpdate,
+    db: Session = Depends(get_db),
+):
+    prop = db.query(Property).filter(Property.property_id == property_id).first()
+    if not prop:
+        raise HTTPException(status_code=404, detail="Property not found")
+
+    prop.in_place_rent_psf          = payload.in_place_rent_psf
+    prop.in_place_rent_source       = payload.in_place_rent_source
+    prop.in_place_rent_last_verified = datetime.utcnow().date().isoformat()
+    prop.last_modified_by_user      = datetime.utcnow().isoformat()
+
     _run_signals(prop)
     db.commit()
     db.refresh(prop)

@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 from app.models.opportunity import Opportunity
 from app.models.property import Property
 from app.models.company import Company
-from app.schemas.dashboard import DailyBriefing, DashboardStats, CallTarget
+from app.schemas.dashboard import DailyBriefing, DashboardStats, CallTarget, TenantMatchTarget
 
 
 def _to_call_target(opp: Opportunity, rank: int) -> CallTarget:
@@ -56,6 +56,15 @@ def generate_daily_briefing(db: Session) -> DailyBriefing:
         .all()
     )
 
+    # ── High-priority deals ────────────────────────────────────────────────
+    high_priority = (
+        db.query(Opportunity)
+        .filter(Opportunity.priority == "HIGH", Opportunity.is_active == True)
+        .order_by(Opportunity.score.desc())
+        .limit(10)
+        .all()
+    )
+
     # ── Pre-market predictions ──────────────────────────────────────────────
     pre_market = (
         db.query(Opportunity)
@@ -81,6 +90,32 @@ def generate_daily_briefing(db: Session) -> DailyBriefing:
         .limit(5)
         .all()
     )
+
+    # ── Tenant match properties ────────────────────────────────────────────
+    tenant_match_props = (
+        db.query(Property)
+        .filter(Property.dominant_score_type == "tenant_match")
+        .order_by(Property.tenant_match_score.desc())
+        .limit(10)
+        .all()
+    )
+    tenant_match_targets = [
+        TenantMatchTarget(
+            rank=i + 1,
+            property_id=p.property_id,
+            address=p.address,
+            submarket=p.submarket,
+            asset_class=p.asset_class or "",
+            total_sf=p.total_sf or 0,
+            owner_name=p.owner_name or "",
+            vacancy_pct=p.vacancy_pct,
+            sf_avail=p.sf_avail,
+            tenant_match_score=p.tenant_match_score or 0.0,
+            in_place_rent_psf=p.in_place_rent_psf,
+            market_rent_psf=p.market_rent_psf,
+        )
+        for i, p in enumerate(tenant_match_props)
+    ]
 
     # ── Stats ───────────────────────────────────────────────────────────────
     total_props     = db.query(Property).count()
@@ -112,8 +147,10 @@ def generate_daily_briefing(db: Session) -> DailyBriefing:
     return DailyBriefing(
         briefing_date=date.today(),
         stats=stats,
-        immediate_deals=[_to_call_target(o, i + 1) for i, o in enumerate(immediate)],
+        immediate_deals=[_to_call_target(o, i + 1) for i, o in enumerate(immediate[:3])],
+        high_priority_deals=[_to_call_target(o, i + 1) for i, o in enumerate(high_priority)],
         pre_market_predictions=[_to_call_target(o, i + 1) for i, o in enumerate(pre_market)],
         tenant_opportunities=[_to_call_target(o, i + 1) for i, o in enumerate(tenant_driven)],
+        tenant_match_properties=tenant_match_targets,
         signal_refresh_timestamp=str(date.today()),
     )
