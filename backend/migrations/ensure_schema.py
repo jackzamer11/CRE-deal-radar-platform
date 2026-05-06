@@ -1,0 +1,125 @@
+"""
+Migration: Idempotently add any columns that the ORM model defines but the
+live database is missing.
+
+Background
+----------
+SQLAlchemy's Base.metadata.create_all() only creates *new tables* — it never
+adds columns to existing tables.  Across several development sprints (CoStar
+enrichment, outreach scores, rent-source tracking) new columns were appended
+to the ORM models without a corresponding ALTER TABLE.  This script closes
+that gap.
+
+It is safe to run multiple times.  Every ADD COLUMN is guarded by a PRAGMA
+table_info check so a column that already exists is silently skipped.
+
+Usage (run from the backend/ directory):
+    python -m migrations.ensure_schema
+    python migrations/ensure_schema.py
+
+Wired into app startup via main.py so it runs automatically on every deploy.
+"""
+import os
+import sqlite3
+
+DB_PATH = os.path.join(os.path.dirname(__file__), "..", "deal_radar.db")
+
+
+def _has_column(cur: sqlite3.Cursor, table: str, col: str) -> bool:
+    cur.execute(f"PRAGMA table_info({table})")
+    return any(row[1] == col for row in cur.fetchall())
+
+
+def _add_column(cur: sqlite3.Cursor, table: str, col: str, col_def: str) -> bool:
+    """Add column if absent. Returns True if column was added."""
+    if _has_column(cur, table, col):
+        return False
+    cur.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_def}")
+    print(f"  + {table}.{col}")
+    return True
+
+
+def ensure_properties(cur: sqlite3.Cursor) -> int:
+    """Add every column the Property ORM model expects that may be missing."""
+    added = 0
+
+    # ── is_listed → listed_for_sale rename / add ─────────────────────────
+    if not _has_column(cur, "properties", "listed_for_sale"):
+        if _has_column(cur, "properties", "is_listed"):
+            cur.execute(
+                "ALTER TABLE properties RENAME COLUMN is_listed TO listed_for_sale"
+            )
+            print("  ~ properties.is_listed → listed_for_sale (renamed)")
+            added += 1
+        else:
+            added += _add_column(
+                cur, "properties", "listed_for_sale", "BOOLEAN DEFAULT 0"
+            )
+
+    # ── Rent-source tracking (Part 7) ────────────────────────────────────
+    added += _add_column(cur, "properties", "in_place_rent_source", "TEXT")
+    added += _add_column(cur, "properties", "in_place_rent_last_verified", "DATE")
+
+    # ── CoStar enrichment fields (Part 2) ────────────────────────────────
+    added += _add_column(cur, "properties", "star_rating", "INTEGER")
+    added += _add_column(cur, "properties", "sf_avail", "INTEGER")
+    added += _add_column(cur, "properties", "landlord_representative", "TEXT")
+    added += _add_column(cur, "properties", "landlord_rep_contact", "TEXT")
+    added += _add_column(cur, "properties", "sales_company", "TEXT")
+    added += _add_column(cur, "properties", "sales_contact", "TEXT")
+    added += _add_column(cur, "properties", "tenancy", "TEXT")
+    added += _add_column(cur, "properties", "stories", "INTEGER")
+    added += _add_column(cur, "properties", "parking_ratio", "REAL")
+
+    # ── Outreach / match scores (Parts 3-4) ──────────────────────────────
+    added += _add_column(cur, "properties", "tenant_match_score", "REAL DEFAULT 0.0")
+    added += _add_column(cur, "properties", "listing_rep_score", "REAL DEFAULT 0.0")
+    added += _add_column(cur, "properties", "acquisition_score", "REAL DEFAULT 0.0")
+    added += _add_column(cur, "properties", "dominant_score_type", "TEXT")
+
+    # ── User-edit guard (Part 7) ──────────────────────────────────────────
+    added += _add_column(cur, "properties", "last_modified_by_user", "DATETIME")
+
+    return added
+
+
+def ensure_companies(cur: sqlite3.Cursor) -> int:
+    """Add any columns the Company ORM model expects that may be missing."""
+    added = 0
+    # Currently the companies table is up-to-date; this is a forward-safety net.
+    added += _add_column(cur, "companies", "last_modified_by_user", "DATETIME")
+    added += _add_column(
+        cur, "companies", "lease_trajectory", "TEXT DEFAULT 'AUTO' NOT NULL"
+    )
+    return added
+
+
+def run() -> None:
+    db = os.path.abspath(DB_PATH)
+    if not os.path.exists(db):
+        print(f"ensure_schema: database not found at {db} — skipping.")
+        return
+
+    conn = sqlite3.connect(db)
+    cur = conn.cursor()
+
+    prop_added = ensure_properties(cur)
+    comp_added = ensure_companies(cur)
+
+    conn.commit()
+    conn.close()
+
+    total = prop_added + comp_added
+    if total:
+        print(f"ensure_schema: applied {total} column addition(s).")
+    else:
+        print("ensure_schema: schema is up-to-date.")
+
+
+if __name__ == "__main__":
+    import sys
+
+    backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if backend_dir not in sys.path:
+        sys.path.insert(0, backend_dir)
+    run()

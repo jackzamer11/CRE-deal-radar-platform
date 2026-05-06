@@ -47,8 +47,13 @@ def run():
         return
 
     if not _has_column(cur, "properties", "is_listed"):
-        print("  Neither is_listed nor listed_for_sale found — nothing to do.")
+        print("  Neither column found — adding listed_for_sale ...")
+        cur.execute(
+            "ALTER TABLE properties ADD COLUMN listed_for_sale BOOLEAN DEFAULT 0"
+        )
+        conn.commit()
         conn.close()
+        print("Done.")
         return
 
     print("  Renaming properties.is_listed → properties.listed_for_sale ...")
