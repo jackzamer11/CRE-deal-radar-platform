@@ -105,5 +105,5 @@ def normalize_property(raw: Dict[str, Any]) -> Dict[str, Any]:
         "cap_rate":        raw.get("capRate", None),
         "days_on_market":  raw.get("daysOnMarket", None),
         "in_place_rent_psf": raw.get("averageActualRent", 0),
-        "is_listed":       raw.get("listingStatus", "") == "active",
+        "listed_for_sale": raw.get("listingStatus", "") == "active",
     }

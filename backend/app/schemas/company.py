@@ -1,6 +1,6 @@
 # backend/app/schemas/company.py
 from datetime import date, datetime
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 from pydantic import BaseModel, model_validator
 
 
@@ -57,6 +57,7 @@ class CompanyOut(CompanyBase):
     created_at: datetime
     updated_at: datetime
     last_modified_by_user: Optional[datetime] = None
+    matched_properties: list = []
 
     class Config:
         from_attributes = True

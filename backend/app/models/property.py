@@ -67,7 +67,7 @@ class Property(Base):
     years_since_last_lease = Column(Float, default=0.0)
 
     # Listing status
-    is_listed = Column(Boolean, default=False)
+    listed_for_sale = Column(Boolean, default=False)
     listing_date = Column(Date, nullable=True)
     days_on_market = Column(Integer, nullable=True)
     submarket_avg_dom = Column(Integer, nullable=True)

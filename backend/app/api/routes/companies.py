@@ -14,6 +14,7 @@ from app.models.company import Company
 from app.models.outreach_log import OutreachLog
 from app.models.property import Property
 from app.schemas.company import CompanyOut, CompanyListOut
+from app.schemas.property import MatchedProperty
 from app.schemas.outreach import OutreachDraft, OutreachLogCreate, OutreachLogOut, CallScript
 from app.services import signal_engine as se
 from app.services.scoring_model import score_property
@@ -552,7 +553,97 @@ def get_company(company_id: str, db: Session = Depends(get_db)):
     company = db.query(Company).filter(Company.company_id == company_id).first()
     if not company:
         raise HTTPException(status_code=404, detail="Company not found")
-    return company
+    out = CompanyOut.model_validate(company)
+    out.matched_properties = _compute_matched_properties(company, db)
+    return out
+
+
+def _compute_matched_properties(company: Company, db: Session) -> list[MatchedProperty]:
+    """Return top-3 properties whose available SF aligns with this company's space needs."""
+    sf_needed = company.estimated_sf_needed or 0
+    if sf_needed <= 0:
+        return []
+
+    candidates = (
+        db.query(Property)
+        .filter(
+            Property.sf_avail.isnot(None),
+            Property.sf_avail > 0,
+        )
+        .all()
+    )
+
+    scored = []
+    for prop in candidates:
+        reasons: list[str] = []
+        score = 0.0
+
+        # SF fit: needed SF within ±40% of available SF
+        if prop.sf_avail and prop.sf_avail > 0:
+            ratio = sf_needed / prop.sf_avail
+            if 0.6 <= ratio <= 1.4:
+                score += 40.0
+                reasons.append(f"SF fit ({sf_needed:,} needed vs {prop.sf_avail:,} avail)")
+
+        # Submarket match
+        if company.current_submarket and company.current_submarket == prop.submarket:
+            score += 30.0
+            reasons.append(f"Same submarket ({prop.submarket})")
+        elif company.current_submarket:
+            adjacent = _adjacent_submarkets(prop.submarket)
+            if company.current_submarket in adjacent:
+                score += 15.0
+                reasons.append(f"Adjacent submarket ({prop.submarket})")
+
+        # Rent affordability: in-place rent within 20% above company's current rent
+        if company.current_rent_psf and prop.in_place_rent_psf:
+            if prop.in_place_rent_psf <= company.current_rent_psf * 1.2:
+                score += 20.0
+                reasons.append(f"Affordable rent (${prop.in_place_rent_psf:.0f} vs ${company.current_rent_psf:.0f} current)")
+
+        # High signal score = motivated landlord
+        if prop.signal_score >= 60:
+            score += 10.0
+            reasons.append(f"High landlord motivation score ({prop.signal_score:.0f})")
+
+        if score > 0:
+            scored.append((score, prop, reasons))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+
+    return [
+        MatchedProperty(
+            property_id=prop.property_id,
+            address=prop.address,
+            submarket=prop.submarket,
+            sf_avail=prop.sf_avail,
+            vacancy_pct=prop.vacancy_pct,
+            in_place_rent_psf=prop.in_place_rent_psf,
+            market_rent_psf=prop.market_rent_psf,
+            landlord_representative=prop.landlord_representative,
+            sales_contact=prop.sales_contact,
+            match_score=round(score, 1),
+            match_reasons=reasons,
+        )
+        for score, prop, reasons in scored[:3]
+    ]
+
+
+def _adjacent_submarkets(submarket: str) -> set[str]:
+    adjacency: dict[str, set] = {
+        "Arlington (Clarendon)":      {"Arlington (Rosslyn)", "Arlington (Ballston)", "Falls Church"},
+        "Arlington (Rosslyn)":        {"Arlington (Clarendon)", "McLean"},
+        "Arlington (Ballston)":       {"Arlington (Clarendon)", "Arlington (Columbia Pike)", "Falls Church"},
+        "Arlington (Columbia Pike)":  {"Arlington (Ballston)", "Alexandria (Old Town)"},
+        "Alexandria (Old Town)":      {"Arlington (Columbia Pike)"},
+        "Tysons":                     {"McLean", "Vienna", "Reston", "Falls Church"},
+        "Reston":                     {"Tysons", "Vienna"},
+        "Falls Church":               {"Arlington (Clarendon)", "Arlington (Ballston)", "Tysons"},
+        "McLean":                     {"Arlington (Rosslyn)", "Tysons"},
+        "Vienna":                     {"Tysons", "Reston", "Fairfax City"},
+        "Fairfax City":               {"Vienna"},
+    }
+    return adjacency.get(submarket, set())
 
 
 VALID_LEASE_SOURCES = {"costar", "manual", "compstak", "sec_filing", "landlord_confirmed", "public_record"}

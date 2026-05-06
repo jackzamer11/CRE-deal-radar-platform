@@ -13,7 +13,6 @@ const OUTREACH_TYPE_LABELS: Record<string, string> = {
   tenant_match: 'Tenant Match',
   listing_rep:  'Listing Rep',
   acquisition:  'Acquisition',
-  broker:       'Broker Intro',
   tenant:       'Tenant Outreach',
 }
 
@@ -31,6 +30,7 @@ interface PropertyProps {
   property: PropertyListOut
   company?: never
   outreach_type: string
+  target_type?: string
   onClose: () => void
   onSaved: () => void
 }
@@ -106,7 +106,12 @@ export default function OutreachDraftModal(props: Props) {
       if (entity_type === 'company') {
         result = await draftOutreach(props.company.company_id)
       } else {
-        result = await draftPropertyOutreach(props.property.property_id, props.outreach_type)
+        result = await draftPropertyOutreach(
+          props.property.property_id,
+          props.outreach_type,
+          undefined,
+          props.target_type,
+        )
       }
       setDraft(result)
     } catch (e: unknown) {
@@ -229,6 +234,12 @@ export default function OutreachDraftModal(props: Props) {
                 <span className="text-ink-secondary font-semibold">Score {draft.score.toFixed(0)}/100</span>
                 <span>·</span>
                 <span className="text-ink-secondary font-semibold">{draft.priority}</span>
+                {draft.target_type && (
+                  <>
+                    <span>·</span>
+                    <span className="capitalize">→ {draft.target_type.replace('_', ' ')}</span>
+                  </>
+                )}
                 {draft.projected_sf && (
                   <>
                     <span>·</span>

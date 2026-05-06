@@ -1,7 +1,8 @@
 import { useEffect, useState, useRef } from 'react'
-import { Building2, Filter, RefreshCw, X, Plus, Upload, Pencil, Check, MessageSquarePlus } from 'lucide-react'
+import { useSearchParams } from 'react-router-dom'
+import { Building2, Filter, RefreshCw, X, Plus, Upload, Pencil, Check, MessageSquarePlus, Users } from 'lucide-react'
 import {
-  getProperties, updatePropertyInPlaceRent, getPropertyOutreachHistory,
+  getProperties, getProperty, updatePropertyInPlaceRent, getPropertyOutreachHistory,
 } from '../api/client'
 import type { PropertyListOut, PropertyOut, OutreachLog } from '../types'
 import { PriorityBadge } from '../components/PriorityBadge'
@@ -123,6 +124,7 @@ function DominantBadge({ type }: { type: string | null | undefined }) {
 // ── Main component ─────────────────────────────────────────────────────────
 
 export default function Properties() {
+  const [searchParams, setSearchParams] = useSearchParams()
   const [properties, setProperties]         = useState<PropertyListOut[]>([])
   const [loading, setLoading]               = useState(true)
   const [submarket, setSubmarket]           = useState('')
@@ -130,12 +132,12 @@ export default function Properties() {
   const [listedOnly, setListedOnly]         = useState<boolean | undefined>()
   const [scoreTypeFilter, setScoreTypeFilter] = useState('')
   const [needsOutreach, setNeedsOutreach]   = useState(false)
-  const [selected, setSelected]             = useState<PropertyListOut | null>(null)
+  const [selected, setSelected]             = useState<PropertyOut | null>(null)
   const [selectedLogs, setSelectedLogs]     = useState<OutreachLog[]>([])
   const [showAddModal, setShowAddModal]     = useState(false)
   const [showBulkModal, setShowBulkModal]   = useState(false)
   const [showCoStarModal, setShowCoStarModal] = useState(false)
-  const [outreachModal, setOutreachModal]   = useState<{ prop: PropertyListOut; type: string } | null>(null)
+  const [outreachModal, setOutreachModal]   = useState<{ prop: PropertyListOut; type: string; target_type?: string } | null>(null)
 
   const load = async () => {
     setLoading(true)
@@ -143,7 +145,7 @@ export default function Properties() {
       const data = await getProperties({
         submarket: submarket || undefined,
         priority:  priority  || undefined,
-        is_listed: listedOnly,
+        listed_for_sale: listedOnly,
         dominant_score_type: scoreTypeFilter || undefined,
         needs_outreach: needsOutreach || undefined,
       })
@@ -155,8 +157,22 @@ export default function Properties() {
 
   useEffect(() => { load() }, [submarket, priority, listedOnly, scoreTypeFilter, needsOutreach])
 
+  // Auto-open detail panel from URL param ?selected=NVA-001
+  useEffect(() => {
+    const pid = searchParams.get('selected')
+    if (pid) {
+      getProperty(pid).then(p => { setSelected(p); getPropertyOutreachHistory(pid).then(setSelectedLogs).catch(() => setSelectedLogs([])) }).catch(() => {})
+      setSearchParams({}, { replace: true })
+    }
+  }, [])
+
   const handleSelect = async (p: PropertyListOut) => {
-    setSelected(p)
+    try {
+      const full = await getProperty(p.property_id)
+      setSelected(full)
+    } catch {
+      setSelected(p as unknown as PropertyOut)
+    }
     try {
       const logs = await getPropertyOutreachHistory(p.property_id)
       setSelectedLogs(logs)
@@ -175,7 +191,13 @@ export default function Properties() {
   }
 
   const bestOutreachType = (p: PropertyListOut): string => {
-    return p.dominant_score_type ?? 'broker'
+    return p.dominant_score_type ?? 'tenant_match'
+  }
+
+  const getTargetType = (p: PropertyListOut, outreachType: string): string | undefined => {
+    if (outreachType === 'tenant_match') return p.landlord_representative ? 'broker' : 'owner'
+    if (outreachType === 'acquisition') return p.sales_contact ? 'sales_broker' : 'owner'
+    return 'owner'
   }
 
   const clearFilters = () => {
@@ -253,8 +275,8 @@ export default function Properties() {
           onChange={e => setListedOnly(e.target.value === '' ? undefined : e.target.value === 'true')}
           className="bg-surface-card border border-surface-border text-ink-secondary text-xs rounded-lg px-3 py-1.5"
         >
-          <option value="">Listed + Unlisted</option>
-          <option value="true">Listed Only</option>
+          <option value="">Listed + Off-Market</option>
+          <option value="true">For Sale Only</option>
           <option value="false">Off-Market Only</option>
         </select>
         <select
@@ -358,15 +380,23 @@ export default function Properties() {
                   <td className="mono text-xs text-ink-secondary">{fmtRent(p.market_rent_psf)}</td>
                   <td className="mono text-xs text-ink-secondary">{fmt(p.sf_avail, '', ' SF')}</td>
                   <td>
-                    {p.is_listed ? (
-                      <span className="text-[10px] bg-amber-500/15 text-amber-400 border border-amber-500/30 px-2 py-0.5 rounded font-semibold">
-                        LISTED
-                      </span>
-                    ) : (
-                      <span className="text-[10px] bg-surface-muted text-ink-muted border border-surface-border px-2 py-0.5 rounded">
-                        OFF-MKT
-                      </span>
-                    )}
+                    <div className="flex flex-col gap-0.5">
+                      {p.listed_for_sale && (
+                        <span className="text-[9px] bg-amber-500/15 text-amber-400 border border-amber-500/30 px-1.5 py-0.5 rounded font-semibold">
+                          FOR SALE
+                        </span>
+                      )}
+                      {p.listed_for_lease && (
+                        <span className="text-[9px] bg-violet-500/15 text-violet-400 border border-violet-500/30 px-1.5 py-0.5 rounded font-semibold">
+                          FOR LEASE
+                        </span>
+                      )}
+                      {!p.listed_for_sale && !p.listed_for_lease && (
+                        <span className="text-[9px] bg-surface-muted text-ink-muted border border-surface-border px-1.5 py-0.5 rounded">
+                          OFF-MKT
+                        </span>
+                      )}
+                    </div>
                   </td>
                   <td><ScoreBadge score={p.prediction_score} size="sm" showBar /></td>
                   <td><ScoreBadge score={p.mispricing_score} size="sm" showBar /></td>
@@ -401,6 +431,7 @@ export default function Properties() {
           entity_type="property"
           property={outreachModal.prop}
           outreach_type={outreachModal.type}
+          target_type={outreachModal.target_type}
           onClose={() => setOutreachModal(null)}
           onSaved={() => { setOutreachModal(null); load() }}
         />
@@ -458,7 +489,10 @@ export default function Properties() {
 
               {/* Draft Outreach button */}
               <button
-                onClick={() => setOutreachModal({ prop: selected, type: bestOutreachType(selected) })}
+                onClick={() => {
+                  const t = bestOutreachType(selected)
+                  setOutreachModal({ prop: selected, type: t, target_type: getTargetType(selected, t) })
+                }}
                 className="w-full flex items-center justify-center gap-2 py-2 rounded-lg
                            bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold transition-colors"
               >
@@ -471,12 +505,12 @@ export default function Properties() {
 
               {/* Other outreach type buttons */}
               <div className="flex gap-2">
-                {(['tenant_match', 'listing_rep', 'acquisition', 'broker'] as const)
+                {(['tenant_match', 'listing_rep', 'acquisition'] as const)
                   .filter(t => t !== selected.dominant_score_type)
                   .map(t => (
                     <button
                       key={t}
-                      onClick={() => setOutreachModal({ prop: selected, type: t })}
+                      onClick={() => setOutreachModal({ prop: selected, type: t, target_type: getTargetType(selected, t) })}
                       className="flex-1 text-[10px] py-1.5 rounded-lg border border-surface-border
                                  text-ink-muted hover:text-ink-primary hover:border-accent-blue/40 transition-colors"
                     >
@@ -495,14 +529,60 @@ export default function Properties() {
                 <Row label="Rollover"    value={`${selected.lease_rollover_pct.toFixed(0)}% (12mo)`} />
                 <Row label="Owner"       value={selected.owner_name} />
                 <Row label="Held"        value={selected.years_owned ? `${selected.years_owned.toFixed(1)} years` : '—'} />
-                <Row label="Listed"      value={selected.is_listed ? 'Yes' : 'Off-Market'} />
+                <Row label="For Sale"    value={selected.listed_for_sale ? (selected.asking_price ? `Yes — $${(selected.asking_price / 1_000_000).toFixed(1)}M${selected.asking_price_psf ? ` ($${selected.asking_price_psf}/SF)` : ''}` : 'Yes') : 'No'} />
+                <Row label="For Lease"   value={selected.listed_for_lease ? `Yes — ${fmt(selected.sf_avail, '', ' SF avail')}` : 'No'} />
                 {selected.landlord_representative && (
                   <Row label="Landlord Rep" value={selected.landlord_representative} />
+                )}
+                {selected.landlord_rep_contact && (
+                  <Row label="Rep Contact" value={selected.landlord_rep_contact} />
+                )}
+                {selected.sales_contact && (
+                  <Row label="Sales Contact" value={selected.sales_contact} />
                 )}
                 {selected.star_rating != null && (
                   <Row label="Star Rating" value={`${selected.star_rating}★`} />
                 )}
               </div>
+
+              {/* Matched Tenants */}
+              {'matched_tenants' in selected && selected.matched_tenants && selected.matched_tenants.length > 0 && (
+                <div className="bg-surface-muted rounded-lg p-3">
+                  <div className="flex items-center gap-2 mb-2">
+                    <Users size={12} className="text-violet-400" />
+                    <span className="text-[10px] text-ink-muted uppercase tracking-wider">
+                      Matched Tenants ({selected.matched_tenants.length})
+                    </span>
+                  </div>
+                  <div className="space-y-2">
+                    {selected.matched_tenants.map(t => (
+                      <div key={t.company_id} className="border border-violet-500/20 rounded-lg p-2.5 bg-violet-500/5">
+                        <div className="flex items-start justify-between gap-2 mb-1">
+                          <div>
+                            <div className="text-xs font-semibold text-ink-primary">{t.name}</div>
+                            <div className="text-[10px] text-ink-muted">{t.industry}</div>
+                          </div>
+                          <span className="text-[10px] font-bold text-violet-400 shrink-0">{t.match_score.toFixed(0)}</span>
+                        </div>
+                        <div className="text-[10px] text-ink-muted mb-1.5">
+                          {t.sf_needed.toLocaleString()} SF needed{t.headcount ? ` · ${t.headcount} emp` : ''}{t.submarket ? ` · ${t.submarket}` : ''}
+                        </div>
+                        <div className="flex flex-wrap gap-1 mb-2">
+                          {t.match_reasons.map((r, i) => (
+                            <span key={i} className="text-[9px] px-1.5 py-0.5 rounded bg-violet-500/15 text-violet-300">{r}</span>
+                          ))}
+                        </div>
+                        <button
+                          onClick={() => setOutreachModal({ prop: selected, type: 'tenant_match', target_type: selected.landlord_representative ? 'broker' : 'owner' })}
+                          className="w-full text-[10px] py-1 rounded bg-violet-600/80 hover:bg-violet-600 text-white font-semibold transition-colors"
+                        >
+                          Draft Outreach → {selected.landlord_representative ? 'Landlord Rep' : 'Owner'}
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
 
               {/* Outreach history */}
               {selectedLogs.length > 0 && (

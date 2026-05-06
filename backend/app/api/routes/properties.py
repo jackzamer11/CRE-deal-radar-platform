@@ -12,8 +12,9 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models.property import Property
+from app.models.company import Company
 from app.models.outreach_log import OutreachLog
-from app.schemas.property import PropertyOut, PropertyListOut, PropertyCreate, SignalBreakdown, InPlaceRentUpdate
+from app.schemas.property import PropertyOut, PropertyListOut, PropertyCreate, SignalBreakdown, InPlaceRentUpdate, MatchedTenant
 from app.schemas.outreach import OutreachLogCreate, OutreachLogOut, OutreachDraft, CallScript
 from app.services import signal_engine as se
 from app.services.scoring_model import score_property
@@ -80,7 +81,7 @@ _COL = {
     "sf expiring 12mo":     "sf_expiring_12mo",
     "sf expiring 24mo":     "sf_expiring_24mo",
     "last new lease signed": "last_lease_signed_year",
-    "listed for sale":      "is_listed",
+    "listed for sale":      "listed_for_sale",
     "intel notes":          "notes",
 }
 
@@ -277,7 +278,7 @@ def _parse_costar_row(row: dict, row_num: int) -> tuple:
         sf_expiring_12mo=0.0,
         sf_expiring_24mo=0.0,
         last_lease_signed_year=None,
-        is_listed=_costar_bool(row, "For Sale Status"),
+        listed_for_sale=_costar_bool(row, "For Sale Status"),
         asking_price=_costar_float(row, "For Sale Price"),
         estimated_loan_maturity_year=maturity_year,
         notes=notes,
@@ -313,7 +314,7 @@ class PropertyManualCreate(BaseModel):
     sf_expiring_12mo: float = 0.0
     sf_expiring_24mo: float = 0.0
     last_lease_signed_year: Optional[int] = None
-    is_listed: bool = False
+    listed_for_sale: bool = False
     asking_price: Optional[float] = None
     days_on_market: Optional[int] = None
     estimated_loan_maturity_year: Optional[int] = None
@@ -352,12 +353,12 @@ def _run_signals(prop: Property) -> None:
         prop.in_place_rent_psf, prop.market_rent_psf, prop.asking_price_psf,
         settings.submarket_avg_psf.get(prop.submarket, 250),
         prop.days_on_market, prop.submarket_avg_dom,
-        prop.cap_rate, prop.market_cap_rate, prop.is_listed,
+        prop.cap_rate, prop.market_cap_rate, bool(prop.listed_for_sale or False),
     )
     pred_comp  = pred_result["composite"]
     owner_comp = owner_result["composite"]
     misp_comp  = misp_result["composite"]
-    scored     = score_property(pred_comp, owner_comp, misp_comp, 0, prop.is_listed)
+    scored     = score_property(pred_comp, owner_comp, misp_comp, 0, bool(prop.listed_for_sale or False))
 
     pb, ob, mb = pred_result["breakdown"], owner_result["breakdown"], misp_result["breakdown"]
     # Store sub-scores; None (abstain) persisted as 0.0
@@ -408,6 +409,7 @@ def _run_signals(prop: Property) -> None:
         last_renovation_year=prop.last_renovation_year,
         estimated_loan_maturity_year=prop.estimated_loan_maturity_year,
         owner_type=prop.owner_type,
+        listed_for_sale=bool(prop.listed_for_sale or False),
     )
     ac = se.compute_acquisition_score(
         cap_rate=prop.cap_rate,
@@ -416,7 +418,7 @@ def _run_signals(prop: Property) -> None:
         submarket_avg_psf=settings.submarket_avg_psf.get(prop.submarket, 250),
         sf_avail=prop.sf_avail,
         total_sf=prop.total_sf or 1,
-        is_listed=bool(prop.is_listed),
+        listed_for_sale=bool(prop.listed_for_sale or False),
         years_owned=prop.years_owned,
         star_rating=prop.star_rating,
         year_built=prop.year_built or 1980,
@@ -501,7 +503,7 @@ def _build_property(payload: PropertyManualCreate, property_id: str) -> Property
         vacancy_pct=vacancy_pct, leased_sf=leased_sf, vacant_sf=vacant_sf,
         sf_expiring_12mo=payload.sf_expiring_12mo, sf_expiring_24mo=payload.sf_expiring_24mo,
         lease_rollover_pct=rollover_pct, last_lease_signed_date=last_lease,
-        years_since_last_lease=years_since, is_listed=payload.is_listed,
+        years_since_last_lease=years_since, listed_for_sale=payload.listed_for_sale,
         days_on_market=payload.days_on_market, submarket_avg_dom=avg_dom,
         estimated_loan_maturity_year=payload.estimated_loan_maturity_year,
         notes=payload.notes,
@@ -627,7 +629,7 @@ def _parse_row(row: dict, row_num: int) -> tuple:
         sf_expiring_12mo=_float_val(row, "sf_expiring_12mo") or 0.0,
         sf_expiring_24mo=_float_val(row, "sf_expiring_24mo") or 0.0,
         last_lease_signed_year=_int_val(row, "last_lease_signed_year"),
-        is_listed=_bool_val(row, "is_listed") or False,
+        listed_for_sale=_bool_val(row, "listed_for_sale") or False,
         asking_price=_float_val(row, "asking_price"),
         estimated_loan_maturity_year=_int_val(row, "estimated_loan_maturity_year"),
         notes=_str_val(row, "notes"),
@@ -653,7 +655,7 @@ def _apply_update(prop: Property, row: dict) -> None:
     if fv("acquisition_price"): prop.acquisition_price = fv("acquisition_price")
     if iv("last_renovation_year"): prop.last_renovation_year = iv("last_renovation_year")
     if iv("estimated_loan_maturity_year"): prop.estimated_loan_maturity_year = iv("estimated_loan_maturity_year")
-    if bv("is_listed") is not None: prop.is_listed = bv("is_listed")
+    if bv("listed_for_sale") is not None: prop.listed_for_sale = bv("listed_for_sale")
 
     # Fields that require derived recomputation
     raw_ot = sv("owner_type")
@@ -701,7 +703,7 @@ def _apply_update(prop: Property, row: dict) -> None:
 def list_properties(
     submarket: Optional[str] = None,
     priority: Optional[str] = None,
-    is_listed: Optional[bool] = None,
+    listed_for_sale: Optional[bool] = None,
     min_score: Optional[float] = None,
     sort_by: str = Query("signal_score", pattern="^(signal_score|prediction_score|vacancy_pct|years_owned)$"),
     dominant_score_type: Optional[str] = None,
@@ -711,7 +713,7 @@ def list_properties(
     q = db.query(Property)
     if submarket:   q = q.filter(Property.submarket == submarket)
     if priority:    q = q.filter(Property.priority == priority)
-    if is_listed is not None: q = q.filter(Property.is_listed == is_listed)
+    if listed_for_sale is not None: q = q.filter(Property.listed_for_sale == listed_for_sale)
     if min_score is not None: q = q.filter(Property.signal_score >= min_score)
     if dominant_score_type:   q = q.filter(Property.dominant_score_type == dominant_score_type)
     if needs_outreach:
@@ -956,7 +958,7 @@ async def costar_import(
                 prop.vacancy_pct = None
                 prop.leased_sf   = None
                 prop.vacant_sf   = None
-            prop.is_listed     = payload.is_listed
+            prop.listed_for_sale = payload.listed_for_sale
             if payload.asking_price:
                 prop.asking_price     = payload.asking_price
                 prop.asking_price_psf = round(payload.asking_price / payload.total_sf, 2) if payload.total_sf else None
@@ -1052,7 +1054,94 @@ def get_property(property_id: str, db: Session = Depends(get_db)):
     prop = db.query(Property).filter(Property.property_id == property_id).first()
     if not prop:
         raise HTTPException(status_code=404, detail="Property not found")
-    return _enrich(prop)
+    out = _enrich(prop)
+    out.matched_tenants = _compute_matched_tenants(prop, db)
+    return out
+
+
+def _compute_matched_tenants(prop: Property, db: Session) -> list[MatchedTenant]:
+    """Return top-3 tenants whose space needs align with this property's availability."""
+    if not prop.sf_avail or prop.sf_avail <= 0:
+        return []
+
+    candidates = (
+        db.query(Company)
+        .filter(
+            Company.estimated_sf_needed.isnot(None),
+            Company.estimated_sf_needed > 0,
+        )
+        .all()
+    )
+
+    scored = []
+    for co in candidates:
+        sf_needed = co.estimated_sf_needed or 0
+        reasons: list[str] = []
+        score = 0.0
+
+        # SF fit: needed SF within ±40% of available SF
+        if sf_needed > 0 and prop.sf_avail > 0:
+            ratio = sf_needed / prop.sf_avail
+            if 0.6 <= ratio <= 1.4:
+                score += 40.0
+                reasons.append(f"SF fit ({sf_needed:,} needed vs {prop.sf_avail:,} avail)")
+
+        # Submarket match
+        if co.current_submarket and co.current_submarket == prop.submarket:
+            score += 30.0
+            reasons.append(f"Same submarket ({prop.submarket})")
+        elif co.current_submarket:
+            # Adjacent submarket bonus
+            adjacent = _adjacent_submarkets(prop.submarket)
+            if co.current_submarket in adjacent:
+                score += 15.0
+                reasons.append(f"Adjacent submarket ({co.current_submarket})")
+
+        # Expansion signal
+        if co.expansion_signal:
+            score += 20.0
+            reasons.append("Expansion signal active")
+
+        # Lease expiry within 18 months
+        if co.lease_expiry_months is not None and co.lease_expiry_months <= 18:
+            score += 10.0
+            reasons.append(f"Lease expiry in {co.lease_expiry_months}mo")
+
+        if score > 0:
+            scored.append((score, co, reasons))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+
+    return [
+        MatchedTenant(
+            company_id=co.company_id,
+            name=co.name,
+            industry=co.industry,
+            headcount=co.current_headcount,
+            sf_needed=co.estimated_sf_needed or 0,
+            submarket=co.current_submarket,
+            match_score=round(score, 1),
+            match_reasons=reasons,
+        )
+        for score, co, reasons in scored[:3]
+    ]
+
+
+def _adjacent_submarkets(submarket: str) -> set[str]:
+    adjacency: dict[str, set] = {
+        "Arlington (Clarendon)":      {"Arlington (Rosslyn)", "Arlington (Ballston)", "Falls Church"},
+        "Arlington (Rosslyn)":        {"Arlington (Clarendon)", "McLean"},
+        "Arlington (Ballston)":       {"Arlington (Clarendon)", "Arlington (Columbia Pike)", "Falls Church"},
+        "Arlington (Columbia Pike)":  {"Arlington (Ballston)", "Alexandria (Old Town)"},
+        "Alexandria (Old Town)":      {"Arlington (Columbia Pike)"},
+        "Tysons":                     {"McLean", "Vienna", "Reston", "Falls Church"},
+        "Reston":                     {"Tysons", "Vienna"},
+        "Falls Church":               {"Arlington (Clarendon)", "Arlington (Ballston)", "Tysons"},
+        "McLean":                     {"Arlington (Rosslyn)", "Tysons"},
+        "Vienna":                     {"Tysons", "Reston", "Fairfax City"},
+        "Fairfax City":               {"Vienna"},
+    }
+    return adjacency.get(submarket, set())
 
 
 @router.post("/{property_id}/refresh-signals", response_model=PropertyOut)
@@ -1071,7 +1160,8 @@ def refresh_property_signals(property_id: str, db: Session = Depends(get_db)):
 @router.post("/{property_id}/draft-outreach", response_model=OutreachDraft)
 def draft_property_outreach(
     property_id: str,
-    outreach_type: str = Query("tenant_match", regex="^(tenant_match|listing_rep|acquisition|broker)$"),
+    outreach_type: str = Query("tenant_match", regex="^(tenant_match|listing_rep|acquisition)$"),
+    target_type: Optional[str] = Query(None),
     tenant_context: Optional[str] = Query(None),
     db: Session = Depends(get_db),
 ):
@@ -1080,13 +1170,12 @@ def draft_property_outreach(
         raise HTTPException(status_code=404, detail="Property not found")
 
     prop_dict = {c.key: getattr(prop, c.key) for c in prop.__table__.columns}
-    result = generate_property_outreach(prop_dict, outreach_type, tenant_context)
+    result = generate_property_outreach(prop_dict, outreach_type, target_type=target_type, tenant_context=tenant_context)
 
     score_map = {
         "tenant_match": prop.tenant_match_score or 0.0,
         "listing_rep":  prop.listing_rep_score  or 0.0,
         "acquisition":  prop.acquisition_score  or 0.0,
-        "broker":       prop.signal_score        or 0.0,
     }
     score = score_map.get(outreach_type, 0.0)
     priority = prop.priority or "Medium"
@@ -1104,6 +1193,7 @@ def draft_property_outreach(
         priority=priority,
         generated_at=datetime.utcnow(),
         outreach_type=outreach_type,
+        target_type=result.get("target_type"),
     )
 
 

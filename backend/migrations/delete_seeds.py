@@ -233,7 +233,7 @@ def run(confirm: bool = False) -> None:
         if deletable_props:
             print("\n  Properties queued for deletion:")
             for p in deletable_props:
-                listed = " [LISTED]" if p.is_listed else ""
+                listed = " [LISTED]" if p.listed_for_sale else ""
                 print(f"    {p.address}{listed}")
 
         if deletable_cos:

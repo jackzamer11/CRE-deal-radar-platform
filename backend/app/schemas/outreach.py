@@ -21,6 +21,8 @@ class OutreachDraft(BaseModel):
     generated_at:  datetime
     # Property-side outreach: which template variant was used
     outreach_type: Optional[str] = None
+    # Who the outreach targets: 'broker' | 'owner' | 'sales_broker'
+    target_type: Optional[str] = None
 
 
 class OutreachLogCreate(BaseModel):

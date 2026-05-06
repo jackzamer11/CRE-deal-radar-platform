@@ -57,6 +57,9 @@ class OpportunityListOut(BaseModel):
     owner_behavior_score: Optional[float] = None
     mispricing_score: Optional[float] = None
     tenant_opportunity_score: Optional[float] = None
+    # String IDs for cross-navigation (e.g. NVA-001, CO-001)
+    property_ref: Optional[str] = None
+    company_ref: Optional[str] = None
 
     class Config:
         from_attributes = True

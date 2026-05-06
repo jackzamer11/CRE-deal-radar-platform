@@ -20,7 +20,7 @@ from typing import Optional
 
 
 def determine_deal_type(
-    is_listed: bool,
+    listed_for_sale: bool,
     mispricing_composite: float,
     tenant_composite: float,
 ) -> str:
@@ -28,7 +28,7 @@ def determine_deal_type(
     Deal type is determined by which signal category dominates.
     The system classifies each opportunity by the most actionable lens.
     """
-    if is_listed and mispricing_composite >= 55:
+    if listed_for_sale and mispricing_composite >= 55:
         return "ACTIVE_MISPRICED"
     if tenant_composite >= 55:
         return "TENANT_DRIVEN"
@@ -124,7 +124,7 @@ def score_property(
     owner_behavior_composite: float,
     mispricing_composite: float,
     tenant_composite: float,
-    is_listed: bool,
+    listed_for_sale: bool,
 ) -> dict:
     """
     Full scoring pipeline for a property, optionally with linked tenant.
@@ -135,7 +135,7 @@ def score_property(
       confidence_level — HIGH / MEDIUM / LOW
       priority         — IMMEDIATE / HIGH / WORKABLE / IGNORE
     """
-    deal_type = determine_deal_type(is_listed, mispricing_composite, tenant_composite)
+    deal_type = determine_deal_type(listed_for_sale, mispricing_composite, tenant_composite)
     score = compute_deal_score(
         prediction_composite,
         owner_behavior_composite,

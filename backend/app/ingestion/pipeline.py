@@ -96,13 +96,13 @@ def refresh_property_signals(db: Session, prop: Property) -> None:
         prop.submarket_avg_dom,
         prop.cap_rate,
         prop.market_cap_rate,
-        prop.is_listed,
+        bool(prop.listed_for_sale or False),
     )
 
     pred_comp  = pred["composite"]
     owner_comp = owner["composite"]
     misp_comp  = misp["composite"]
-    scored     = score_property(pred_comp, owner_comp, misp_comp, 0, prop.is_listed)
+    scored     = score_property(pred_comp, owner_comp, misp_comp, 0, bool(prop.listed_for_sale or False))
 
     pb, ob, mb = pred["breakdown"], owner["breakdown"], misp["breakdown"]
 
@@ -275,7 +275,7 @@ def run_deal_creation(db: Session) -> dict:
                 prop.asking_price_psf,
                 settings.submarket_avg_psf.get(prop.submarket, 250),
                 prop.days_on_market, prop.submarket_avg_dom,
-                prop.cap_rate, prop.market_cap_rate, prop.is_listed,
+                prop.cap_rate, prop.market_cap_rate, bool(prop.listed_for_sale or False),
             )
 
             signal_results = {
@@ -318,7 +318,7 @@ def run_deal_creation(db: Session) -> dict:
                     prop.asking_price_psf,
                     settings.submarket_avg_psf.get(prop.submarket, 250),
                     prop.days_on_market, prop.submarket_avg_dom,
-                    prop.cap_rate, prop.market_cap_rate, prop.is_listed,
+                    prop.cap_rate, prop.market_cap_rate, bool(prop.listed_for_sale or False),
                 )
                 signal_results = {
                     "prediction":     pred_result,
