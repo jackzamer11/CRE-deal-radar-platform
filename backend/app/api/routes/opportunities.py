@@ -48,8 +48,10 @@ def list_opportunities(
         if opp.property:
             item.property_address   = opp.property.address
             item.property_submarket = opp.property.submarket
+            item.property_ref       = opp.property.property_id
         if opp.company:
             item.company_name = opp.company.name
+            item.company_ref  = opp.company.company_id
         result.append(item)
     return result
 

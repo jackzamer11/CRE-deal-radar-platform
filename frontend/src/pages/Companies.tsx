@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import {
   Users, Filter, X, TrendingUp, Clock, MapPin, Plus, RefreshCw,
-  Upload, Pencil, Check, AlertTriangle, Zap, Send,
+  Upload, Pencil, Check, AlertTriangle, Zap, Send, Building2, MessageSquarePlus,
 } from 'lucide-react'
-import { getCompanies, updateCompanyLease, updateCompanyTrajectory } from '../api/client'
+import { getCompanies, getCompany, updateCompanyLease, updateCompanyTrajectory } from '../api/client'
 import type { CompanyListOut, CompanyOut, RepClass } from '../types'
 import { PriorityBadge } from '../components/PriorityBadge'
 import ScoreBadge from '../components/ScoreBadge'
@@ -72,6 +73,7 @@ function RepBadge({ repClass, repName }: { repClass: RepClass; repName: string |
 }
 
 export default function Companies() {
+  const [searchParams, setSearchParams] = useSearchParams()
   const [companies, setCompanies]   = useState<CompanyListOut[]>([])
   const [loading, setLoading]       = useState(true)
   const [submarket, setSubmarket]   = useState('')
@@ -80,7 +82,7 @@ export default function Companies() {
   const [expansionOnly, setExpansionOnly]         = useState(false)
   const [topExpiryMode, setTopExpiryMode]         = useState(false)
   const [topOutreachMode, setTopOutreachMode]     = useState(false)
-  const [selected, setSelected]     = useState<CompanyListOut | null>(null)
+  const [selected, setSelected]     = useState<CompanyOut | null>(null)
   const [showAddModal, setShowAddModal]             = useState(false)
   const [showTenantImportModal, setShowTenantImportModal] = useState(false)
   const [showOutreachModal, setShowOutreachModal]   = useState(false)
@@ -114,6 +116,15 @@ export default function Companies() {
   }
 
   useEffect(() => { load() }, [submarket, priority, expansionOnly, repFilter, topOutreachMode])
+
+  // Auto-open detail panel from URL param ?selected=CO-001
+  useEffect(() => {
+    const cid = searchParams.get('selected')
+    if (cid) {
+      getCompany(cid).then(c => setSelected(c as CompanyOut)).catch(() => {})
+      setSearchParams({}, { replace: true })
+    }
+  }, [])
 
   const displayedCompanies = topExpiryMode
     ? companies.filter(c => c.lease_expiry_months === null).slice(0, 20)
@@ -177,8 +188,13 @@ export default function Companies() {
     }
   }
 
-  const handleSelectCompany = (c: CompanyListOut) => {
-    setSelected(c)
+  const handleSelectCompany = async (c: CompanyListOut) => {
+    try {
+      const full = await getCompany(c.company_id)
+      setSelected(full as CompanyOut)
+    } catch {
+      setSelected(c as unknown as CompanyOut)
+    }
     setEditingLease(false)
   }
 
@@ -557,6 +573,57 @@ export default function Companies() {
                   </div>
                 )}
               </div>
+
+              {/* Matched Properties (Fix 7) */}
+              {'matched_properties' in selected && selected.matched_properties && selected.matched_properties.length > 0 && (
+                <div className="bg-surface-muted rounded-lg p-3">
+                  <div className="flex items-center gap-2 mb-2">
+                    <Building2 size={12} className="text-emerald-400" />
+                    <span className="text-[10px] text-ink-muted uppercase tracking-wider">
+                      Matched Properties ({(selected.matched_properties as { match_score: number }[]).length})
+                    </span>
+                  </div>
+                  <div className="space-y-2">
+                    {(selected.matched_properties as {
+                      property_id: string; address: string; submarket: string
+                      sf_avail: number | null; vacancy_pct: number | null
+                      in_place_rent_psf: number | null; market_rent_psf: number | null
+                      landlord_representative: string | null; sales_contact: string | null
+                      match_score: number; match_reasons: string[]
+                    }[]).map(mp => (
+                      <div key={mp.property_id} className="border border-emerald-500/20 rounded-lg p-2.5 bg-emerald-500/5">
+                        <div className="flex items-start justify-between gap-2 mb-1">
+                          <div>
+                            <div className="text-xs font-semibold text-ink-primary truncate" title={mp.address}>{mp.address}</div>
+                            <div className="text-[10px] text-ink-muted">{mp.submarket}</div>
+                          </div>
+                          <span className="text-[10px] font-bold text-emerald-400 shrink-0">{mp.match_score.toFixed(0)}</span>
+                        </div>
+                        <div className="text-[10px] text-ink-muted mb-1.5">
+                          {mp.sf_avail ? `${mp.sf_avail.toLocaleString()} SF avail` : ''}
+                          {mp.vacancy_pct != null ? ` · ${mp.vacancy_pct.toFixed(0)}% vacant` : ''}
+                          {mp.in_place_rent_psf ? ` · $${mp.in_place_rent_psf.toFixed(0)}/SF` : ''}
+                        </div>
+                        <div className="flex flex-wrap gap-1 mb-2">
+                          {mp.match_reasons.map((r, i) => (
+                            <span key={i} className="text-[9px] px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300">{r}</span>
+                          ))}
+                        </div>
+                        <button
+                          onClick={() => {
+                            // Navigate to properties page with this property auto-selected
+                            window.location.href = `/properties?selected=${mp.property_id}`
+                          }}
+                          className="w-full flex items-center justify-center gap-1 text-[10px] py-1 rounded bg-emerald-600/80 hover:bg-emerald-600 text-white font-semibold transition-colors"
+                        >
+                          <MessageSquarePlus size={10} />
+                          View &amp; Draft Outreach
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         </div>

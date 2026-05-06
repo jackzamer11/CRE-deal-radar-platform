@@ -415,7 +415,7 @@ def compute_mispricing_score(
     submarket_avg_dom: Optional[int],
     cap_rate: Optional[float],
     market_cap_rate: float,
-    is_listed: bool,
+    listed_for_sale: bool,
 ) -> dict:
     """
     Weighted composite of all 4 mispricing signals.
@@ -427,7 +427,7 @@ def compute_mispricing_score(
       Days on market ........... 25%  (seller motivation proxy)
       Cap rate spread .......... 15%  (income yield signal)
     """
-    if not is_listed:
+    if not listed_for_sale:
         return {
             "composite": 0.0,
             "breakdown": {"rent_gap": 0.0, "price_psf": 0.0, "dom_premium": 0.0, "cap_rate_spread": 0.0},
@@ -609,7 +609,14 @@ def compute_tenant_match_score(
     """Likelihood this property is a strong target for a hybrid tenant pitch
     to the owner. High vacancy + abundant available SF + multi-tenant +
     asking rent at-or-below market = stronger match.
+    Abstains (returns None) when both sf_avail and vacancy_pct indicate
+    no space is available — no SF, no tenant match.
     """
+    no_avail_sf = not sf_avail or sf_avail <= 0
+    no_vacancy  = vacancy_pct is None or vacancy_pct <= 0
+    if no_avail_sf and no_vacancy:
+        return None
+
     sigs: dict = {}
 
     # Vacancy headroom — landlord has rooms to fill
@@ -675,12 +682,17 @@ def compute_listing_rep_score(
     last_renovation_year: Optional[int],
     estimated_loan_maturity_year: Optional[int],
     owner_type: Optional[str],
+    listed_for_sale: bool = False,
 ) -> Optional[float]:
     """Likelihood this owner is ready to list — and would value a quiet,
     relationship-first conversation with a listing broker. Long hold +
     rent below market + capex gap + debt pressure + LLC ownership all
     push the score up.
+    Abstains (returns None) when the property is already listed for sale —
+    pitching a broker to an owner who already has one is redundant.
     """
+    if listed_for_sale:
+        return None
     sigs: dict = {}
 
     # Hold period
@@ -747,7 +759,7 @@ def compute_acquisition_score(
     submarket_avg_psf: float,
     sf_avail: Optional[int],
     total_sf: int,
-    is_listed: bool,
+    listed_for_sale: bool,
     years_owned: Optional[float],
     star_rating: Optional[int],
     year_built: int,
@@ -788,13 +800,13 @@ def compute_acquisition_score(
     else:
         sigs["sublease"] = None
 
-    # Listed × hold — long hold listings are negotiable
-    if is_listed and years_owned is not None:
+    # Listed for sale × hold — long hold listings are negotiable
+    if listed_for_sale and years_owned is not None:
         if years_owned >= 12:   sigs["hold_listed"] = 90.0
         elif years_owned >= 8:  sigs["hold_listed"] = 60.0
         elif years_owned >= 5:  sigs["hold_listed"] = 30.0
         else:                   sigs["hold_listed"] = 10.0
-    elif is_listed:
+    elif listed_for_sale:
         sigs["hold_listed"] = 25.0
     else:
         sigs["hold_listed"] = None

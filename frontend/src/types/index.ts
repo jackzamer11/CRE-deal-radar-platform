@@ -21,6 +21,31 @@ export interface SignalBreakdown {
   cap_rate_spread: number
 }
 
+export interface MatchedTenant {
+  company_id: string
+  name: string
+  industry: string
+  headcount: number | null
+  sf_needed: number
+  submarket: string | null
+  match_score: number
+  match_reasons: string[]
+}
+
+export interface MatchedProperty {
+  property_id: string
+  address: string
+  submarket: string
+  sf_avail: number | null
+  vacancy_pct: number | null
+  in_place_rent_psf: number | null
+  market_rent_psf: number | null
+  landlord_representative: string | null
+  sales_contact: string | null
+  match_score: number
+  match_reasons: string[]
+}
+
 export interface PropertyListOut {
   id: number
   property_id: string
@@ -36,7 +61,8 @@ export interface PropertyListOut {
   mispricing_score: number
   signal_score: number
   priority: Priority
-  is_listed: boolean
+  listed_for_sale: boolean
+  listed_for_lease: boolean
   notes: string | null
   signals_scored_count: number
   insufficient_data: boolean
@@ -50,6 +76,8 @@ export interface PropertyListOut {
   star_rating: number | null
   sf_avail: number | null
   landlord_representative: string | null
+  landlord_rep_contact: string | null
+  sales_contact: string | null
 }
 
 export interface PropertyOut extends PropertyListOut {
@@ -75,18 +103,16 @@ export interface PropertyOut extends PropertyListOut {
   sf_expiring_12mo: number
   lease_rollover_pct: number
   years_since_last_lease: number
-  is_listed: boolean
   days_on_market: number | null
   owner_behavior_score: number
   deal_type: string | null
   signal_breakdown: SignalBreakdown | null
   // CoStar enrichment fields
-  landlord_rep_contact: string | null
   sales_company: string | null
-  sales_contact: string | null
   tenancy: string | null
   stories: number | null
   parking_ratio: number | null
+  matched_tenants: MatchedTenant[]
 }
 
 export type RepClass = 'BLANK' | 'MAJOR' | 'OTHER'
@@ -136,6 +162,7 @@ export interface OutreachDraft {
   priority: Priority
   generated_at: string
   outreach_type?: string
+  target_type?: string
 }
 
 export interface OutreachLog {
@@ -177,6 +204,7 @@ export interface CompanyOut extends CompanyListOut {
   primary_contact_name: string | null
   primary_contact_title: string | null
   primary_contact_phone: string | null
+  matched_properties: MatchedProperty[]
 }
 
 export interface OpportunityListOut {
@@ -199,6 +227,8 @@ export interface OpportunityListOut {
   owner_behavior_score: number | null
   mispricing_score: number | null
   tenant_opportunity_score: number | null
+  property_ref: string | null
+  company_ref: string | null
 }
 
 export interface OpportunityOut extends OpportunityListOut {
@@ -238,7 +268,9 @@ export interface CallTarget {
   confidence_level: Confidence
   property_address: string | null
   property_submarket: string | null
+  property_id: string | null
   company_name: string | null
+  company_id: string | null
   owner_name: string | null
   thesis: string
   next_action: string

@@ -25,7 +25,9 @@ class CallTarget(BaseModel):
     confidence_level: str
     property_address: Optional[str]
     property_submarket: Optional[str]
+    property_id: Optional[str] = None
     company_name: Optional[str]
+    company_id: Optional[str] = None
     owner_name: Optional[str]
     thesis: str
     next_action: str

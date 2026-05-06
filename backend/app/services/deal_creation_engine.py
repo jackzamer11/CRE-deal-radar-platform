@@ -289,7 +289,7 @@ def create_opportunity_from_match(
     mispricing = signal_results["mispricing"]["composite"]
     tenant = signal_results.get("tenant", {}).get("composite", 0.0)
 
-    scored = score_property(prediction, owner_behavior, mispricing, tenant, prop.is_listed)
+    scored = score_property(prediction, owner_behavior, mispricing, tenant, bool(prop.listed_for_sale or False))
 
     if scored["priority"] == "IGNORE":
         return None

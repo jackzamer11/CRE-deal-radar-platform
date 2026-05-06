@@ -57,7 +57,7 @@ def seed_properties(db):
             lease_rollover_pct=30.0,
             last_lease_signed_date=date(2022, 3, 10),
             years_since_last_lease=4.0,
-            is_listed=False,
+            listed_for_sale=False,
             estimated_loan_maturity_year=2027,
             estimated_ltv=0.65,
             notes="Private LLC owner, unresponsive to brokers historically. Vacancy spiking."
@@ -91,7 +91,7 @@ def seed_properties(db):
             lease_rollover_pct=36.0,
             last_lease_signed_date=date(2021, 11, 5),
             years_since_last_lease=4.5,
-            is_listed=False,
+            listed_for_sale=False,
             estimated_loan_maturity_year=2026,
             estimated_ltv=0.70,
             notes="Loan maturity this year. Owner likely facing refinance or sale decision."
@@ -125,7 +125,7 @@ def seed_properties(db):
             lease_rollover_pct=20.0,
             last_lease_signed_date=date(2024, 1, 15),
             years_since_last_lease=2.0,
-            is_listed=False,
+            listed_for_sale=False,
             notes="Well-managed but 13yr hold. Strong Reston Town Center asset — approaching exit window."
         ),
         # ── TYSONS ─────────────────────────────────────────────────────────
@@ -159,7 +159,7 @@ def seed_properties(db):
             lease_rollover_pct=28.5,
             last_lease_signed_date=date(2021, 6, 1),
             years_since_last_lease=5.0,
-            is_listed=False,
+            listed_for_sale=False,
             estimated_loan_maturity_year=2026,
             estimated_ltv=0.72,
             notes="HIGHEST SIGNAL. 62% vacant, loan maturing 2026, in-place rents 30% below mkt. 10yr hold."
@@ -193,7 +193,7 @@ def seed_properties(db):
             lease_rollover_pct=25.2,
             last_lease_signed_date=date(2020, 8, 15),
             years_since_last_lease=5.5,
-            is_listed=True,
+            listed_for_sale=True,
             listing_date=date(2025, 9, 15),
             days_on_market=208,
             submarket_avg_dom=130,
@@ -230,7 +230,7 @@ def seed_properties(db):
             lease_rollover_pct=27.0,
             last_lease_signed_date=date(2022, 2, 28),
             years_since_last_lease=4.1,
-            is_listed=False,
+            listed_for_sale=False,
             estimated_loan_maturity_year=2027,
             notes="LP structure — investor pressure building as 11yr hold approaches."
         ),
@@ -265,7 +265,7 @@ def seed_properties(db):
             lease_rollover_pct=35.0,
             last_lease_signed_date=date(2023, 1, 20),
             years_since_last_lease=3.0,
-            is_listed=True,
+            listed_for_sale=True,
             listing_date=date(2025, 11, 1),
             days_on_market=161,
             submarket_avg_dom=95,
@@ -302,7 +302,7 @@ def seed_properties(db):
             lease_rollover_pct=26.0,
             last_lease_signed_date=date(2022, 9, 1),
             years_since_last_lease=3.6,
-            is_listed=False,
+            listed_for_sale=False,
             estimated_loan_maturity_year=2028,
             notes="Rosslyn premium market. Owner unresponsive to leasing agents."
         ),
@@ -335,7 +335,7 @@ def seed_properties(db):
             lease_rollover_pct=20.0,
             last_lease_signed_date=date(2024, 4, 10),
             years_since_last_lease=1.8,
-            is_listed=False,
+            listed_for_sale=False,
             notes="Well-leased Class A. Cap rate above market = potential value-add buy. 11yr hold."
         ),
         Property(
@@ -367,7 +367,7 @@ def seed_properties(db):
             lease_rollover_pct=35.0,
             last_lease_signed_date=date(2023, 6, 15),
             years_since_last_lease=2.8,
-            is_listed=False,
+            listed_for_sale=False,
             notes="Above-market cap rate. 35% rollover in 12mo. 12yr hold — approaching exit."
         ),
         # ── ALEXANDRIA ─────────────────────────────────────────────────────
@@ -400,7 +400,7 @@ def seed_properties(db):
             lease_rollover_pct=36.0,
             last_lease_signed_date=date(2022, 5, 20),
             years_since_last_lease=3.9,
-            is_listed=False,
+            listed_for_sale=False,
             estimated_loan_maturity_year=2027,
             notes="18yr hold. Old Town office, 41yr old building, last reno 21yr ago. Prime exit candidate."
         ),
@@ -433,7 +433,7 @@ def seed_properties(db):
             lease_rollover_pct=34.0,
             last_lease_signed_date=date(2021, 1, 15),
             years_since_last_lease=5.2,
-            is_listed=True,
+            listed_for_sale=True,
             listing_date=date(2025, 8, 5),
             days_on_market=249,
             submarket_avg_dom=120,
@@ -471,7 +471,7 @@ def seed_properties(db):
             lease_rollover_pct=36.0,
             last_lease_signed_date=date(2022, 7, 10),
             years_since_last_lease=3.7,
-            is_listed=False,
+            listed_for_sale=False,
             notes="17yr hold. Falls Church submarket. 37yr old building, reno 16yr ago."
         ),
         Property(
@@ -503,7 +503,7 @@ def seed_properties(db):
             lease_rollover_pct=33.0,
             last_lease_signed_date=date(2021, 3, 8),
             years_since_last_lease=5.1,
-            is_listed=False,
+            listed_for_sale=False,
             notes="15yr hold. 45% vacant and rising. Rents far below market."
         ),
         Property(
@@ -535,7 +535,7 @@ def seed_properties(db):
             lease_rollover_pct=30.0,
             last_lease_signed_date=date(2023, 2, 28),
             years_since_last_lease=3.1,
-            is_listed=False,
+            listed_for_sale=False,
             estimated_loan_maturity_year=2027,
             notes="19yr hold. Above-market cap rate. Columbia Pike redevelopment corridor."
         ),

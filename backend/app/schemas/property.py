@@ -1,6 +1,6 @@
 from datetime import date, datetime
 from typing import Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 
 class SignalBreakdown(BaseModel):
@@ -54,7 +54,8 @@ class PropertyBase(BaseModel):
     lease_rollover_pct: float = 0.0
     last_lease_signed_date: Optional[date] = None
     years_since_last_lease: float = 0.0
-    is_listed: bool = False
+    listed_for_sale: bool = False
+    listed_for_lease: bool = False   # derived: sf_avail > 0
     listing_date: Optional[date] = None
     days_on_market: Optional[int] = None
     submarket_avg_dom: Optional[int] = None
@@ -78,6 +79,31 @@ class PropertyCreate(PropertyBase):
     pass
 
 
+class MatchedTenant(BaseModel):
+    company_id: str
+    name: str
+    industry: str
+    headcount: Optional[int]
+    sf_needed: int
+    submarket: Optional[str]
+    match_score: float
+    match_reasons: list[str]
+
+
+class MatchedProperty(BaseModel):
+    property_id: str
+    address: str
+    submarket: str
+    sf_avail: Optional[int]
+    vacancy_pct: Optional[float]
+    in_place_rent_psf: Optional[float]
+    market_rent_psf: Optional[float]
+    landlord_representative: Optional[str]
+    sales_contact: Optional[str]
+    match_score: float
+    match_reasons: list[str]
+
+
 class PropertyOut(PropertyBase):
     id: int
     prediction_score: float
@@ -95,6 +121,18 @@ class PropertyOut(PropertyBase):
     insufficient_data: bool = False
     created_at: datetime
     updated_at: datetime
+    matched_tenants: list[MatchedTenant] = []
+
+    @model_validator(mode='before')
+    @classmethod
+    def derive_listed_for_lease(cls, data):
+        if hasattr(data, '__dict__'):
+            sf = getattr(data, 'sf_avail', None)
+            object.__setattr__(data, 'listed_for_lease', bool(sf and sf > 0))
+        elif isinstance(data, dict):
+            sf = data.get('sf_avail')
+            data['listed_for_lease'] = bool(sf and sf > 0)
+        return data
 
     class Config:
         from_attributes = True
@@ -111,8 +149,8 @@ class PropertyListOut(BaseModel):
     occupancy_pct: Optional[float]
     years_owned: Optional[float]
     lease_rollover_pct: float
-    in_place_rent_psf: float
-    market_rent_psf: float
+    in_place_rent_psf: Optional[float] = None
+    market_rent_psf: Optional[float] = None
     prediction_score: float
     mispricing_score: float
     signal_score: float
@@ -121,13 +159,27 @@ class PropertyListOut(BaseModel):
     acquisition_score: float = 0.0
     dominant_score_type: Optional[str] = None
     priority: str
-    is_listed: bool
+    listed_for_sale: bool = False
+    listed_for_lease: bool = False
     notes: Optional[str]
     star_rating: Optional[int] = None
     sf_avail: Optional[int] = None
     landlord_representative: Optional[str] = None
+    landlord_rep_contact: Optional[str] = None
+    sales_contact: Optional[str] = None
     signals_scored_count: int = 0
     insufficient_data: bool = False
+
+    @model_validator(mode='before')
+    @classmethod
+    def derive_listed_for_lease(cls, data):
+        if hasattr(data, '__dict__'):
+            sf = getattr(data, 'sf_avail', None)
+            object.__setattr__(data, 'listed_for_lease', bool(sf and sf > 0))
+        elif isinstance(data, dict):
+            sf = data.get('sf_avail')
+            data['listed_for_lease'] = bool(sf and sf > 0)
+        return data
 
     class Config:
         from_attributes = True
