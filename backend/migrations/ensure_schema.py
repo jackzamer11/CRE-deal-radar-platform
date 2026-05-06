@@ -18,11 +18,36 @@ Usage (run from the backend/ directory):
     python migrations/ensure_schema.py
 
 Wired into app startup via main.py so it runs automatically on every deploy.
+
+DB path resolution
+------------------
+The path is derived from settings.database_url — the same source used by the
+SQLAlchemy engine — so this migration always targets the correct file
+regardless of deployment (dev, Docker, etc.).
+
+  Dev default : sqlite:///./deal_radar.db  → <cwd>/deal_radar.db
+  Docker      : sqlite:////app/data/deal_radar.db → /app/data/deal_radar.db
 """
 import os
 import sqlite3
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "..", "deal_radar.db")
+
+def _resolve_db_path() -> str:
+    """Return the absolute filesystem path of the configured SQLite database."""
+    try:
+        from app.config import settings
+        url = settings.database_url
+    except Exception:
+        url = os.environ.get("DATABASE_URL", "sqlite:///./deal_radar.db")
+
+    if not url.startswith("sqlite:///"):
+        raise ValueError(
+            f"ensure_schema only supports SQLite; got: {url!r}"
+        )
+    # sqlite:////abs/path  →  /abs/path  (4 slashes = absolute)
+    # sqlite:///./rel/path →  ./rel/path (3 slashes = relative to CWD)
+    raw_path = url[len("sqlite:///"):]
+    return os.path.abspath(raw_path)
 
 
 def _has_column(cur: sqlite3.Cursor, table: str, col: str) -> bool:
@@ -95,7 +120,7 @@ def ensure_companies(cur: sqlite3.Cursor) -> int:
 
 
 def run() -> None:
-    db = os.path.abspath(DB_PATH)
+    db = _resolve_db_path()
     if not os.path.exists(db):
         print(f"ensure_schema: database not found at {db} — skipping.")
         return
