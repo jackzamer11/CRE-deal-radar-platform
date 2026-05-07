@@ -90,6 +90,19 @@ class MatchedTenant(BaseModel):
     match_reasons: list[str]
 
 
+class MatchedProperty(BaseModel):
+    property_id: str
+    address: str
+    submarket: str
+    sf_avail: Optional[int]
+    match_score: float
+    match_reasons: list[str]
+    landlord_representative: Optional[str]
+    landlord_rep_contact: Optional[str]
+    sales_contact: Optional[str]
+    listed_for_sale: bool
+
+
 class PropertyOut(PropertyBase):
     id: int
     prediction_score: float
