@@ -276,9 +276,7 @@ export interface CallTarget {
   company_id: string | null
   property_address: string | null
   property_submarket: string | null
-  property_id: string | null
   company_name: string | null
-  company_id: string | null
   owner_name: string | null
   thesis: string
   next_action: string

@@ -267,7 +267,6 @@ def generate_property_outreach(
     outreach_type: str,
     target_type: Optional[str] = None,
     tenant_context: Optional[str] = None,
-    target_type: Optional[str] = None,
 ) -> dict:
     """
     Call GPT-4o and return a structured outreach dict.

@@ -58,7 +58,6 @@ export default function Opportunities() {
   const [selectedCompany, setSelectedCompany] = useState<CompanyOut | null>(null)
   const [outreachModal, setOutreachModal] = useState<{ type: string; targetType?: string } | null>(null)
   const [updating, setUpdating] = useState<number | null>(null)
-  const [outreachModal, setOutreachModal] = useState(false)
 
   const load = async () => {
     setLoading(true)
