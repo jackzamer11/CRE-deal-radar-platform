@@ -51,7 +51,9 @@ class OpportunityListOut(BaseModel):
     estimated_commission: Optional[float]
     property_address: Optional[str] = None
     property_submarket: Optional[str] = None
+    property_str_id: Optional[str] = None
     company_name: Optional[str] = None
+    company_str_id: Optional[str] = None
     # Signal breakdown included for frontend display
     prediction_score: Optional[float] = None
     owner_behavior_score: Optional[float] = None

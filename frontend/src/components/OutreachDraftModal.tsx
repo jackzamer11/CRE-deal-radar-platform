@@ -31,6 +31,8 @@ interface PropertyProps {
   property: PropertyListOut
   company?: never
   outreach_type: string
+  target_type?: string
+  tenant_context?: string
   onClose: () => void
   onSaved: () => void
 }
@@ -106,7 +108,12 @@ export default function OutreachDraftModal(props: Props) {
       if (entity_type === 'company') {
         result = await draftOutreach(props.company.company_id)
       } else {
-        result = await draftPropertyOutreach(props.property.property_id, props.outreach_type)
+        result = await draftPropertyOutreach(
+          props.property.property_id,
+          props.outreach_type,
+          props.tenant_context,
+          props.target_type,
+        )
       }
       setDraft(result)
     } catch (e: unknown) {

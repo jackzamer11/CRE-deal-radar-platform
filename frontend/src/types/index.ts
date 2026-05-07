@@ -21,6 +21,17 @@ export interface SignalBreakdown {
   cap_rate_spread: number
 }
 
+export interface MatchedTenant {
+  company_id: string
+  name: string
+  industry: string
+  headcount: number | null
+  sf_needed: number
+  submarket: string | null
+  match_score: number
+  match_reasons: string[]
+}
+
 export interface PropertyListOut {
   id: number
   property_id: string
@@ -36,16 +47,17 @@ export interface PropertyListOut {
   mispricing_score: number
   signal_score: number
   priority: Priority
-  is_listed: boolean
+  listed_for_sale: boolean
+  listed_for_lease: boolean
   notes: string | null
   signals_scored_count: number
   insufficient_data: boolean
   // Part 1/3 enrichment + scores
   in_place_rent_psf: number | null
   market_rent_psf: number | null
-  tenant_match_score: number
-  listing_rep_score: number
-  acquisition_score: number
+  tenant_match_score: number | null
+  listing_rep_score: number | null
+  acquisition_score: number | null
   dominant_score_type: string | null
   star_rating: number | null
   sf_avail: number | null
@@ -75,7 +87,8 @@ export interface PropertyOut extends PropertyListOut {
   sf_expiring_12mo: number
   lease_rollover_pct: number
   years_since_last_lease: number
-  is_listed: boolean
+  listed_for_sale: boolean
+  listed_for_lease: boolean
   days_on_market: number | null
   owner_behavior_score: number
   deal_type: string | null
@@ -87,6 +100,7 @@ export interface PropertyOut extends PropertyListOut {
   tenancy: string | null
   stories: number | null
   parking_ratio: number | null
+  matched_tenants: MatchedTenant[]
 }
 
 export type RepClass = 'BLANK' | 'MAJOR' | 'OTHER'
@@ -136,6 +150,7 @@ export interface OutreachDraft {
   priority: Priority
   generated_at: string
   outreach_type?: string
+  target_type?: string
 }
 
 export interface OutreachLog {
@@ -160,6 +175,22 @@ export interface OutreachLog {
   contacted_at: string | null
 }
 
+export interface MatchedProperty {
+  property_id: string
+  address: string
+  submarket: string
+  sf_avail: number | null
+  vacancy_pct: number | null
+  in_place_rent_psf: number | null
+  market_rent_psf: number | null
+  landlord_representative: string | null
+  landlord_rep_contact: string | null
+  sales_contact: string | null
+  listed_for_sale: boolean
+  match_score: number
+  match_reasons: string[]
+}
+
 export interface CompanyOut extends CompanyListOut {
   description: string | null
   open_positions: number
@@ -177,6 +208,7 @@ export interface CompanyOut extends CompanyListOut {
   primary_contact_name: string | null
   primary_contact_title: string | null
   primary_contact_phone: string | null
+  matched_properties: MatchedProperty[]
 }
 
 export interface OpportunityListOut {
@@ -194,7 +226,9 @@ export interface OpportunityListOut {
   estimated_commission: number | null
   property_address: string | null
   property_submarket: string | null
+  property_str_id: string | null
   company_name: string | null
+  company_str_id: string | null
   prediction_score: number | null
   owner_behavior_score: number | null
   mispricing_score: number | null
@@ -236,6 +270,8 @@ export interface CallTarget {
   priority: Priority
   score: number
   confidence_level: Confidence
+  property_id: string | null
+  company_id: string | null
   property_address: string | null
   property_submarket: string | null
   company_name: string | null

@@ -1,6 +1,6 @@
 from datetime import date, datetime
 from typing import Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 
 class SignalBreakdown(BaseModel):
@@ -54,7 +54,8 @@ class PropertyBase(BaseModel):
     lease_rollover_pct: float = 0.0
     last_lease_signed_date: Optional[date] = None
     years_since_last_lease: float = 0.0
-    is_listed: bool = False
+    listed_for_sale: bool = False
+    listed_for_lease: bool = False
     listing_date: Optional[date] = None
     days_on_market: Optional[int] = None
     submarket_avg_dom: Optional[int] = None
@@ -78,23 +79,40 @@ class PropertyCreate(PropertyBase):
     pass
 
 
+class MatchedTenant(BaseModel):
+    company_id: str
+    name: str
+    industry: str
+    headcount: Optional[int]
+    sf_needed: int
+    submarket: Optional[str]
+    match_score: float
+    match_reasons: list[str]
+
+
 class PropertyOut(PropertyBase):
     id: int
     prediction_score: float
     owner_behavior_score: float
     mispricing_score: float
     signal_score: float
-    tenant_match_score: float = 0.0
-    listing_rep_score: float = 0.0
-    acquisition_score: float = 0.0
+    tenant_match_score: Optional[float] = None
+    listing_rep_score: Optional[float] = None
+    acquisition_score: Optional[float] = None
     dominant_score_type: Optional[str] = None
     priority: str
     deal_type: Optional[str] = None
     signal_breakdown: Optional[SignalBreakdown] = None
     signals_scored_count: int = 0
     insufficient_data: bool = False
+    matched_tenants: list[MatchedTenant] = []
     created_at: datetime
     updated_at: datetime
+
+    @model_validator(mode="after")
+    def _derive_listed_for_lease(self) -> "PropertyOut":
+        self.listed_for_lease = bool(self.sf_avail and self.sf_avail > 0)
+        return self
 
     class Config:
         from_attributes = True
@@ -116,18 +134,24 @@ class PropertyListOut(BaseModel):
     prediction_score: float
     mispricing_score: float
     signal_score: float
-    tenant_match_score: float = 0.0
-    listing_rep_score: float = 0.0
-    acquisition_score: float = 0.0
+    tenant_match_score: Optional[float] = None
+    listing_rep_score: Optional[float] = None
+    acquisition_score: Optional[float] = None
     dominant_score_type: Optional[str] = None
     priority: str
-    is_listed: bool
+    listed_for_sale: bool
+    listed_for_lease: bool = False
     notes: Optional[str]
     star_rating: Optional[int] = None
     sf_avail: Optional[int] = None
     landlord_representative: Optional[str] = None
     signals_scored_count: int = 0
     insufficient_data: bool = False
+
+    @model_validator(mode="after")
+    def _derive_listed_for_lease(self) -> "PropertyListOut":
+        self.listed_for_lease = bool(self.sf_avail and self.sf_avail > 0)
+        return self
 
     class Config:
         from_attributes = True

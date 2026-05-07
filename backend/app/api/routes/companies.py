@@ -547,12 +547,99 @@ async def costar_tenant_import(
     }
 
 
+def _adjacent_submarkets(submarket: Optional[str]) -> set:
+    adjacency = {
+        "Arlington (Clarendon)":      {"Arlington (Rosslyn)", "Arlington (Ballston)", "Falls Church"},
+        "Arlington (Rosslyn)":        {"Arlington (Clarendon)", "McLean"},
+        "Arlington (Ballston)":       {"Arlington (Clarendon)", "Arlington (Columbia Pike)", "Falls Church"},
+        "Arlington (Columbia Pike)":  {"Arlington (Ballston)", "Alexandria (Old Town)"},
+        "Alexandria (Old Town)":      {"Arlington (Columbia Pike)"},
+        "Tysons":                     {"McLean", "Vienna", "Reston", "Falls Church"},
+        "Reston":                     {"Tysons", "Vienna"},
+        "Falls Church":               {"Arlington (Clarendon)", "Arlington (Ballston)", "Tysons"},
+        "McLean":                     {"Arlington (Rosslyn)", "Tysons"},
+        "Vienna":                     {"Tysons", "Reston", "Fairfax City"},
+        "Fairfax City":               {"Vienna"},
+    }
+    return adjacency.get(submarket, set())
+
+
+def _compute_matched_properties(company: Company, db: Session) -> list:
+    from app.schemas.company import MatchedProperty
+    from sqlalchemy import or_
+
+    sf_needed = company.estimated_sf_needed or 0
+    if sf_needed <= 0:
+        return []
+
+    candidates = db.query(Property).filter(
+        or_(
+            Property.sf_avail > 0,
+            Property.vacant_sf > 0,
+        )
+    ).all()
+
+    scored = []
+    for prop in candidates:
+        avail = prop.sf_avail or (int(prop.vacant_sf) if prop.vacant_sf else 0)
+        reasons: list = []
+        score = 0.0
+        if avail > 0:
+            ratio = sf_needed / avail
+            if 0.6 <= ratio <= 1.4:
+                pct = abs(1.0 - ratio) * 100
+                score += 40.0
+                reasons.append(f"SF fit ±{pct:.0f}% ({sf_needed:,} needed vs {avail:,} avail)")
+        if company.current_submarket == prop.submarket:
+            score += 30.0
+            reasons.append(f"Same submarket ({prop.submarket})")
+        elif company.current_submarket:
+            adjacent = _adjacent_submarkets(prop.submarket)
+            if company.current_submarket in adjacent:
+                score += 15.0
+                reasons.append(f"Adjacent submarket ({prop.submarket})")
+        if company.current_rent_psf and prop.in_place_rent_psf:
+            if prop.in_place_rent_psf <= company.current_rent_psf * 1.2:
+                score += 20.0
+                reasons.append(
+                    f"Affordable rent (${prop.in_place_rent_psf:.0f} vs ${company.current_rent_psf:.0f} current)"
+                )
+        if prop.signal_score and prop.signal_score >= 60:
+            score += 10.0
+            reasons.append(f"High landlord motivation ({prop.signal_score:.0f})")
+        if score > 0:
+            scored.append((score, prop, reasons))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [
+        MatchedProperty(
+            property_id=prop.property_id,
+            address=prop.address,
+            submarket=prop.submarket,
+            sf_avail=prop.sf_avail or (int(prop.vacant_sf) if prop.vacant_sf else None),
+            vacancy_pct=prop.vacancy_pct,
+            in_place_rent_psf=prop.in_place_rent_psf,
+            market_rent_psf=prop.market_rent_psf,
+            landlord_representative=prop.landlord_representative,
+            landlord_rep_contact=prop.landlord_rep_contact,
+            sales_contact=prop.sales_contact,
+            listed_for_sale=bool(prop.listed_for_sale or False),
+            match_score=round(score, 1),
+            match_reasons=reasons,
+        )
+        for score, prop, reasons in scored[:3]
+    ]
+
+
 @router.get("/{company_id}", response_model=CompanyOut)
 def get_company(company_id: str, db: Session = Depends(get_db)):
     company = db.query(Company).filter(Company.company_id == company_id).first()
     if not company:
         raise HTTPException(status_code=404, detail="Company not found")
-    return company
+    from app.schemas.company import CompanyOut as CompanyOutSchema
+    out = CompanyOutSchema.model_validate(company)
+    out.matched_properties = _compute_matched_properties(company, db)
+    return out
 
 
 VALID_LEASE_SOURCES = {"costar", "manual", "compstak", "sec_filing", "landlord_confirmed", "public_record"}

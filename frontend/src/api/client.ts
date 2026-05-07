@@ -27,7 +27,7 @@ export const getDailyBriefing = (): Promise<DailyBriefing> =>
 export interface PropertyFilters {
   submarket?: string
   priority?: string
-  is_listed?: boolean
+  listed_for_sale?: boolean
   min_score?: number
   sort_by?: string
   dominant_score_type?: string
@@ -116,9 +116,14 @@ export const draftPropertyOutreach = (
   propertyId: string,
   outreachType: string,
   tenantContext?: string,
+  targetType?: string,
 ): Promise<OutreachDraft> =>
   api.post(`/properties/${propertyId}/draft-outreach`, null, {
-    params: { outreach_type: outreachType, ...(tenantContext ? { tenant_context: tenantContext } : {}) },
+    params: {
+      outreach_type: outreachType,
+      ...(tenantContext ? { tenant_context: tenantContext } : {}),
+      ...(targetType    ? { target_type: targetType }       : {}),
+    },
   }).then(r => r.data)
 
 export const logPropertyOutreach = (

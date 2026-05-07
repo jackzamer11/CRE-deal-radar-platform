@@ -39,6 +39,22 @@ class CompanyCreate(CompanyBase):
     pass
 
 
+class MatchedProperty(BaseModel):
+    property_id: str
+    address: str
+    submarket: str
+    sf_avail: Optional[int]
+    vacancy_pct: Optional[float]
+    in_place_rent_psf: Optional[float]
+    market_rent_psf: Optional[float]
+    landlord_representative: Optional[str]
+    landlord_rep_contact: Optional[str]
+    sales_contact: Optional[str]
+    listed_for_sale: bool
+    match_score: float
+    match_reasons: list[str]
+
+
 class CompanyOut(CompanyBase):
     id: int
     headcount_growth_pct: Optional[float]
@@ -57,6 +73,7 @@ class CompanyOut(CompanyBase):
     created_at: datetime
     updated_at: datetime
     last_modified_by_user: Optional[datetime] = None
+    matched_properties: list[MatchedProperty] = []
 
     class Config:
         from_attributes = True

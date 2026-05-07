@@ -1,7 +1,8 @@
 import { useEffect, useState, useRef } from 'react'
+import { useSearchParams, useNavigate } from 'react-router-dom'
 import { Building2, Filter, RefreshCw, X, Plus, Upload, Pencil, Check, MessageSquarePlus } from 'lucide-react'
 import {
-  getProperties, updatePropertyInPlaceRent, getPropertyOutreachHistory,
+  getProperties, getProperty, updatePropertyInPlaceRent, getPropertyOutreachHistory,
 } from '../api/client'
 import type { PropertyListOut, PropertyOut, OutreachLog } from '../types'
 import { PriorityBadge } from '../components/PriorityBadge'
@@ -123,6 +124,8 @@ function DominantBadge({ type }: { type: string | null | undefined }) {
 // ── Main component ─────────────────────────────────────────────────────────
 
 export default function Properties() {
+  const [searchParams, setSearchParams] = useSearchParams()
+  const navigate = useNavigate()
   const [properties, setProperties]         = useState<PropertyListOut[]>([])
   const [loading, setLoading]               = useState(true)
   const [submarket, setSubmarket]           = useState('')
@@ -130,12 +133,12 @@ export default function Properties() {
   const [listedOnly, setListedOnly]         = useState<boolean | undefined>()
   const [scoreTypeFilter, setScoreTypeFilter] = useState('')
   const [needsOutreach, setNeedsOutreach]   = useState(false)
-  const [selected, setSelected]             = useState<PropertyListOut | null>(null)
+  const [selected, setSelected]             = useState<PropertyOut | null>(null)
   const [selectedLogs, setSelectedLogs]     = useState<OutreachLog[]>([])
   const [showAddModal, setShowAddModal]     = useState(false)
   const [showBulkModal, setShowBulkModal]   = useState(false)
   const [showCoStarModal, setShowCoStarModal] = useState(false)
-  const [outreachModal, setOutreachModal]   = useState<{ prop: PropertyListOut; type: string } | null>(null)
+  const [outreachModal, setOutreachModal]   = useState<{ prop: PropertyOut; type: string; targetType?: string; tenantContext?: string } | null>(null)
 
   const load = async () => {
     setLoading(true)
@@ -143,7 +146,7 @@ export default function Properties() {
       const data = await getProperties({
         submarket: submarket || undefined,
         priority:  priority  || undefined,
-        is_listed: listedOnly,
+        listed_for_sale: listedOnly,
         dominant_score_type: scoreTypeFilter || undefined,
         needs_outreach: needsOutreach || undefined,
       })
@@ -155,13 +158,43 @@ export default function Properties() {
 
   useEffect(() => { load() }, [submarket, priority, listedOnly, scoreTypeFilter, needsOutreach])
 
-  const handleSelect = async (p: PropertyListOut) => {
-    setSelected(p)
+  const handleSelect = async (p: PropertyListOut | PropertyOut) => {
+    // Always re-fetch full PropertyOut to get matched_tenants + listed_for_lease.
+    try {
+      const full = await getProperty(p.property_id)
+      setSelected(full)
+    } catch {
+      setSelected(p as PropertyOut)
+    }
     try {
       const logs = await getPropertyOutreachHistory(p.property_id)
       setSelectedLogs(logs)
     } catch {
       setSelectedLogs([])
+    }
+  }
+
+  // Auto-open via ?selected= URL param
+  useEffect(() => {
+    const id = searchParams.get('selected')
+    if (id && (!selected || selected.property_id !== id)) {
+      getProperty(id)
+        .then(p => {
+          setSelected(p)
+          return getPropertyOutreachHistory(id).catch(() => [] as OutreachLog[])
+        })
+        .then(logs => { if (Array.isArray(logs)) setSelectedLogs(logs) })
+        .catch(() => {})
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams])
+
+  const closePanel = () => {
+    setSelected(null)
+    if (searchParams.get('selected')) {
+      const next = new URLSearchParams(searchParams)
+      next.delete('selected')
+      setSearchParams(next, { replace: true })
     }
   }
 
@@ -174,8 +207,45 @@ export default function Properties() {
     }
   }
 
-  const bestOutreachType = (p: PropertyListOut): string => {
-    return p.dominant_score_type ?? 'broker'
+  // ── Smart Draft Outreach (label + type + target_type) ────────────────────
+  type OutreachPlan = { type: string; targetType: string; label: string }
+
+  const planOutreach = (p: PropertyOut): OutreachPlan => {
+    if (p.listed_for_sale && p.sales_contact) {
+      return { type: 'acquisition', targetType: 'sales_broker', label: 'Draft Broker Outreach (Acquisition)' }
+    }
+    const dom = p.dominant_score_type
+    if (dom === 'tenant_match') {
+      if (p.landlord_representative) {
+        return { type: 'tenant_match', targetType: 'broker', label: 'Draft Broker Outreach (Tenant Match)' }
+      }
+      return { type: 'tenant_match', targetType: 'owner', label: 'Draft Owner Outreach (Tenant Match)' }
+    }
+    if (dom === 'listing_rep') {
+      return { type: 'listing_rep', targetType: 'owner', label: 'Draft Owner Outreach (Listing Rep)' }
+    }
+    if (dom === 'acquisition') {
+      if (p.sales_contact) {
+        return { type: 'acquisition', targetType: 'sales_broker', label: 'Draft Broker Outreach (Acquisition)' }
+      }
+      return { type: 'acquisition', targetType: 'owner', label: 'Draft Owner Outreach (Acquisition)' }
+    }
+    // Fallback
+    if (p.landlord_representative) {
+      return { type: 'tenant_match', targetType: 'broker', label: 'Draft Broker Outreach (Tenant Match)' }
+    }
+    return { type: 'tenant_match', targetType: 'owner', label: 'Draft Owner Outreach (Tenant Match)' }
+  }
+
+  const getTargetType = (p: PropertyOut, outreachType: string): string => {
+    if (outreachType === 'acquisition') {
+      return p.sales_contact ? 'sales_broker' : 'owner'
+    }
+    if (outreachType === 'tenant_match') {
+      if (p.listed_for_sale) return 'owner'
+      return p.landlord_representative ? 'broker' : 'owner'
+    }
+    return 'owner'
   }
 
   const clearFilters = () => {
@@ -358,15 +428,23 @@ export default function Properties() {
                   <td className="mono text-xs text-ink-secondary">{fmtRent(p.market_rent_psf)}</td>
                   <td className="mono text-xs text-ink-secondary">{fmt(p.sf_avail, '', ' SF')}</td>
                   <td>
-                    {p.is_listed ? (
-                      <span className="text-[10px] bg-amber-500/15 text-amber-400 border border-amber-500/30 px-2 py-0.5 rounded font-semibold">
-                        LISTED
-                      </span>
-                    ) : (
-                      <span className="text-[10px] bg-surface-muted text-ink-muted border border-surface-border px-2 py-0.5 rounded">
-                        OFF-MKT
-                      </span>
-                    )}
+                    <div className="flex flex-col gap-1">
+                      {p.listed_for_sale ? (
+                        <span className="text-[10px] bg-amber-500/15 text-amber-400 border border-amber-500/30 px-2 py-0.5 rounded font-semibold">
+                          FOR SALE
+                        </span>
+                      ) : null}
+                      {p.listed_for_lease ? (
+                        <span className="text-[10px] bg-violet-500/15 text-violet-400 border border-violet-500/30 px-2 py-0.5 rounded font-semibold">
+                          FOR LEASE
+                        </span>
+                      ) : null}
+                      {!p.listed_for_sale && !p.listed_for_lease && (
+                        <span className="text-[10px] bg-surface-muted text-ink-muted border border-surface-border px-2 py-0.5 rounded">
+                          OFF-MKT
+                        </span>
+                      )}
+                    </div>
                   </td>
                   <td><ScoreBadge score={p.prediction_score} size="sm" showBar /></td>
                   <td><ScoreBadge score={p.mispricing_score} size="sm" showBar /></td>
@@ -401,13 +479,23 @@ export default function Properties() {
           entity_type="property"
           property={outreachModal.prop}
           outreach_type={outreachModal.type}
+          target_type={outreachModal.targetType}
+          tenant_context={outreachModal.tenantContext}
           onClose={() => setOutreachModal(null)}
           onSaved={() => { setOutreachModal(null); load() }}
         />
       )}
 
       {/* Detail panel */}
-      {selected && (
+      {selected && (() => {
+        const plan = planOutreach(selected)
+        const forSaleLine = selected.listed_for_sale
+          ? `Yes${selected.asking_price ? ` ($${(selected.asking_price/1_000_000).toFixed(2)}M${selected.asking_price_psf ? ` / $${selected.asking_price_psf.toFixed(0)}/SF` : ''})` : ''}`
+          : 'No'
+        const forLeaseLine = selected.listed_for_lease
+          ? `Yes (${(selected.sf_avail || 0).toLocaleString()} SF avail${selected.market_rent_psf ? ` @ $${selected.market_rent_psf.toFixed(0)}/SF` : ''})`
+          : 'No'
+        return (
         <div className="fixed inset-y-0 right-0 w-[420px] bg-surface-card border-l border-surface-border
                         shadow-2xl z-50 overflow-y-auto">
           <div className="p-5">
@@ -417,7 +505,7 @@ export default function Properties() {
                 <div className="font-bold text-ink-primary">{selected.address}</div>
                 <div className="text-xs text-ink-muted mt-0.5">{selected.submarket} · {selected.asset_class}</div>
               </div>
-              <button onClick={() => setSelected(null)} className="text-ink-muted hover:text-ink-primary p-1">
+              <button onClick={closePanel} className="text-ink-muted hover:text-ink-primary p-1">
                 <X size={18} />
               </button>
             </div>
@@ -456,33 +544,32 @@ export default function Properties() {
                 </div>
               </div>
 
-              {/* Draft Outreach button */}
+              {/* Smart Draft Outreach button */}
               <button
-                onClick={() => setOutreachModal({ prop: selected, type: bestOutreachType(selected) })}
+                onClick={() => setOutreachModal({ prop: selected, type: plan.type, targetType: plan.targetType })}
                 className="w-full flex items-center justify-center gap-2 py-2 rounded-lg
                            bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold transition-colors"
               >
                 <MessageSquarePlus size={13} />
-                Draft Outreach
-                {selected.dominant_score_type && (
-                  <span className="opacity-75">({SCORE_TYPE_LABELS[selected.dominant_score_type] ?? selected.dominant_score_type})</span>
-                )}
+                {plan.label}
               </button>
 
-              {/* Other outreach type buttons */}
+              {/* Override dropdown — 3 buttons, each with correct target_type */}
               <div className="flex gap-2">
-                {(['tenant_match', 'listing_rep', 'acquisition', 'broker'] as const)
-                  .filter(t => t !== selected.dominant_score_type)
-                  .map(t => (
-                    <button
-                      key={t}
-                      onClick={() => setOutreachModal({ prop: selected, type: t })}
-                      className="flex-1 text-[10px] py-1.5 rounded-lg border border-surface-border
-                                 text-ink-muted hover:text-ink-primary hover:border-accent-blue/40 transition-colors"
-                    >
-                      {SCORE_TYPE_LABELS[t] ?? t}
-                    </button>
-                  ))}
+                {(['tenant_match', 'listing_rep', 'acquisition'] as const).map(t => (
+                  <button
+                    key={t}
+                    onClick={() => setOutreachModal({
+                      prop: selected,
+                      type: t,
+                      targetType: getTargetType(selected, t),
+                    })}
+                    className="flex-1 text-[10px] py-1.5 rounded-lg border border-surface-border
+                               text-ink-muted hover:text-ink-primary hover:border-accent-blue/40 transition-colors"
+                  >
+                    {SCORE_TYPE_LABELS[t]}
+                  </button>
+                ))}
               </div>
 
               <div className="bg-surface-muted rounded-lg p-3 space-y-2">
@@ -495,12 +582,81 @@ export default function Properties() {
                 <Row label="Rollover"    value={`${selected.lease_rollover_pct.toFixed(0)}% (12mo)`} />
                 <Row label="Owner"       value={selected.owner_name} />
                 <Row label="Held"        value={selected.years_owned ? `${selected.years_owned.toFixed(1)} years` : '—'} />
-                <Row label="Listed"      value={selected.is_listed ? 'Yes' : 'Off-Market'} />
+                <Row label="For Sale"    value={forSaleLine} />
+                <Row label="For Lease"   value={forLeaseLine} />
                 {selected.landlord_representative && (
                   <Row label="Landlord Rep" value={selected.landlord_representative} />
                 )}
                 {selected.star_rating != null && (
                   <Row label="Star Rating" value={`${selected.star_rating}★`} />
+                )}
+              </div>
+
+              {/* Matched Tenants section */}
+              <div className="bg-surface-muted rounded-lg p-3">
+                <div className="text-[10px] text-ink-muted uppercase tracking-wider mb-2">
+                  MATCHED TENANTS ({selected.matched_tenants?.length ?? 0})
+                </div>
+                {(!selected.matched_tenants || selected.matched_tenants.length === 0) ? (
+                  <div className="text-xs text-ink-muted">No matched tenants</div>
+                ) : (
+                  <div className="space-y-2">
+                    {selected.matched_tenants.map(t => {
+                      let label = 'Draft Owner Outreach (Tenant Match)'
+                      let targetType = 'owner'
+                      if (selected.listed_for_sale && (selected.sf_avail ?? 0) > 0) {
+                        label = 'Draft Outreach (For Sale + Vacancy)'
+                        targetType = 'owner'
+                      } else if (selected.landlord_representative) {
+                        label = 'Draft Broker Outreach (Tenant Match)'
+                        targetType = 'broker'
+                      }
+                      const tCtx = `Industry: ${t.industry}; Headcount: ${t.headcount ?? 'N/A'}; SF Needed: ${t.sf_needed.toLocaleString()}; Submarket: ${t.submarket ?? 'N/A'}`
+                      return (
+                        <div
+                          key={t.company_id}
+                          className="border border-surface-border rounded-lg p-2 hover:bg-surface-card cursor-pointer transition-colors"
+                          onClick={() => navigate(`/companies?selected=${t.company_id}`)}
+                        >
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0 flex-1">
+                              <div className="text-xs font-semibold text-ink-primary truncate">{t.name}</div>
+                              <div className="text-[10px] text-ink-muted">
+                                {t.industry} · {t.headcount ?? '—'} HC · {t.sf_needed.toLocaleString()} SF needed
+                              </div>
+                              {t.match_reasons.length > 0 && (
+                                <div className="flex flex-wrap gap-1 mt-1">
+                                  {t.match_reasons.map((r, i) => (
+                                    <span key={i} className="text-[9px] px-1.5 py-0.5 rounded bg-surface-card text-ink-secondary border border-surface-border">
+                                      {r}
+                                    </span>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                            <div className="flex-shrink-0 text-right">
+                              <ScoreBadge score={t.match_score} size="sm" />
+                            </div>
+                          </div>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              setOutreachModal({
+                                prop: selected,
+                                type: 'tenant_match',
+                                targetType,
+                                tenantContext: tCtx,
+                              })
+                            }}
+                            className="mt-2 w-full text-[10px] py-1.5 rounded-lg border border-emerald-500/40
+                                       text-emerald-400 hover:bg-emerald-500/10 transition-colors"
+                          >
+                            {label}
+                          </button>
+                        </div>
+                      )
+                    })}
+                  </div>
                 )}
               </div>
 
@@ -533,7 +689,8 @@ export default function Properties() {
             </div>
           </div>
         </div>
-      )}
+        )
+      })()}
     </div>
   )
 }

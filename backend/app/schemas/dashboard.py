@@ -23,6 +23,8 @@ class CallTarget(BaseModel):
     priority: str
     score: float
     confidence_level: str
+    property_id: Optional[str] = None
+    company_id: Optional[str] = None
     property_address: Optional[str]
     property_submarket: Optional[str]
     company_name: Optional[str]

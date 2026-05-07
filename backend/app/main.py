@@ -43,6 +43,8 @@ def create_app() -> FastAPI:
 
     @app.on_event("startup")
     def on_startup():
+        from migrations.rename_is_listed import run as rename_is_listed
+        rename_is_listed()
         init_db()
         start_scheduler()
 
