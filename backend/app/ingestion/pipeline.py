@@ -133,6 +133,46 @@ def refresh_property_signals(db: Session, prop: Property) -> None:
     )
     prop.insufficient_data           = prop.signals_scored_count < 3
 
+    # Outreach scores — must be computed here too so bulk refresh and the
+    # daily pipeline keep them in sync with _run_signals in properties.py.
+    tm = se.compute_tenant_match_score(
+        vacancy_pct=prop.vacancy_pct,
+        sf_avail=prop.sf_avail,
+        total_sf=prop.total_sf or 1,
+        submarket_vacancy_avg=None,
+        market_rent_psf=prop.market_rent_psf or 0.0,
+        in_place_rent_psf=prop.in_place_rent_psf,
+        asking_rent_psf=None,
+        tenancy=prop.tenancy,
+    )
+    lr = se.compute_listing_rep_score(
+        years_owned=prop.years_owned,
+        in_place_rent_psf=prop.in_place_rent_psf,
+        market_rent_psf=prop.market_rent_psf or 0.0,
+        year_built=prop.year_built or 1980,
+        last_renovation_year=prop.last_renovation_year,
+        estimated_loan_maturity_year=prop.estimated_loan_maturity_year,
+        owner_type=prop.owner_type,
+        listed_for_sale=bool(prop.listed_for_sale or False),
+    )
+    ac = se.compute_acquisition_score(
+        cap_rate=prop.cap_rate,
+        market_cap_rate=prop.market_cap_rate or 6.5,
+        asking_price_psf=prop.asking_price_psf,
+        submarket_avg_psf=settings.submarket_avg_psf.get(prop.submarket, 250),
+        sf_avail=prop.sf_avail,
+        total_sf=prop.total_sf or 1,
+        listed_for_sale=bool(prop.listed_for_sale or False),
+        years_owned=prop.years_owned,
+        star_rating=prop.star_rating,
+        year_built=prop.year_built or 1980,
+        last_renovation_year=prop.last_renovation_year,
+    )
+    prop.tenant_match_score  = tm
+    prop.listing_rep_score   = lr
+    prop.acquisition_score   = ac
+    prop.dominant_score_type = se.determine_dominant_score_type(tm, lr, ac)
+
 
 def refresh_company_signals(db: Session, company: Company) -> None:
     """Full signal recompute for a single company."""
