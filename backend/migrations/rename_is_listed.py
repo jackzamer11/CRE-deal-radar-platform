@@ -1,35 +1,23 @@
 """
-Migration: rename properties.is_listed → properties.listed_for_sale.
+Migration: rename properties.is_listed -> properties.listed_for_sale.
 
-Background:
------------
-The original is_listed column conflated "for sale" and "for lease."
-Real CoStar data distinguishes the two. This migration renames the
-column so the schema reflects its true meaning: the property is
-actively listed for sale.
+Why: the ORM model and downstream code now use `listed_for_sale` to
+distinguish from `listed_for_lease` (which is derived from sf_avail at
+serialization time and is NOT a column). The live SQLite DB may have:
 
-listed_for_lease is a DERIVED field (sf_avail > 0) computed at
-serialization time — no migration needed for it.
-
-SQLite 3.25+ supports ALTER TABLE RENAME COLUMN directly, so no
-table recreation is needed.
-
-Safe to re-run — checks whether listed_for_sale already exists first.
+    - Already been renamed (column `listed_for_sale` exists)            → skip
+    - The legacy column `is_listed`                                     → ALTER RENAME
+    - Neither column (fresh DB or pre-Part-1 schema)                    → ALTER ADD
 
 Run from backend/ directory:
     python -m migrations.rename_is_listed
-    OR
-    python migrations/rename_is_listed.py
+
+Safe to re-run — idempotent.
 """
 import os
 import sqlite3
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "..", "deal_radar.db")
-
-
-def _has_column(cur: sqlite3.Cursor, table: str, col: str) -> bool:
-    cur.execute(f"PRAGMA table_info({table})")
-    return any(row[1] == col for row in cur.fetchall())
 
 
 def run():
@@ -41,23 +29,18 @@ def run():
     conn = sqlite3.connect(db)
     cur  = conn.cursor()
 
-    if _has_column(cur, "properties", "listed_for_sale"):
-        print("  listed_for_sale already exists — nothing to do.")
-        conn.close()
-        return
+    cur.execute("PRAGMA table_info(properties)")
+    cols = {row[1] for row in cur.fetchall()}
 
-    if not _has_column(cur, "properties", "is_listed"):
-        print("  Neither column found — adding listed_for_sale ...")
-        cur.execute(
-            "ALTER TABLE properties ADD COLUMN listed_for_sale BOOLEAN DEFAULT 0"
-        )
-        conn.commit()
-        conn.close()
-        print("Done.")
-        return
+    if "listed_for_sale" in cols:
+        print("  listed_for_sale already exists, skipping.")
+    elif "is_listed" in cols:
+        cur.execute("ALTER TABLE properties RENAME COLUMN is_listed TO listed_for_sale")
+        print("  Renamed is_listed -> listed_for_sale.")
+    else:
+        cur.execute("ALTER TABLE properties ADD COLUMN listed_for_sale BOOLEAN DEFAULT 0")
+        print("  Added listed_for_sale (BOOLEAN DEFAULT 0).")
 
-    print("  Renaming properties.is_listed → properties.listed_for_sale ...")
-    cur.execute("ALTER TABLE properties RENAME COLUMN is_listed TO listed_for_sale")
     conn.commit()
     conn.close()
     print("Done.")

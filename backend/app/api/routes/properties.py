@@ -134,7 +134,7 @@ COSTAR_REQUIRED_COLS = [
 # Optional CoStar enrichment columns (Part 2). Importer maps any that are
 # present; absent columns are silently skipped (kept null).
 COSTAR_OPTIONAL_COLS = [
-    "Star Rating", "SF Avail",
+    "Star Rating", "Total Available Space (SF)", "SF Avail",
     "Landlord Representative", "Landlord Rep Contact",
     "Sales Company", "Sales Contact",
     "Price/SF", "Tenancy", "Stories", "Parking Ratio",
@@ -284,7 +284,7 @@ def _parse_costar_row(row: dict, row_num: int) -> tuple:
         notes=notes,
         # Optional enrichment columns (Part 2)
         star_rating=_costar_int(row, "Star Rating"),
-        sf_avail=_costar_int(row, "SF Avail"),
+        sf_avail=_costar_int(row, "Total Available Space (SF)") or _costar_int(row, "SF Avail"),
         landlord_representative=_costar_str(row, "Landlord Representative"),
         landlord_rep_contact=_costar_str(row, "Landlord Rep Contact"),
         sales_company=_costar_str(row, "Sales Company"),
@@ -353,7 +353,8 @@ def _run_signals(prop: Property) -> None:
         prop.in_place_rent_psf, prop.market_rent_psf, prop.asking_price_psf,
         settings.submarket_avg_psf.get(prop.submarket, 250),
         prop.days_on_market, prop.submarket_avg_dom,
-        prop.cap_rate, prop.market_cap_rate, bool(prop.listed_for_sale or False),
+        prop.cap_rate, prop.market_cap_rate,
+        listed_for_sale=bool(prop.listed_for_sale or False),
     )
     pred_comp  = pred_result["composite"]
     owner_comp = owner_result["composite"]
@@ -424,9 +425,10 @@ def _run_signals(prop: Property) -> None:
         year_built=prop.year_built or 1980,
         last_renovation_year=prop.last_renovation_year,
     )
-    prop.tenant_match_score  = tm or 0.0
-    prop.listing_rep_score   = lr or 0.0
-    prop.acquisition_score   = ac or 0.0
+    # Preserve None (abstain) so dashboards can render "—" instead of 0.
+    prop.tenant_match_score  = tm
+    prop.listing_rep_score   = lr
+    prop.acquisition_score   = ac
     prop.dominant_score_type = se.determine_dominant_score_type(tm, lr, ac)
 
 
@@ -443,6 +445,82 @@ def _enrich(prop: Property) -> PropertyOut:
     out = PropertyOut.model_validate(prop)
     out.signal_breakdown = breakdown
     return out
+
+
+# ── Matched-tenant helper ──────────────────────────────────────────────────
+
+def _adjacent_submarkets(submarket: Optional[str]) -> set:
+    adjacency = {
+        "Arlington (Clarendon)":      {"Arlington (Rosslyn)", "Arlington (Ballston)", "Falls Church"},
+        "Arlington (Rosslyn)":        {"Arlington (Clarendon)", "McLean"},
+        "Arlington (Ballston)":       {"Arlington (Clarendon)", "Arlington (Columbia Pike)", "Falls Church"},
+        "Arlington (Columbia Pike)":  {"Arlington (Ballston)", "Alexandria (Old Town)"},
+        "Alexandria (Old Town)":      {"Arlington (Columbia Pike)"},
+        "Tysons":                     {"McLean", "Vienna", "Reston", "Falls Church"},
+        "Reston":                     {"Tysons", "Vienna"},
+        "Falls Church":               {"Arlington (Clarendon)", "Arlington (Ballston)", "Tysons"},
+        "McLean":                     {"Arlington (Rosslyn)", "Tysons"},
+        "Vienna":                     {"Tysons", "Reston", "Fairfax City"},
+        "Fairfax City":               {"Vienna"},
+    }
+    return adjacency.get(submarket, set())
+
+
+def _compute_matched_tenants(prop: Property, db: Session) -> list:
+    from app.models.company import Company
+    from app.schemas.property import MatchedTenant
+
+    avail_sf = prop.sf_avail or (int(prop.vacant_sf) if prop.vacant_sf else 0)
+    if avail_sf <= 0:
+        return []
+
+    candidates = db.query(Company).filter(
+        Company.estimated_sf_needed.isnot(None),
+        Company.estimated_sf_needed > 0,
+    ).all()
+
+    scored = []
+    for co in candidates:
+        sf_needed = co.estimated_sf_needed or 0
+        reasons: list = []
+        score = 0.0
+        if sf_needed > 0 and avail_sf > 0:
+            ratio = sf_needed / avail_sf
+            if 0.6 <= ratio <= 1.4:
+                pct = abs(1.0 - ratio) * 100
+                score += 40.0
+                reasons.append(f"SF fit ±{pct:.0f}% ({sf_needed:,} needed vs {avail_sf:,} avail)")
+        if co.current_submarket == prop.submarket:
+            score += 30.0
+            reasons.append(f"Same submarket ({prop.submarket})")
+        elif co.current_submarket:
+            adjacent = _adjacent_submarkets(prop.submarket)
+            if co.current_submarket in adjacent:
+                score += 15.0
+                reasons.append(f"Adjacent submarket ({co.current_submarket})")
+        if co.expansion_signal:
+            score += 20.0
+            reasons.append("Expansion signal active")
+        if co.lease_expiry_months is not None and co.lease_expiry_months <= 18:
+            score += 10.0
+            reasons.append(f"Lease expiry in {co.lease_expiry_months}mo")
+        if score > 0:
+            scored.append((score, co, reasons))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [
+        MatchedTenant(
+            company_id=co.company_id,
+            name=co.name,
+            industry=co.industry,
+            headcount=co.current_headcount,
+            sf_needed=co.estimated_sf_needed or 0,
+            submarket=co.current_submarket,
+            match_score=round(score, 1),
+            match_reasons=reasons,
+        )
+        for score, co, reasons in scored[:3]
+    ]
 
 
 def _next_property_id(db: Session) -> str:
@@ -1059,91 +1137,6 @@ def get_property(property_id: str, db: Session = Depends(get_db)):
     return out
 
 
-def _compute_matched_tenants(prop: Property, db: Session) -> list[MatchedTenant]:
-    """Return top-3 tenants whose space needs align with this property's availability."""
-    if not prop.sf_avail or prop.sf_avail <= 0:
-        return []
-
-    candidates = (
-        db.query(Company)
-        .filter(
-            Company.estimated_sf_needed.isnot(None),
-            Company.estimated_sf_needed > 0,
-        )
-        .all()
-    )
-
-    scored = []
-    for co in candidates:
-        sf_needed = co.estimated_sf_needed or 0
-        reasons: list[str] = []
-        score = 0.0
-
-        # SF fit: needed SF within ±40% of available SF
-        if sf_needed > 0 and prop.sf_avail > 0:
-            ratio = sf_needed / prop.sf_avail
-            if 0.6 <= ratio <= 1.4:
-                score += 40.0
-                reasons.append(f"SF fit ({sf_needed:,} needed vs {prop.sf_avail:,} avail)")
-
-        # Submarket match
-        if co.current_submarket and co.current_submarket == prop.submarket:
-            score += 30.0
-            reasons.append(f"Same submarket ({prop.submarket})")
-        elif co.current_submarket:
-            # Adjacent submarket bonus
-            adjacent = _adjacent_submarkets(prop.submarket)
-            if co.current_submarket in adjacent:
-                score += 15.0
-                reasons.append(f"Adjacent submarket ({co.current_submarket})")
-
-        # Expansion signal
-        if co.expansion_signal:
-            score += 20.0
-            reasons.append("Expansion signal active")
-
-        # Lease expiry within 18 months
-        if co.lease_expiry_months is not None and co.lease_expiry_months <= 18:
-            score += 10.0
-            reasons.append(f"Lease expiry in {co.lease_expiry_months}mo")
-
-        if score > 0:
-            scored.append((score, co, reasons))
-
-    scored.sort(key=lambda x: x[0], reverse=True)
-
-    return [
-        MatchedTenant(
-            company_id=co.company_id,
-            name=co.name,
-            industry=co.industry,
-            headcount=co.current_headcount,
-            sf_needed=co.estimated_sf_needed or 0,
-            submarket=co.current_submarket,
-            match_score=round(score, 1),
-            match_reasons=reasons,
-        )
-        for score, co, reasons in scored[:3]
-    ]
-
-
-def _adjacent_submarkets(submarket: str) -> set[str]:
-    adjacency: dict[str, set] = {
-        "Arlington (Clarendon)":      {"Arlington (Rosslyn)", "Arlington (Ballston)", "Falls Church"},
-        "Arlington (Rosslyn)":        {"Arlington (Clarendon)", "McLean"},
-        "Arlington (Ballston)":       {"Arlington (Clarendon)", "Arlington (Columbia Pike)", "Falls Church"},
-        "Arlington (Columbia Pike)":  {"Arlington (Ballston)", "Alexandria (Old Town)"},
-        "Alexandria (Old Town)":      {"Arlington (Columbia Pike)"},
-        "Tysons":                     {"McLean", "Vienna", "Reston", "Falls Church"},
-        "Reston":                     {"Tysons", "Vienna"},
-        "Falls Church":               {"Arlington (Clarendon)", "Arlington (Ballston)", "Tysons"},
-        "McLean":                     {"Arlington (Rosslyn)", "Tysons"},
-        "Vienna":                     {"Tysons", "Reston", "Fairfax City"},
-        "Fairfax City":               {"Vienna"},
-    }
-    return adjacency.get(submarket, set())
-
-
 @router.post("/{property_id}/refresh-signals", response_model=PropertyOut)
 def refresh_property_signals(property_id: str, db: Session = Depends(get_db)):
     prop = db.query(Property).filter(Property.property_id == property_id).first()
@@ -1152,7 +1145,9 @@ def refresh_property_signals(property_id: str, db: Session = Depends(get_db)):
     _run_signals(prop)
     db.commit()
     db.refresh(prop)
-    return _enrich(prop)
+    out = _enrich(prop)
+    out.matched_tenants = _compute_matched_tenants(prop, db)
+    return out
 
 
 # ── Property outreach endpoints (Part 4) ───────────────────────────────────
@@ -1161,8 +1156,8 @@ def refresh_property_signals(property_id: str, db: Session = Depends(get_db)):
 def draft_property_outreach(
     property_id: str,
     outreach_type: str = Query("tenant_match", regex="^(tenant_match|listing_rep|acquisition)$"),
-    target_type: Optional[str] = Query(None),
     tenant_context: Optional[str] = Query(None),
+    target_type: Optional[str] = Query(None),
     db: Session = Depends(get_db),
 ):
     prop = db.query(Property).filter(Property.property_id == property_id).first()
@@ -1170,14 +1165,14 @@ def draft_property_outreach(
         raise HTTPException(status_code=404, detail="Property not found")
 
     prop_dict = {c.key: getattr(prop, c.key) for c in prop.__table__.columns}
-    result = generate_property_outreach(prop_dict, outreach_type, target_type=target_type, tenant_context=tenant_context)
+    result = generate_property_outreach(prop_dict, outreach_type, tenant_context, target_type)
 
     score_map = {
         "tenant_match": prop.tenant_match_score or 0.0,
         "listing_rep":  prop.listing_rep_score  or 0.0,
         "acquisition":  prop.acquisition_score  or 0.0,
     }
-    score = score_map.get(outreach_type, 0.0)
+    score = score_map.get(outreach_type, prop.signal_score or 0.0)
     priority = prop.priority or "Medium"
 
     return OutreachDraft(

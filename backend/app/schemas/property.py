@@ -55,7 +55,7 @@ class PropertyBase(BaseModel):
     last_lease_signed_date: Optional[date] = None
     years_since_last_lease: float = 0.0
     listed_for_sale: bool = False
-    listed_for_lease: bool = False   # derived: sf_avail > 0
+    listed_for_lease: bool = False
     listing_date: Optional[date] = None
     days_on_market: Optional[int] = None
     submarket_avg_dom: Optional[int] = None
@@ -90,35 +90,22 @@ class MatchedTenant(BaseModel):
     match_reasons: list[str]
 
 
-class MatchedProperty(BaseModel):
-    property_id: str
-    address: str
-    submarket: str
-    sf_avail: Optional[int]
-    vacancy_pct: Optional[float]
-    in_place_rent_psf: Optional[float]
-    market_rent_psf: Optional[float]
-    landlord_representative: Optional[str]
-    sales_contact: Optional[str]
-    match_score: float
-    match_reasons: list[str]
-
-
 class PropertyOut(PropertyBase):
     id: int
     prediction_score: float
     owner_behavior_score: float
     mispricing_score: float
     signal_score: float
-    tenant_match_score: float = 0.0
-    listing_rep_score: float = 0.0
-    acquisition_score: float = 0.0
+    tenant_match_score: Optional[float] = None
+    listing_rep_score: Optional[float] = None
+    acquisition_score: Optional[float] = None
     dominant_score_type: Optional[str] = None
     priority: str
     deal_type: Optional[str] = None
     signal_breakdown: Optional[SignalBreakdown] = None
     signals_scored_count: int = 0
     insufficient_data: bool = False
+    matched_tenants: list[MatchedTenant] = []
     created_at: datetime
     updated_at: datetime
     matched_tenants: list[MatchedTenant] = []
@@ -133,6 +120,11 @@ class PropertyOut(PropertyBase):
             sf = data.get('sf_avail')
             data['listed_for_lease'] = bool(sf and sf > 0)
         return data
+
+    @model_validator(mode="after")
+    def _derive_listed_for_lease(self) -> "PropertyOut":
+        self.listed_for_lease = bool(self.sf_avail and self.sf_avail > 0)
+        return self
 
     class Config:
         from_attributes = True
@@ -154,12 +146,12 @@ class PropertyListOut(BaseModel):
     prediction_score: float
     mispricing_score: float
     signal_score: float
-    tenant_match_score: float = 0.0
-    listing_rep_score: float = 0.0
-    acquisition_score: float = 0.0
+    tenant_match_score: Optional[float] = None
+    listing_rep_score: Optional[float] = None
+    acquisition_score: Optional[float] = None
     dominant_score_type: Optional[str] = None
     priority: str
-    listed_for_sale: bool = False
+    listed_for_sale: bool
     listed_for_lease: bool = False
     notes: Optional[str]
     star_rating: Optional[int] = None
@@ -170,16 +162,10 @@ class PropertyListOut(BaseModel):
     signals_scored_count: int = 0
     insufficient_data: bool = False
 
-    @model_validator(mode='before')
-    @classmethod
-    def derive_listed_for_lease(cls, data):
-        if hasattr(data, '__dict__'):
-            sf = getattr(data, 'sf_avail', None)
-            object.__setattr__(data, 'listed_for_lease', bool(sf and sf > 0))
-        elif isinstance(data, dict):
-            sf = data.get('sf_avail')
-            data['listed_for_lease'] = bool(sf and sf > 0)
-        return data
+    @model_validator(mode="after")
+    def _derive_listed_for_lease(self) -> "PropertyListOut":
+        self.listed_for_lease = bool(self.sf_avail and self.sf_avail > 0)
+        return self
 
     class Config:
         from_attributes = True

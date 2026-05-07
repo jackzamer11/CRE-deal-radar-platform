@@ -122,7 +122,7 @@ export const draftPropertyOutreach = (
     params: {
       outreach_type: outreachType,
       ...(tenantContext ? { tenant_context: tenantContext } : {}),
-      ...(targetType ? { target_type: targetType } : {}),
+      ...(targetType    ? { target_type: targetType }       : {}),
     },
   }).then(r => r.data)
 

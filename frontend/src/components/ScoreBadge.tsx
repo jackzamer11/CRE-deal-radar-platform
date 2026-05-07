@@ -1,5 +1,5 @@
 interface ScoreBadgeProps {
-  score: number
+  score: number | null | undefined
   size?: 'sm' | 'md' | 'lg'
   showBar?: boolean
 }
@@ -20,6 +20,14 @@ function barColor(score: number): string {
 
 export default function ScoreBadge({ score, size = 'md', showBar = false }: ScoreBadgeProps) {
   const sizeClass = size === 'sm' ? 'text-sm' : size === 'lg' ? 'text-xl' : 'text-base'
+
+  if (score == null) {
+    return (
+      <div className="flex items-center gap-2">
+        <span className={`font-bold mono ${sizeClass} text-slate-500`}>—</span>
+      </div>
+    )
+  }
 
   return (
     <div className="flex items-center gap-2">

@@ -34,13 +34,20 @@ function StatCard({
   )
 }
 
-function CallCard({ target, showScript, onNavigate }: { target: CallTarget; showScript: boolean; onNavigate?: () => void }) {
+function CallCard({
+  target, showScript, onNavigate,
+}: { target: CallTarget; showScript: boolean; onNavigate?: (t: CallTarget) => void }) {
   const [expanded, setExpanded] = useState(false)
+  const handleClick = () => {
+    if (onNavigate) onNavigate(target)
+    else setExpanded(e => !e)
+  }
   return (
     <div className="bg-surface-card border border-surface-border rounded-xl overflow-hidden">
       <div
         className="flex items-start gap-4 p-4 cursor-pointer hover:bg-surface-hover transition-colors"
-        onClick={() => onNavigate ? onNavigate() : setExpanded(e => !e)}
+        onClick={handleClick}
+        role="button"
       >
         <div className="flex-shrink-0 w-7 h-7 rounded-full bg-surface-border flex items-center justify-center">
           <span className="text-[11px] mono text-ink-muted font-bold">{target.rank}</span>
@@ -73,10 +80,16 @@ function CallCard({ target, showScript, onNavigate }: { target: CallTarget; show
           <ScoreBadge score={target.score} size="lg" />
           <div className="text-[10px] text-ink-muted mt-0.5">signal</div>
         </div>
-        <ChevronRight
-          size={16}
-          className={`text-ink-muted flex-shrink-0 transition-transform ${expanded ? 'rotate-90' : ''}`}
-        />
+        <button
+          onClick={(e) => { e.stopPropagation(); setExpanded(v => !v) }}
+          className="text-ink-muted hover:text-ink-primary flex-shrink-0 p-1"
+          title={expanded ? 'Collapse' : 'Expand'}
+        >
+          <ChevronRight
+            size={16}
+            className={`transition-transform ${expanded ? 'rotate-90' : ''}`}
+          />
+        </button>
       </div>
       {expanded && showScript && target.call_script && (
         <div className="border-t border-surface-border px-4 py-4 bg-surface-muted">
@@ -93,12 +106,15 @@ function CallCard({ target, showScript, onNavigate }: { target: CallTarget; show
   )
 }
 
-function TenantMatchCard({ target, onNavigate }: { target: TenantMatchTarget; onNavigate?: () => void }) {
+function TenantMatchCard({
+  target, onNavigate,
+}: { target: TenantMatchTarget; onNavigate?: (t: TenantMatchTarget) => void }) {
   const fmtRent = (n: number | null) => n != null ? `$${n.toFixed(2)}/SF` : '—'
   return (
     <div
       className="bg-surface-card border border-surface-border rounded-xl p-4 flex items-center gap-4 cursor-pointer hover:bg-surface-hover transition-colors"
-      onClick={() => onNavigate?.()}
+      onClick={() => onNavigate?.(target)}
+      role="button"
     >
       <div className="flex-shrink-0 w-7 h-7 rounded-full bg-violet-500/15 flex items-center justify-center">
         <span className="text-[11px] mono text-violet-400 font-bold">{target.rank}</span>
@@ -149,6 +165,19 @@ export default function Dashboard() {
   const [showCoStarModal, setShowCoStarModal] = useState(false)
   const [pipelineRunning, setPipelineRunning] = useState(false)
   const [pipelineStatus, setPipelineStatus]   = useState<string | null>(null)
+
+  // Property-first nav for most sections; company-first for tenant-driven.
+  const navProp = (t: CallTarget) => {
+    if (t.property_id) navigate(`/properties?selected=${t.property_id}`)
+    else if (t.company_id) navigate(`/companies?selected=${t.company_id}`)
+  }
+  const navCompanyFirst = (t: CallTarget) => {
+    if (t.company_id) navigate(`/companies?selected=${t.company_id}`)
+    else if (t.property_id) navigate(`/properties?selected=${t.property_id}`)
+  }
+  const navTenantMatch = (t: TenantMatchTarget) => {
+    navigate(`/properties?selected=${t.property_id}`)
+  }
 
   const load = async () => {
     setLoading(true)
@@ -315,11 +344,7 @@ export default function Dashboard() {
             <section>
               <SectionHeader icon={Zap} color="text-red-400" title="Top 3 Immediate — Call Today" count={briefing.immediate_deals.length} />
               <div className="space-y-3">
-                {briefing.immediate_deals.map(t => (
-                  <CallCard key={t.opportunity_id} target={t} showScript
-                    onNavigate={() => t.property_id ? navigate(`/properties?selected=${t.property_id}`) : t.company_id ? navigate(`/companies?selected=${t.company_id}`) : undefined}
-                  />
-                ))}
+                {briefing.immediate_deals.map(t => <CallCard key={t.opportunity_id} target={t} showScript onNavigate={navProp} />)}
               </div>
             </section>
           )}
@@ -329,11 +354,7 @@ export default function Dashboard() {
             <section>
               <SectionHeader icon={AlertTriangle} color="text-amber-400" title="Top 10 High Priority" count={briefing.high_priority_deals.length} />
               <div className="space-y-3">
-                {briefing.high_priority_deals.map(t => (
-                  <CallCard key={t.opportunity_id} target={t} showScript={false}
-                    onNavigate={() => t.property_id ? navigate(`/properties?selected=${t.property_id}`) : t.company_id ? navigate(`/companies?selected=${t.company_id}`) : undefined}
-                  />
-                ))}
+                {briefing.high_priority_deals.map(t => <CallCard key={t.opportunity_id} target={t} showScript={false} onNavigate={navProp} />)}
               </div>
             </section>
           )}
@@ -343,11 +364,7 @@ export default function Dashboard() {
             <section>
               <SectionHeader icon={TrendingUp} color="text-purple-400" title="Top 5 Pre-Market Predictions" count={briefing.pre_market_predictions.length} />
               <div className="space-y-3">
-                {briefing.pre_market_predictions.map(t => (
-                  <CallCard key={t.opportunity_id} target={t} showScript
-                    onNavigate={() => t.property_id ? navigate(`/properties?selected=${t.property_id}`) : t.company_id ? navigate(`/companies?selected=${t.company_id}`) : undefined}
-                  />
-                ))}
+                {briefing.pre_market_predictions.map(t => <CallCard key={t.opportunity_id} target={t} showScript onNavigate={navProp} />)}
               </div>
             </section>
           )}
@@ -357,25 +374,17 @@ export default function Dashboard() {
             <section>
               <SectionHeader icon={Building2} color="text-violet-400" title="Top 10 Tenant Match Properties" count={briefing.tenant_match_properties.length} />
               <div className="space-y-3">
-                {briefing.tenant_match_properties.map(t => (
-                  <TenantMatchCard key={t.property_id} target={t}
-                    onNavigate={() => navigate(`/properties?selected=${t.property_id}`)}
-                  />
-                ))}
+                {briefing.tenant_match_properties.map(t => <TenantMatchCard key={t.property_id} target={t} onNavigate={navTenantMatch} />)}
               </div>
             </section>
           )}
 
-          {/* Tenant-Driven Opportunities */}
+          {/* Tenant-Driven Opportunities — company-first navigation */}
           {briefing.tenant_opportunities.length > 0 && (
             <section>
               <SectionHeader icon={Users} color="text-emerald-400" title="Tenant-Driven Opportunities" count={briefing.tenant_opportunities.length} />
               <div className="space-y-3">
-                {briefing.tenant_opportunities.map(t => (
-                  <CallCard key={t.opportunity_id} target={t} showScript
-                    onNavigate={() => t.company_id ? navigate(`/companies?selected=${t.company_id}`) : t.property_id ? navigate(`/properties?selected=${t.property_id}`) : undefined}
-                  />
-                ))}
+                {briefing.tenant_opportunities.map(t => <CallCard key={t.opportunity_id} target={t} showScript onNavigate={navCompanyFirst} />)}
               </div>
             </section>
           )}

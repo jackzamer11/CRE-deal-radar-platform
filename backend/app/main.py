@@ -43,8 +43,8 @@ def create_app() -> FastAPI:
 
     @app.on_event("startup")
     def on_startup():
-        from migrations.ensure_schema import run as ensure_schema
-        ensure_schema()
+        from migrations.rename_is_listed import run as rename_is_listed
+        rename_is_listed()
         init_db()
         start_scheduler()
 

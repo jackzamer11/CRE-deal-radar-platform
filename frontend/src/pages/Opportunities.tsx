@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
-import { Crosshair, Filter, X, MessageSquarePlus } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
+import { Crosshair, Filter, X, PhoneCall, Building2, Users, MessageSquarePlus } from 'lucide-react'
 import { getOpportunities, updateStage, getProperty, getCompany } from '../api/client'
-import type { OpportunityListOut, PropertyOut, CompanyOut, Stage } from '../types'
+import type { OpportunityListOut, Stage, PropertyOut, CompanyOut } from '../types'
 import { PriorityBadge, DealTypeBadge, ConfidenceBadge } from '../components/PriorityBadge'
 import ScoreBadge from '../components/ScoreBadge'
 import OutreachDraftModal from '../components/OutreachDraftModal'
@@ -25,30 +26,37 @@ function StageBadge({ stage }: { stage: Stage }) {
   )
 }
 
-function ScoreBar({ label, value, color }: { label: string; value: number | null; color: string }) {
-  const pct = value != null ? Math.max(0, Math.min(100, value)) : 0
+function ScoreGrid({ opp }: { opp: OpportunityListOut }) {
   return (
-    <div>
-      <div className="flex items-center justify-between mb-0.5">
-        <span className="text-[10px] text-ink-muted">{label}</span>
-        <span className={`text-[11px] font-bold mono ${color}`}>{value != null ? value.toFixed(0) : '—'}</span>
-      </div>
-      <div className="h-1.5 bg-surface-border rounded-full overflow-hidden">
-        <div className={`h-full rounded-full ${color.replace('text-', 'bg-')}`} style={{ width: `${pct}%` }} />
-      </div>
+    <div className="grid grid-cols-4 gap-2">
+      {[
+        { label: 'Prediction',    value: opp.prediction_score,         color: 'text-purple-400' },
+        { label: 'Owner Signal',  value: opp.owner_behavior_score,     color: 'text-amber-400' },
+        { label: 'Mispricing',    value: opp.mispricing_score,         color: 'text-blue-400' },
+        { label: 'Tenant Signal', value: opp.tenant_opportunity_score, color: 'text-emerald-400' },
+      ].map(({ label, value, color }) => (
+        <div key={label} className="bg-surface-muted rounded-lg p-2 text-center">
+          <div className={`text-base font-bold mono ${color}`}>
+            {value != null ? value.toFixed(0) : '—'}
+          </div>
+          <div className="text-[9px] text-ink-muted mt-0.5">{label}</div>
+        </div>
+      ))}
     </div>
   )
 }
 
 export default function Opportunities() {
+  const navigate = useNavigate()
   const [opps, setOpps] = useState<OpportunityListOut[]>([])
   const [loading, setLoading] = useState(true)
   const [priority, setPriority] = useState('')
   const [dealType, setDealType] = useState('')
   const [stage, setStage] = useState('')
   const [selected, setSelected] = useState<OpportunityListOut | null>(null)
-  const [selProp, setSelProp] = useState<PropertyOut | null>(null)
-  const [selCompany, setSelCompany] = useState<CompanyOut | null>(null)
+  const [selectedProp, setSelectedProp] = useState<PropertyOut | null>(null)
+  const [selectedCompany, setSelectedCompany] = useState<CompanyOut | null>(null)
+  const [outreachModal, setOutreachModal] = useState<{ type: string; targetType?: string } | null>(null)
   const [updating, setUpdating] = useState<number | null>(null)
   const [outreachModal, setOutreachModal] = useState(false)
 
@@ -69,15 +77,15 @@ export default function Opportunities() {
 
   useEffect(() => { load() }, [priority, dealType, stage])
 
-  const handleSelect = async (opp: OpportunityListOut) => {
+  const openPanel = async (opp: OpportunityListOut) => {
     setSelected(opp)
-    setSelProp(null)
-    setSelCompany(null)
-    if (opp.property_ref) {
-      getProperty(opp.property_ref).then(setSelProp).catch(() => {})
+    setSelectedProp(null)
+    setSelectedCompany(null)
+    if (opp.property_str_id) {
+      getProperty(opp.property_str_id).then(setSelectedProp).catch(() => {})
     }
-    if (opp.company_ref) {
-      getCompany(opp.company_ref).then(c => setSelCompany(c as CompanyOut)).catch(() => {})
+    if (opp.company_str_id) {
+      getCompany(opp.company_str_id).then(setSelectedCompany).catch(() => {})
     }
   }
 
@@ -87,11 +95,23 @@ export default function Opportunities() {
       await updateStage(opp.opportunity_id, newStage)
       await load()
       if (selected?.id === opp.id) {
-        setSelected(prev => prev ? { ...prev, stage: newStage as Stage } : null)
+        setSelected(prev => prev ? { ...prev, stage: newStage as Stage } : prev)
       }
     } finally {
       setUpdating(null)
     }
+  }
+
+  const bestOutreachType = (opp: OpportunityListOut): { type: string; targetType: string } => {
+    if (opp.deal_type === 'TENANT_DRIVEN') {
+      const hasLandlordRep = selectedProp?.landlord_representative
+      return { type: 'tenant_match', targetType: hasLandlordRep ? 'broker' : 'owner' }
+    }
+    if (opp.deal_type === 'ACTIVE_MISPRICED') {
+      const hasSalesContact = selectedProp?.sales_contact
+      return { type: 'acquisition', targetType: hasSalesContact ? 'sales_broker' : 'owner' }
+    }
+    return { type: 'listing_rep', targetType: 'owner' }
   }
 
   return (
@@ -152,20 +172,20 @@ export default function Opportunities() {
         ) : opps.map(opp => (
           <div
             key={opp.id}
-            onClick={() => handleSelect(opp)}
-            className={`bg-surface-card border rounded-xl p-4 cursor-pointer transition-colors hover:bg-surface-hover ${
-              selected?.id === opp.id ? 'border-accent-blue/50' : 'border-surface-border'
+            onClick={() => openPanel(opp)}
+            className={`bg-surface-card border rounded-xl p-4 cursor-pointer hover:bg-surface-hover transition-colors ${
+              selected?.id === opp.id ? 'border-accent-blue/40' : 'border-surface-border'
             }`}
           >
             <div className="flex items-start gap-4">
               <div className="flex-1 min-w-0">
-                <div className="flex flex-wrap items-center gap-2 mb-2">
+                <div className="flex flex-wrap items-center gap-2 mb-1.5">
                   <PriorityBadge priority={opp.priority} />
                   <DealTypeBadge dealType={opp.deal_type} />
                   <ConfidenceBadge confidence={opp.confidence_level} />
                   <StageBadge stage={opp.stage} />
                 </div>
-                <div className="text-sm font-semibold text-ink-primary mb-0.5">
+                <div className="text-sm font-semibold text-ink-primary mb-0.5 truncate">
                   {opp.property_address || 'Property TBD'}
                   {opp.property_submarket && (
                     <span className="text-ink-muted font-normal text-xs ml-2">· {opp.property_submarket}</span>
@@ -174,13 +194,15 @@ export default function Opportunities() {
                 {opp.company_name && (
                   <div className="text-[11px] text-emerald-400 mb-1">↔ Tenant: {opp.company_name}</div>
                 )}
-                <div className="text-[12px] text-ink-secondary leading-relaxed line-clamp-2">{opp.thesis}</div>
+                <div className="text-[12px] text-ink-secondary leading-relaxed line-clamp-2">
+                  {opp.thesis}
+                </div>
               </div>
-              <div className="flex-shrink-0 text-right">
+              <div className="flex-shrink-0 text-right space-y-1">
                 <ScoreBadge score={opp.score} size="lg" />
                 {opp.estimated_commission && (
-                  <div className="text-[11px] text-emerald-400 mt-0.5">
-                    ${(opp.estimated_commission / 1000).toFixed(0)}K commission
+                  <div className="text-[11px] text-emerald-400">
+                    ${(opp.estimated_commission / 1000).toFixed(0)}K est.
                   </div>
                 )}
               </div>
@@ -189,11 +211,12 @@ export default function Opportunities() {
         ))}
       </div>
 
-      {/* Side detail panel */}
+      {/* Side panel */}
       {selected && (
-        <div className="fixed inset-y-0 right-0 w-[560px] bg-surface-card border-l border-surface-border shadow-2xl z-50 overflow-y-auto">
-          <div className="p-5">
-            <div className="flex items-start justify-between mb-4">
+        <div className="fixed inset-y-0 right-0 w-[480px] bg-surface-card border-l border-surface-border shadow-2xl z-50 overflow-y-auto">
+          <div className="p-5 space-y-4">
+            {/* Header */}
+            <div className="flex items-start justify-between">
               <div>
                 <div className="flex flex-wrap items-center gap-2 mb-1">
                   <PriorityBadge priority={selected.priority} />
@@ -207,141 +230,140 @@ export default function Opportunities() {
               </button>
             </div>
 
-            {/* Stage picker */}
-            <div className="flex items-center gap-2 mb-4 flex-wrap">
-              <span className="text-[10px] text-ink-muted uppercase tracking-wider">Stage:</span>
-              {STAGES.map(s => (
-                <button
-                  key={s}
-                  disabled={updating === selected.id}
-                  onClick={() => handleStageChange(selected, s)}
-                  className={`text-[10px] px-2 py-0.5 rounded border font-semibold transition-colors ${
-                    selected.stage === s ? STAGE_COLORS[s] : 'text-ink-muted border-surface-border hover:border-ink-muted'
-                  }`}
-                >
-                  {s.replace('_', ' ')}
-                </button>
-              ))}
-            </div>
-
-            {/* Match breakdown */}
-            <div className="bg-surface-muted rounded-xl p-4 mb-4">
-              <div className="text-[10px] text-ink-muted uppercase tracking-wider mb-3">Match Breakdown</div>
-              <div className="space-y-2">
-                <ScoreBar label="Prediction"     value={selected.prediction_score}         color="text-purple-400" />
-                <ScoreBar label="Owner Behavior" value={selected.owner_behavior_score}     color="text-amber-400" />
-                <ScoreBar label="Mispricing"     value={selected.mispricing_score}         color="text-blue-400" />
-                <ScoreBar label="Tenant Signal"  value={selected.tenant_opportunity_score} color="text-emerald-400" />
-              </div>
-              <div className="mt-3 pt-3 border-t border-surface-border flex items-center justify-between">
-                <span className="text-[10px] text-ink-muted">Composite Score</span>
-                <ScoreBadge score={selected.score} size="lg" />
-              </div>
-            </div>
-
-            {/* Property + Tenant side-by-side */}
-            <div className="grid grid-cols-2 gap-3 mb-4">
-              {/* Property card */}
-              <div className="bg-surface-muted rounded-xl p-3">
-                <div className="text-[9px] text-ink-muted uppercase tracking-wider mb-2">Property</div>
-                {selProp ? (
-                  <div className="space-y-1">
-                    <div className="text-xs font-semibold text-ink-primary line-clamp-2">{selProp.address}</div>
-                    <div className="text-[10px] text-ink-muted">{selProp.submarket} · {selProp.asset_class}</div>
-                    <div className="text-[10px] text-ink-secondary">{selProp.total_sf.toLocaleString()} SF total</div>
-                    {selProp.sf_avail != null && <div className="text-[10px] text-violet-400">{selProp.sf_avail.toLocaleString()} SF avail</div>}
-                    {selProp.vacancy_pct != null && <div className="text-[10px] text-ink-muted">{selProp.vacancy_pct.toFixed(0)}% vacant</div>}
-                    {selProp.in_place_rent_psf != null && <div className="text-[10px] text-ink-secondary">${selProp.in_place_rent_psf.toFixed(2)}/SF</div>}
-                    <div className="text-[10px] text-ink-muted">{selProp.owner_name}</div>
-                    {selProp.landlord_representative && (
-                      <div className="text-[10px] text-amber-400">Rep: {selProp.landlord_representative}</div>
-                    )}
-                  </div>
-                ) : (
-                  <div className="space-y-1">
-                    <div className="text-xs font-semibold text-ink-primary line-clamp-2">{selected.property_address || '—'}</div>
-                    <div className="text-[10px] text-ink-muted">{selected.property_submarket}</div>
-                    {!selected.property_ref && <div className="text-[10px] text-ink-muted italic">No property linked</div>}
-                  </div>
-                )}
-              </div>
-
-              {/* Tenant card */}
-              <div className="bg-surface-muted rounded-xl p-3">
-                <div className="text-[9px] text-ink-muted uppercase tracking-wider mb-2">Tenant</div>
-                {selCompany ? (
-                  <div className="space-y-1">
-                    <div className="text-xs font-semibold text-ink-primary">{selCompany.name}</div>
-                    <div className="text-[10px] text-ink-muted">{selCompany.industry}</div>
-                    {selCompany.current_headcount != null && <div className="text-[10px] text-ink-secondary">{selCompany.current_headcount} employees</div>}
-                    {selCompany.current_sf != null && <div className="text-[10px] text-ink-muted">{selCompany.current_sf.toLocaleString()} SF now</div>}
-                    {selCompany.lease_expiry_months != null && (
-                      <div className={`text-[10px] font-semibold ${selCompany.lease_expiry_months <= 12 ? 'text-red-400' : 'text-amber-400'}`}>
-                        Lease expires {selCompany.lease_expiry_months}mo
-                      </div>
-                    )}
-                    {selCompany.expansion_signal && (
-                      <div className="text-[10px] text-emerald-400 font-bold">↑ Expansion signal</div>
-                    )}
-                    {selCompany.tenant_representative && (
-                      <div className="text-[10px] text-ink-muted">Rep: {selCompany.tenant_representative}</div>
-                    )}
-                  </div>
-                ) : (
-                  <div className="space-y-1">
-                    {selected.company_name ? (
-                      <div className="text-xs font-semibold text-ink-primary">{selected.company_name}</div>
-                    ) : (
-                      <div className="text-[10px] text-ink-muted italic">No tenant linked</div>
-                    )}
-                  </div>
-                )}
-              </div>
-            </div>
-
-            {/* Thesis + next action */}
-            <div className="bg-surface-muted rounded-xl p-3 mb-4">
-              <div className="text-[9px] text-ink-muted uppercase tracking-wider mb-1.5">Thesis</div>
+            {/* Thesis */}
+            <div className="bg-surface-muted rounded-lg p-3">
+              <div className="text-[10px] text-ink-muted uppercase tracking-wider mb-1">Thesis</div>
               <div className="text-xs text-ink-secondary leading-relaxed">{selected.thesis}</div>
               <div className="mt-2 text-[11px] text-amber-400 font-medium">{selected.next_action}</div>
             </div>
 
-            {/* Draft Outreach CTA */}
-            {selected.property_ref && selProp && (
-              <button
-                onClick={() => setOutreachModal(true)}
-                className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl
-                           bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-semibold transition-colors"
-              >
-                <MessageSquarePlus size={15} />
-                Draft Outreach
-              </button>
-            )}
+            {/* Score breakdown */}
+            <ScoreGrid opp={selected} />
 
-            {/* Financials */}
-            {(selected.estimated_commission || selected.estimated_deal_value) && (
-              <div className="mt-4 flex items-center gap-4 text-xs text-ink-muted">
-                {selected.estimated_commission && (
-                  <span>Est. commission: <span className="text-emerald-400 font-semibold">${(selected.estimated_commission / 1000).toFixed(0)}K</span></span>
-                )}
-                {selected.estimated_deal_value && (
-                  <span>Deal value: <span className="text-ink-secondary font-semibold">${(selected.estimated_deal_value / 1_000_000).toFixed(2)}M</span></span>
-                )}
+            {/* Property + Company cards */}
+            <div className={`grid gap-3 ${selected.property_str_id && selected.company_str_id ? 'grid-cols-2' : 'grid-cols-1'}`}>
+              {/* Property card */}
+              {(selected.property_address || selectedProp) && (
+                <button
+                  onClick={() => selected.property_str_id && navigate(`/properties?selected=${selected.property_str_id}`)}
+                  className="bg-surface-muted rounded-lg p-3 text-left hover:bg-surface-hover transition-colors border border-surface-border"
+                >
+                  <div className="flex items-center gap-1.5 mb-1.5">
+                    <Building2 size={11} className="text-accent-blue flex-shrink-0" />
+                    <div className="text-[10px] text-accent-blue uppercase tracking-wider font-semibold">Property</div>
+                  </div>
+                  <div className="text-xs font-semibold text-ink-primary leading-snug mb-0.5">
+                    {selected.property_submarket || '—'}
+                  </div>
+                  {selectedProp ? (
+                    <>
+                      <div className="text-[10px] text-ink-muted">{selectedProp.asset_class} · {(selectedProp.total_sf / 1000).toFixed(0)}K SF</div>
+                      {selectedProp.vacancy_pct != null && (
+                        <div className="text-[10px] text-ink-secondary mt-1">{selectedProp.vacancy_pct.toFixed(0)}% vacant</div>
+                      )}
+                      <div className="mt-1.5">
+                        <ScoreBadge score={selectedProp.signal_score} size="sm" showBar />
+                        <div className="text-[9px] text-ink-muted">signal</div>
+                      </div>
+                    </>
+                  ) : (
+                    <div className="text-[10px] text-ink-muted">{selected.property_address}</div>
+                  )}
+                </button>
+              )}
+
+              {/* Company card */}
+              {(selected.company_name || selectedCompany) && (
+                <button
+                  onClick={() => selected.company_str_id && navigate(`/companies?selected=${selected.company_str_id}`)}
+                  className="bg-surface-muted rounded-lg p-3 text-left hover:bg-surface-hover transition-colors border border-surface-border"
+                >
+                  <div className="flex items-center gap-1.5 mb-1.5">
+                    <Users size={11} className="text-emerald-400 flex-shrink-0" />
+                    <div className="text-[10px] text-emerald-400 uppercase tracking-wider font-semibold">Tenant</div>
+                  </div>
+                  {selectedCompany ? (
+                    <>
+                      <div className="text-xs font-semibold text-ink-primary mb-0.5">{selectedCompany.industry}</div>
+                      <div className="text-[10px] text-ink-muted">
+                        {selectedCompany.current_headcount != null ? `${selectedCompany.current_headcount} HC` : '—'}
+                        {selectedCompany.estimated_sf_needed ? ` · ${selectedCompany.estimated_sf_needed.toLocaleString()} SF needed` : ''}
+                      </div>
+                      {selectedCompany.lease_expiry_months != null && (
+                        <div className="text-[10px] text-amber-400 mt-1">Lease: {selectedCompany.lease_expiry_months}mo</div>
+                      )}
+                      <div className="mt-1.5">
+                        <ScoreBadge score={selectedCompany.opportunity_score} size="sm" showBar />
+                        <div className="text-[9px] text-ink-muted">opp score</div>
+                      </div>
+                    </>
+                  ) : (
+                    <div className="text-xs text-ink-secondary">{selected.company_name}</div>
+                  )}
+                </button>
+              )}
+            </div>
+
+            {/* Stage picker */}
+            <div>
+              <div className="text-[10px] text-ink-muted uppercase tracking-wider mb-2">Update Stage</div>
+              <div className="flex flex-wrap gap-1.5">
+                {STAGES.map(s => (
+                  <button
+                    key={s}
+                    disabled={updating === selected.id}
+                    onClick={() => handleStageChange(selected, s)}
+                    className={`text-[10px] px-2 py-1 rounded border font-semibold transition-colors ${
+                      selected.stage === s
+                        ? STAGE_COLORS[s]
+                        : 'text-ink-muted border-surface-border hover:border-ink-muted'
+                    }`}
+                  >
+                    {s.replace('_', ' ')}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Call script */}
+            {selected.deal_type !== 'TENANT_DRIVEN' && (
+              <div className="bg-surface-muted rounded-lg p-3">
+                <div className="flex items-center gap-2 mb-2">
+                  <PhoneCall size={11} className="text-accent-blue" />
+                  <div className="text-[10px] text-accent-blue uppercase tracking-wider font-semibold">Next Action</div>
+                </div>
+                <div className="text-xs text-ink-secondary">{selected.next_action}</div>
               </div>
             )}
+
+            {/* Draft Outreach button — only when we have a property */}
+            {selectedProp && (() => {
+              const { type, targetType } = bestOutreachType(selected)
+              return (
+                <button
+                  onClick={() => setOutreachModal({ type, targetType })}
+                  className="w-full flex items-center justify-center gap-2 py-2.5 rounded-lg
+                             bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold transition-colors"
+                >
+                  <MessageSquarePlus size={13} />
+                  Draft Outreach
+                  <span className="opacity-75 capitalize">({type.replace('_', ' ')})</span>
+                </button>
+              )
+            })()}
           </div>
         </div>
       )}
 
-      {/* Outreach modal — uses dominant score type from property */}
-      {outreachModal && selected && selProp && (
+      {/* Outreach modal */}
+      {outreachModal && selectedProp && (
         <OutreachDraftModal
           entity_type="property"
-          property={selProp}
-          outreach_type={selProp.dominant_score_type ?? 'tenant_match'}
-          target_type={selProp.landlord_representative ? 'broker' : 'owner'}
-          onClose={() => setOutreachModal(false)}
-          onSaved={() => { setOutreachModal(false); load() }}
+          property={selectedProp}
+          outreach_type={outreachModal.type}
+          target_type={outreachModal.targetType}
+          onClose={() => setOutreachModal(null)}
+          onSaved={() => setOutreachModal(null)}
         />
       )}
     </div>

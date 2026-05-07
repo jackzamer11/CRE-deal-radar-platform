@@ -32,6 +32,8 @@ def _to_call_target(opp: Opportunity, rank: int) -> CallTarget:
         priority=opp.priority,
         score=opp.score,
         confidence_level=opp.confidence_level,
+        property_id=prop.property_id if prop else None,
+        company_id=company.company_id if company else None,
         property_address=prop.address if prop else None,
         property_submarket=prop.submarket if prop else None,
         property_id=prop.property_id if prop else None,

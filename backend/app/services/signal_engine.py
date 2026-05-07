@@ -612,6 +612,7 @@ def compute_tenant_match_score(
     Abstains (returns None) when both sf_avail and vacancy_pct indicate
     no space is available — no SF, no tenant match.
     """
+    # Abstain if there is neither vacancy nor available SF — nothing to pitch.
     no_avail_sf = not sf_avail or sf_avail <= 0
     no_vacancy  = vacancy_pct is None or vacancy_pct <= 0
     if no_avail_sf and no_vacancy:
@@ -688,11 +689,13 @@ def compute_listing_rep_score(
     relationship-first conversation with a listing broker. Long hold +
     rent below market + capex gap + debt pressure + LLC ownership all
     push the score up.
-    Abstains (returns None) when the property is already listed for sale —
-    pitching a broker to an owner who already has one is redundant.
+
+    Abstains entirely when the property is already listed for sale —
+    pitching a listing-rep to a property already on the market is moot.
     """
     if listed_for_sale:
         return None
+
     sigs: dict = {}
 
     # Hold period
@@ -800,7 +803,7 @@ def compute_acquisition_score(
     else:
         sigs["sublease"] = None
 
-    # Listed for sale × hold — long hold listings are negotiable
+    # Listed × hold — long hold listings are negotiable
     if listed_for_sale and years_owned is not None:
         if years_owned >= 12:   sigs["hold_listed"] = 90.0
         elif years_owned >= 8:  sigs["hold_listed"] = 60.0
@@ -840,13 +843,16 @@ def determine_dominant_score_type(
     listing_rep:  Optional[float],
     acquisition:  Optional[float],
 ) -> Optional[str]:
-    """Pick the highest-scoring outreach axis. Returns None if nothing scored
-    or all three are below an actionable threshold (15)."""
-    candidates = [
-        ("tenant_match", tenant_match or 0.0),
-        ("listing_rep",  listing_rep  or 0.0),
-        ("acquisition",  acquisition  or 0.0),
-    ]
+    """Pick the highest-scoring outreach axis among signals that ACTUALLY scored
+    (i.e. did not abstain → None). Returns None if nothing scored or the best
+    actionable score is below the threshold (15)."""
+    candidates = [(name, val) for name, val in (
+        ("tenant_match", tenant_match),
+        ("listing_rep",  listing_rep),
+        ("acquisition",  acquisition),
+    ) if val is not None]
+    if not candidates:
+        return None
     best_name, best_value = max(candidates, key=lambda x: x[1])
     if best_value < 15:
         return None

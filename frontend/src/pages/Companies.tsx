@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { useSearchParams, useNavigate } from 'react-router-dom'
 import {
   Users, Filter, X, TrendingUp, Clock, MapPin, Plus, RefreshCw,
-  Upload, Pencil, Check, AlertTriangle, Zap, Send, Building2, MessageSquarePlus,
+  Upload, Pencil, Check, AlertTriangle, Zap, Send, Building2,
 } from 'lucide-react'
 import { getCompanies, getCompany, updateCompanyLease, updateCompanyTrajectory } from '../api/client'
 import type { CompanyListOut, CompanyOut, RepClass } from '../types'
@@ -74,6 +74,7 @@ function RepBadge({ repClass, repName }: { repClass: RepClass; repName: string |
 
 export default function Companies() {
   const [searchParams, setSearchParams] = useSearchParams()
+  const navigate = useNavigate()
   const [companies, setCompanies]   = useState<CompanyListOut[]>([])
   const [loading, setLoading]       = useState(true)
   const [submarket, setSubmarket]   = useState('')
@@ -189,13 +190,32 @@ export default function Companies() {
   }
 
   const handleSelectCompany = async (c: CompanyListOut) => {
+    setEditingLease(false)
     try {
       const full = await getCompany(c.company_id)
-      setSelected(full as CompanyOut)
+      setSelected(full)
     } catch {
-      setSelected(c as unknown as CompanyOut)
+      setSelected(c as CompanyOut)
     }
+  }
+
+  // Auto-open via ?selected= URL param
+  useEffect(() => {
+    const id = searchParams.get('selected')
+    if (id && (!selected || selected.company_id !== id)) {
+      getCompany(id).then(setSelected).catch(() => {})
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams])
+
+  const closePanel = () => {
+    setSelected(null)
     setEditingLease(false)
+    if (searchParams.get('selected')) {
+      const next = new URLSearchParams(searchParams)
+      next.delete('selected')
+      setSearchParams(next, { replace: true })
+    }
   }
 
   const clearFilters = () => {
@@ -425,7 +445,7 @@ export default function Companies() {
                 <div className="font-bold text-ink-primary text-base">{selected.name}</div>
                 <div className="text-xs text-ink-muted mt-0.5">{selected.industry}</div>
               </div>
-              <button onClick={() => { setSelected(null); setEditingLease(false) }} className="text-ink-muted hover:text-ink-primary p-1">
+              <button onClick={closePanel} className="text-ink-muted hover:text-ink-primary p-1">
                 <X size={18} />
               </button>
             </div>
@@ -574,54 +594,54 @@ export default function Companies() {
                 )}
               </div>
 
-              {/* Matched Properties (Fix 7) */}
-              {'matched_properties' in selected && selected.matched_properties && selected.matched_properties.length > 0 && (
+              {/* Matched Properties section */}
+              {'matched_properties' in selected && (
                 <div className="bg-surface-muted rounded-lg p-3">
-                  <div className="flex items-center gap-2 mb-2">
-                    <Building2 size={12} className="text-emerald-400" />
-                    <span className="text-[10px] text-ink-muted uppercase tracking-wider">
-                      Matched Properties ({(selected.matched_properties as { match_score: number }[]).length})
-                    </span>
+                  <div className="text-[10px] text-ink-muted uppercase tracking-wider mb-2">
+                    MATCHED PROPERTIES ({(selected as CompanyOut).matched_properties?.length ?? 0})
                   </div>
-                  <div className="space-y-2">
-                    {(selected.matched_properties as {
-                      property_id: string; address: string; submarket: string
-                      sf_avail: number | null; vacancy_pct: number | null
-                      in_place_rent_psf: number | null; market_rent_psf: number | null
-                      landlord_representative: string | null; sales_contact: string | null
-                      match_score: number; match_reasons: string[]
-                    }[]).map(mp => (
-                      <div key={mp.property_id} className="border border-emerald-500/20 rounded-lg p-2.5 bg-emerald-500/5">
-                        <div className="flex items-start justify-between gap-2 mb-1">
-                          <div>
-                            <div className="text-xs font-semibold text-ink-primary truncate" title={mp.address}>{mp.address}</div>
-                            <div className="text-[10px] text-ink-muted">{mp.submarket}</div>
-                          </div>
-                          <span className="text-[10px] font-bold text-emerald-400 shrink-0">{mp.match_score.toFixed(0)}</span>
-                        </div>
-                        <div className="text-[10px] text-ink-muted mb-1.5">
-                          {mp.sf_avail ? `${mp.sf_avail.toLocaleString()} SF avail` : ''}
-                          {mp.vacancy_pct != null ? ` · ${mp.vacancy_pct.toFixed(0)}% vacant` : ''}
-                          {mp.in_place_rent_psf ? ` · $${mp.in_place_rent_psf.toFixed(0)}/SF` : ''}
-                        </div>
-                        <div className="flex flex-wrap gap-1 mb-2">
-                          {mp.match_reasons.map((r, i) => (
-                            <span key={i} className="text-[9px] px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300">{r}</span>
-                          ))}
-                        </div>
-                        <button
-                          onClick={() => {
-                            // Navigate to properties page with this property auto-selected
-                            window.location.href = `/properties?selected=${mp.property_id}`
-                          }}
-                          className="w-full flex items-center justify-center gap-1 text-[10px] py-1 rounded bg-emerald-600/80 hover:bg-emerald-600 text-white font-semibold transition-colors"
+                  {(!(selected as CompanyOut).matched_properties || (selected as CompanyOut).matched_properties.length === 0) ? (
+                    <div className="text-xs text-ink-muted">No matched properties — add lease expiry or SF data to improve matching.</div>
+                  ) : (
+                    <div className="space-y-2">
+                      {(selected as CompanyOut).matched_properties.map(p => (
+                        <div
+                          key={p.property_id}
+                          className="border border-surface-border rounded-lg p-2 hover:bg-surface-card cursor-pointer transition-colors"
+                          onClick={() => navigate(`/properties?selected=${p.property_id}`)}
                         >
-                          <MessageSquarePlus size={10} />
-                          View &amp; Draft Outreach
-                        </button>
-                      </div>
-                    ))}
-                  </div>
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center gap-1.5 mb-0.5">
+                                <Building2 size={10} className="text-ink-muted flex-shrink-0" />
+                                <div className="text-xs font-semibold text-ink-primary truncate">{p.address}</div>
+                              </div>
+                              <div className="text-[10px] text-ink-muted">
+                                {p.submarket}{p.sf_avail ? ` · ${p.sf_avail.toLocaleString()} SF avail` : ''}{p.vacancy_pct != null ? ` · ${p.vacancy_pct.toFixed(0)}% vac` : ''}
+                              </div>
+                              <div className="text-[10px] text-ink-secondary">
+                                {p.in_place_rent_psf != null ? `$${p.in_place_rent_psf.toFixed(0)}/SF in-place` : ''}
+                                {p.listed_for_sale ? <span className="ml-1 text-amber-400 font-semibold">FOR SALE</span> : null}
+                              </div>
+                              {p.match_reasons.length > 0 && (
+                                <div className="flex flex-wrap gap-1 mt-1">
+                                  {p.match_reasons.map((r, i) => (
+                                    <span key={i} className="text-[9px] px-1.5 py-0.5 rounded bg-surface-card text-ink-secondary border border-surface-border">
+                                      {r}
+                                    </span>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                            <div className="flex-shrink-0 text-right">
+                              <ScoreBadge score={p.match_score} size="sm" />
+                              <div className="text-[9px] text-violet-400 mt-0.5">match</div>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               )}
             </div>

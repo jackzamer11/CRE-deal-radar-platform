@@ -32,20 +32,6 @@ export interface MatchedTenant {
   match_reasons: string[]
 }
 
-export interface MatchedProperty {
-  property_id: string
-  address: string
-  submarket: string
-  sf_avail: number | null
-  vacancy_pct: number | null
-  in_place_rent_psf: number | null
-  market_rent_psf: number | null
-  landlord_representative: string | null
-  sales_contact: string | null
-  match_score: number
-  match_reasons: string[]
-}
-
 export interface PropertyListOut {
   id: number
   property_id: string
@@ -69,9 +55,9 @@ export interface PropertyListOut {
   // Part 1/3 enrichment + scores
   in_place_rent_psf: number | null
   market_rent_psf: number | null
-  tenant_match_score: number
-  listing_rep_score: number
-  acquisition_score: number
+  tenant_match_score: number | null
+  listing_rep_score: number | null
+  acquisition_score: number | null
   dominant_score_type: string | null
   star_rating: number | null
   sf_avail: number | null
@@ -103,6 +89,8 @@ export interface PropertyOut extends PropertyListOut {
   sf_expiring_12mo: number
   lease_rollover_pct: number
   years_since_last_lease: number
+  listed_for_sale: boolean
+  listed_for_lease: boolean
   days_on_market: number | null
   owner_behavior_score: number
   deal_type: string | null
@@ -187,6 +175,22 @@ export interface OutreachLog {
   contacted_at: string | null
 }
 
+export interface MatchedProperty {
+  property_id: string
+  address: string
+  submarket: string
+  sf_avail: number | null
+  vacancy_pct: number | null
+  in_place_rent_psf: number | null
+  market_rent_psf: number | null
+  landlord_representative: string | null
+  landlord_rep_contact: string | null
+  sales_contact: string | null
+  listed_for_sale: boolean
+  match_score: number
+  match_reasons: string[]
+}
+
 export interface CompanyOut extends CompanyListOut {
   description: string | null
   open_positions: number
@@ -222,7 +226,9 @@ export interface OpportunityListOut {
   estimated_commission: number | null
   property_address: string | null
   property_submarket: string | null
+  property_str_id: string | null
   company_name: string | null
+  company_str_id: string | null
   prediction_score: number | null
   owner_behavior_score: number | null
   mispricing_score: number | null
@@ -266,6 +272,8 @@ export interface CallTarget {
   priority: Priority
   score: number
   confidence_level: Confidence
+  property_id: string | null
+  company_id: string | null
   property_address: string | null
   property_submarket: string | null
   property_id: string | null
