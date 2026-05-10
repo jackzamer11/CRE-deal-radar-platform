@@ -93,6 +93,46 @@ def _industry_pain(industry: str) -> str:
     )
 
 
+def _web_search_company_intel(company_name: str) -> str:
+    """Execute two web searches for recent company intelligence using Anthropic web search.
+
+    Returns a short summary string injected into the GPT-4o prompt as context.
+    Silently returns empty string if ANTHROPIC_API_KEY is unset or search fails.
+    """
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        return ""
+    try:
+        import anthropic
+        client = anthropic.Anthropic(api_key=api_key)
+        queries = [
+            f"{company_name} office expansion Northern Virginia 2025 2026",
+            f"{company_name} hiring growth lease 2025 2026",
+        ]
+        findings: list[str] = []
+        for q in queries:
+            resp = client.messages.create(
+                model="claude-sonnet-4-6",
+                max_tokens=512,
+                tools=[{"type": "web_search_20250305", "name": "web_search"}],
+                messages=[{
+                    "role": "user",
+                    "content": (
+                        f"Search for: {q}. "
+                        "Return a 1-2 sentence factual summary of the top 3 most relevant findings. "
+                        "Focus on office moves, lease activity, headcount changes, or funding events."
+                    ),
+                }],
+            )
+            for block in resp.content:
+                if hasattr(block, "text") and block.text.strip():
+                    findings.append(block.text.strip())
+                    break
+        return " ".join(findings[:2]) if findings else ""
+    except Exception:
+        return ""
+
+
 def generate_outreach(company: dict) -> dict:
     """
     Build GPT-4o outreach draft for a company dict.
@@ -279,8 +319,9 @@ def generate_outreach(company: dict) -> dict:
         ),
         pain_probe_rule,
         f'Greeting: use "{greeting}" — format "Hi {greeting},"',
-        "FORBIDDEN phrases: 'happy to discuss', 'let me know if interested', 'feel free to reach out'. "
-        "Use specific CTAs: 'Are you free Tuesday or Wednesday for a 15-minute call?'",
+        "FORBIDDEN phrases: 'happy to discuss', 'let me know if interested', 'feel free to reach out', "
+        "and NEVER suggest specific days of the week. "
+        "Close with: 'I'd welcome a brief call at your convenience.'",
         rep_instruction,
         _industry_pain(industry),
     ]
@@ -348,12 +389,21 @@ Return valid JSON only — no markdown fences, no extra text:
         f"Sign off as {AGENT_NAME} | {FIRM_NAME}."
     )
 
+    # ── Web search intel (Change 9) ───────────────────────────────────────────
+    intel = _web_search_company_intel(company_name)
+    intel_section = (
+        f"\nRECENT COMPANY INTELLIGENCE (from web search — use at least one specific finding):\n{intel}\n"
+        if intel else
+        "\nNo recent company intelligence found — use CBRE Q1 2026 NoVA submarket data for market references.\n"
+    )
+
     import json
+    full_user = user_prompt + intel_section
     response = client.chat.completions.create(
         model="gpt-4o",
         messages=[
             {"role": "system", "content": system_prompt},
-            {"role": "user",   "content": user_prompt},
+            {"role": "user",   "content": full_user},
         ],
         temperature=0.4,
         response_format={"type": "json_object"},

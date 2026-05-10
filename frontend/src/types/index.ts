@@ -312,6 +312,42 @@ export interface TenantMatchTarget {
   market_rent_psf: number | null
 }
 
+export interface TenantMatchAction {
+  property_id: string
+  address: string
+  submarket: string
+  sf_avail: number | null
+  landlord_representative: string | null
+  listed_for_sale: boolean
+  outreach_type: string
+  target_type: string
+  tenant_company_id: string
+  tenant_name: string
+  tenant_industry: string
+  tenant_headcount: number | null
+  tenant_sf_needed: number
+  match_score: number
+  lease_expiry_months: number | null
+  contact_status: string
+}
+
+export interface AcquisitionTarget {
+  property_id: string
+  address: string
+  submarket: string
+  year_built: number | null
+  total_sf: number
+  vacancy_pct: number | null
+  signal_score: number
+  dominant_signal: string | null
+  asking_price: number | null
+  estimated_value: number | null
+  target_type: string
+  owner_name: string
+  sales_contact: string | null
+  contact_status: string
+}
+
 export interface DailyBriefing {
   briefing_date: string
   stats: DashboardStats
@@ -320,5 +356,28 @@ export interface DailyBriefing {
   pre_market_predictions: CallTarget[]
   tenant_opportunities: CallTarget[]
   tenant_match_properties: TenantMatchTarget[]
+  tenant_match_actions: TenantMatchAction[]
+  acquisition_targets: AcquisitionTarget[]
   signal_refresh_timestamp: string | null
+}
+
+export interface OutreachDraftRecord {
+  id: number
+  property_id: string
+  company_id: string | null
+  outreach_type: string
+  subject: string
+  body: string
+  call_script_opening: string | null
+  call_script_core: string | null
+  call_script_pain_probe: string | null
+  call_script_close: string | null
+  target_type: string
+  recipient_name: string | null
+  recipient_email: string | null
+  internal_context: string | null
+  score: number | null
+  priority: string | null
+  created_at: string
+  last_viewed_at: string
 }

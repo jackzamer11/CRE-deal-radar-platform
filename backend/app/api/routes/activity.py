@@ -24,6 +24,11 @@ class ActivityOut(BaseModel):
     follow_up_action: Optional[str]
     created_by: str
 
+    outreach_type:  Optional[str] = None
+    target_type:    Optional[str] = None
+    contact_method: Optional[str] = None
+    subject:        Optional[str] = None
+
     # Denormalized
     property_address: Optional[str] = None
     company_name: Optional[str] = None
@@ -43,6 +48,11 @@ class ActivityCreate(BaseModel):
     outcome: Optional[str] = None
     follow_up_date: Optional[date] = None
     follow_up_action: Optional[str] = None
+    # Outreach-specific fields (optional)
+    outreach_type:  Optional[str] = None
+    target_type:    Optional[str] = None
+    contact_method: Optional[str] = None
+    subject:        Optional[str] = None
 
 
 @router.get("/", response_model=List[ActivityOut])
@@ -84,6 +94,10 @@ def create_activity(payload: ActivityCreate, db: Session = Depends(get_db)):
         outcome        = payload.outcome,
         follow_up_date = payload.follow_up_date,
         follow_up_action = payload.follow_up_action,
+        outreach_type  = payload.outreach_type,
+        target_type    = payload.target_type,
+        contact_method = payload.contact_method,
+        subject        = payload.subject,
         created_by     = "user",
     )
     db.add(log)

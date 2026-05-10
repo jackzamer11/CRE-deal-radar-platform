@@ -9,6 +9,7 @@ import type {
   OpportunityOut,
   ActivityLog,
   OutreachDraft,
+  OutreachDraftRecord,
   OutreachLog,
 } from '../types'
 
@@ -149,6 +150,44 @@ export const updatePropertyInPlaceRent = (
 ): Promise<PropertyOut> =>
   api.patch(`/properties/${propertyId}/in-place-rent`, payload).then(r => r.data)
 
+// ── Outreach Drafts (persistent) ───────────────────────────────────────────
+
+export interface OutreachDraftPayload {
+  property_id: string
+  company_id?: string | null
+  outreach_type: string
+  subject: string
+  body: string
+  call_script_opening?: string | null
+  call_script_core?: string | null
+  call_script_pain_probe?: string | null
+  call_script_close?: string | null
+  target_type: string
+  recipient_name?: string | null
+  recipient_email?: string | null
+  internal_context?: string | null
+  score?: number | null
+  priority?: string | null
+}
+
+export const listOutreachDrafts = (propertyId: string): Promise<OutreachDraftRecord[]> =>
+  api.get(`/outreach-drafts/${propertyId}`).then(r => r.data)
+
+export const getOutreachDraft = (
+  propertyId: string,
+  companyId: string,
+  outreachType?: string,
+): Promise<OutreachDraftRecord | null> =>
+  api.get(`/outreach-drafts/${propertyId}/${companyId}`, {
+    params: outreachType ? { outreach_type: outreachType } : {},
+  }).then(r => r.data)
+
+export const saveOutreachDraft = (payload: OutreachDraftPayload): Promise<OutreachDraftRecord> =>
+  api.post('/outreach-drafts/', payload).then(r => r.data)
+
+export const deleteOutreachDraft = (draftId: number): Promise<{ deleted: number }> =>
+  api.delete(`/outreach-drafts/${draftId}`).then(r => r.data)
+
 // ── Opportunities ──────────────────────────────────────────────────────────
 
 export interface OpportunityFilters {
@@ -191,6 +230,10 @@ export const createActivity = (payload: {
   opportunity_id?: number
   follow_up_date?: string
   follow_up_action?: string
+  outreach_type?: string
+  target_type?: string
+  contact_method?: string
+  subject?: string
 }): Promise<ActivityLog> =>
   api.post('/activity', payload).then(r => r.data)
 

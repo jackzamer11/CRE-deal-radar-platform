@@ -21,9 +21,9 @@ const SUBMARKETS = [
 const PRIORITIES = ['IMMEDIATE', 'HIGH', 'WORKABLE', 'IGNORE']
 
 const SCORE_TYPE_LABELS: Record<string, string> = {
-  tenant_match: 'Tenant Match',
-  listing_rep:  'Listing Rep',
-  acquisition:  'Acquisition',
+  tenant_match:    'Tenant Match',
+  for_sale_vacancy:'For Sale + Vacancy',
+  acquisition:     'Acquisition',
 }
 
 function fmt(n: number | null | undefined, prefix = '', suffix = ''): string {
@@ -107,16 +107,17 @@ function RentPencilCell({
 // ── Score type badge ───────────────────────────────────────────────────────
 
 function DominantBadge({ type }: { type: string | null | undefined }) {
-  if (!type) return <span className="text-xs text-ink-muted">—</span>
+  // Change 1: treat listing_rep as fallback to tenant_match
+  const effective = type === 'listing_rep' ? 'tenant_match' : type
+  if (!effective) return <span className="text-xs text-ink-muted">—</span>
   const colours: Record<string, string> = {
     tenant_match: 'bg-violet-500/15 text-violet-400 border-violet-500/30',
-    listing_rep:  'bg-amber-500/15 text-amber-400 border-amber-500/30',
     acquisition:  'bg-emerald-500/15 text-emerald-400 border-emerald-500/30',
   }
-  const cls = colours[type] ?? 'bg-surface-muted text-ink-muted border-surface-border'
+  const cls = colours[effective] ?? 'bg-surface-muted text-ink-muted border-surface-border'
   return (
     <span className={`text-[10px] px-2 py-0.5 rounded border font-semibold ${cls}`}>
-      {SCORE_TYPE_LABELS[type] ?? type}
+      {SCORE_TYPE_LABELS[effective] ?? effective}
     </span>
   )
 }
@@ -138,7 +139,14 @@ export default function Properties() {
   const [showAddModal, setShowAddModal]     = useState(false)
   const [showBulkModal, setShowBulkModal]   = useState(false)
   const [showCoStarModal, setShowCoStarModal] = useState(false)
-  const [outreachModal, setOutreachModal]   = useState<{ prop: PropertyOut; type: string; targetType?: string; tenantContext?: string } | null>(null)
+  const [outreachModal, setOutreachModal]   = useState<{
+    prop: PropertyOut
+    type: string
+    targetType?: string
+    tenantContext?: string
+    pairCompanyId?: string
+    pairTenantName?: string
+  } | null>(null)
 
   const load = async () => {
     setLoading(true)
@@ -207,45 +215,52 @@ export default function Properties() {
     }
   }
 
-  // ── Smart Draft Outreach (label + type + target_type) ────────────────────
-  type OutreachPlan = { type: string; targetType: string; label: string }
+  // ── Strict Outreach Routing (Change 6) ───────────────────────────────────
+  // Decision tree — no manual override, no button if no path applies.
+  type OutreachPlan = { type: string; targetType: string; label: string } | null
 
   const planOutreach = (p: PropertyOut): OutreachPlan => {
-    if (p.listed_for_sale && p.sales_contact) {
-      return { type: 'acquisition', targetType: 'sales_broker', label: 'Draft Broker Outreach (Acquisition)' }
-    }
-    const dom = p.dominant_score_type
-    if (dom === 'tenant_match') {
-      if (p.landlord_representative) {
-        return { type: 'tenant_match', targetType: 'broker', label: 'Draft Broker Outreach (Tenant Match)' }
-      }
-      return { type: 'tenant_match', targetType: 'owner', label: 'Draft Owner Outreach (Tenant Match)' }
-    }
-    if (dom === 'listing_rep') {
-      return { type: 'listing_rep', targetType: 'owner', label: 'Draft Owner Outreach (Listing Rep)' }
-    }
-    if (dom === 'acquisition') {
-      if (p.sales_contact) {
-        return { type: 'acquisition', targetType: 'sales_broker', label: 'Draft Broker Outreach (Acquisition)' }
-      }
-      return { type: 'acquisition', targetType: 'owner', label: 'Draft Owner Outreach (Acquisition)' }
-    }
-    // Fallback
-    if (p.landlord_representative) {
-      return { type: 'tenant_match', targetType: 'broker', label: 'Draft Broker Outreach (Tenant Match)' }
-    }
-    return { type: 'tenant_match', targetType: 'owner', label: 'Draft Owner Outreach (Tenant Match)' }
-  }
+    const sfAvail = p.sf_avail ?? 0
+    const hasMatched = (p.matched_tenants?.length ?? 0) > 0
+    const dom = p.dominant_score_type === 'listing_rep' ? 'tenant_match' : p.dominant_score_type
 
-  const getTargetType = (p: PropertyOut, outreachType: string): string => {
-    if (outreachType === 'acquisition') {
-      return p.sales_contact ? 'sales_broker' : 'owner'
+    // Type 1: For Sale + Vacancy + matched tenants → for_sale_vacancy
+    if (sfAvail > 0 && p.listed_for_sale && hasMatched) {
+      const targetType = p.sales_contact ? 'sales_broker' : 'owner'
+      return {
+        type: 'for_sale_vacancy',
+        targetType,
+        label: targetType === 'sales_broker'
+          ? 'Draft Broker Outreach (For Sale + Vacancy)'
+          : 'Draft Owner Outreach (For Sale + Vacancy)',
+      }
     }
-    if (outreachType === 'tenant_match') {
-      if (p.listed_for_sale) return 'owner'
-      return p.landlord_representative ? 'broker' : 'owner'
+
+    // Type 2: Vacancy + matched tenants (not listed) → tenant_match
+    if (sfAvail > 0 && !p.listed_for_sale && hasMatched) {
+      const targetType = p.landlord_representative ? 'broker' : 'owner'
+      return {
+        type: 'tenant_match',
+        targetType,
+        label: targetType === 'broker'
+          ? 'Draft Broker Outreach (Tenant Match)'
+          : 'Draft Owner Outreach (Tenant Match)',
+      }
     }
-    return 'owner'
+
+    // Type 3: Strong signal + acquisition dominant → acquisition
+    if (p.signal_score >= 40 && dom === 'acquisition') {
+      const targetType = p.sales_contact ? 'sales_broker' : 'owner'
+      return {
+        type: 'acquisition',
+        targetType,
+        label: targetType === 'sales_broker'
+          ? 'Draft Broker Outreach (Acquisition)'
+          : 'Draft Owner Outreach (Acquisition)',
+      }
+    }
+
+    return null
   }
 
   const clearFilters = () => {
@@ -255,7 +270,7 @@ export default function Properties() {
 
   const anyFilter = submarket || priority || listedOnly !== undefined || scoreTypeFilter || needsOutreach
 
-  const colCount = 18
+  const colCount = 19
 
   return (
     <div className="p-6">
@@ -334,7 +349,6 @@ export default function Properties() {
         >
           <option value="">All Score Types</option>
           <option value="tenant_match">Tenant Match</option>
-          <option value="listing_rep">Listing Rep</option>
           <option value="acquisition">Acquisition</option>
         </select>
         <button
@@ -379,7 +393,6 @@ export default function Properties() {
                 <th>Mispricing</th>
                 <th>Signal</th>
                 <th>TM</th>
-                <th>LR</th>
                 <th>Acq</th>
                 <th>Dominant</th>
                 <th>Priority</th>
@@ -450,7 +463,6 @@ export default function Properties() {
                   <td><ScoreBadge score={p.mispricing_score} size="sm" showBar /></td>
                   <td><ScoreBadge score={p.signal_score} size="sm" showBar /></td>
                   <td><ScoreBadge score={p.tenant_match_score} size="sm" showBar /></td>
-                  <td><ScoreBadge score={p.listing_rep_score}  size="sm" showBar /></td>
                   <td><ScoreBadge score={p.acquisition_score}  size="sm" showBar /></td>
                   <td><DominantBadge type={p.dominant_score_type} /></td>
                   <td><PriorityBadge priority={p.priority} /></td>
@@ -474,17 +486,38 @@ export default function Properties() {
       {showCoStarModal && (
         <CoStarImportModal onClose={() => setShowCoStarModal(false)} onDone={load} />
       )}
-      {outreachModal && (
-        <OutreachDraftModal
-          entity_type="property"
-          property={outreachModal.prop}
-          outreach_type={outreachModal.type}
-          target_type={outreachModal.targetType}
-          tenant_context={outreachModal.tenantContext}
-          onClose={() => setOutreachModal(null)}
-          onSaved={() => { setOutreachModal(null); load() }}
-        />
-      )}
+      {outreachModal && (() => {
+        const p = outreachModal.prop
+        // Recipient pre-fill (Change 7) — pick by target_type
+        const tt = outreachModal.targetType
+        const recipientName =
+          tt === 'broker'        ? (p.landlord_representative ?? '') :
+          tt === 'sales_broker'  ? '' :
+          tt === 'owner'         ? (p.owner_name ?? '') :
+          ''
+        const looksLikeEmail = (s: string | null | undefined) => !!s && /@/.test(s)
+        const recipientEmail =
+          tt === 'broker'        ? (looksLikeEmail(p.landlord_rep_contact) ? (p.landlord_rep_contact as string) : '') :
+          tt === 'sales_broker'  ? (looksLikeEmail(p.sales_contact)        ? (p.sales_contact as string)        : '') :
+          tt === 'owner'         ? (p.owner_email ?? '') :
+          ''
+        return (
+          <OutreachDraftModal
+            entity_type="property"
+            property={p}
+            outreach_type={outreachModal.type}
+            target_type={outreachModal.targetType}
+            tenant_context={outreachModal.tenantContext}
+            pair_company_id={outreachModal.pairCompanyId}
+            pair_tenant_name={outreachModal.pairTenantName}
+            recipient_name={recipientName}
+            recipient_email={recipientEmail}
+            matched_tenants={p.matched_tenants}
+            onClose={() => setOutreachModal(null)}
+            onSaved={() => { setOutreachModal(null); load() }}
+          />
+        )
+      })()}
 
       {/* Detail panel */}
       {selected && (() => {
@@ -528,15 +561,11 @@ export default function Properties() {
                 </div>
               </div>
 
-              {/* Outreach scores */}
-              <div className="grid grid-cols-3 gap-2">
+              {/* Outreach scores (Change 1: Listing Rep hidden) */}
+              <div className="grid grid-cols-2 gap-2">
                 <div className="bg-violet-500/8 border border-violet-500/20 rounded-lg p-2">
                   <div className="text-[9px] text-violet-400 uppercase tracking-wider mb-1">Tenant Match</div>
                   <ScoreBadge score={selected.tenant_match_score} size="sm" showBar />
-                </div>
-                <div className="bg-amber-500/8 border border-amber-500/20 rounded-lg p-2">
-                  <div className="text-[9px] text-amber-400 uppercase tracking-wider mb-1">Listing Rep</div>
-                  <ScoreBadge score={selected.listing_rep_score} size="sm" showBar />
                 </div>
                 <div className="bg-emerald-500/8 border border-emerald-500/20 rounded-lg p-2">
                   <div className="text-[9px] text-emerald-400 uppercase tracking-wider mb-1">Acquisition</div>
@@ -544,33 +573,38 @@ export default function Properties() {
                 </div>
               </div>
 
-              {/* Smart Draft Outreach button */}
-              <button
-                onClick={() => setOutreachModal({ prop: selected, type: plan.type, targetType: plan.targetType })}
-                className="w-full flex items-center justify-center gap-2 py-2 rounded-lg
-                           bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold transition-colors"
-              >
-                <MessageSquarePlus size={13} />
-                {plan.label}
-              </button>
-
-              {/* Override dropdown — 3 buttons, each with correct target_type */}
-              <div className="flex gap-2">
-                {(['tenant_match', 'listing_rep', 'acquisition'] as const).map(t => (
-                  <button
-                    key={t}
-                    onClick={() => setOutreachModal({
+              {/* Smart Draft Outreach button — strict routing, no manual override (Change 6) */}
+              {plan ? (
+                <button
+                  onClick={() => {
+                    // Pair with top matched tenant for tenant_match / for_sale_vacancy
+                    const top = (plan.type === 'tenant_match' || plan.type === 'for_sale_vacancy')
+                      ? selected.matched_tenants?.[0]
+                      : undefined
+                    const tCtx = top
+                      ? `Industry: ${top.industry}; Headcount: ${top.headcount ?? 'N/A'}; SF Needed: ${top.sf_needed.toLocaleString()}; Submarket: ${top.submarket ?? 'N/A'}`
+                      : undefined
+                    setOutreachModal({
                       prop: selected,
-                      type: t,
-                      targetType: getTargetType(selected, t),
-                    })}
-                    className="flex-1 text-[10px] py-1.5 rounded-lg border border-surface-border
-                               text-ink-muted hover:text-ink-primary hover:border-accent-blue/40 transition-colors"
-                  >
-                    {SCORE_TYPE_LABELS[t]}
-                  </button>
-                ))}
-              </div>
+                      type: plan.type,
+                      targetType: plan.targetType,
+                      tenantContext: tCtx,
+                      pairCompanyId: top?.company_id,
+                      pairTenantName: top?.name,
+                    })
+                  }}
+                  className="w-full flex items-center justify-center gap-2 py-2 rounded-lg
+                             bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold transition-colors"
+                >
+                  <MessageSquarePlus size={13} />
+                  {plan.label}
+                </button>
+              ) : (
+                <div className="w-full text-center py-2 rounded-lg bg-surface-muted border border-surface-border
+                                text-[11px] text-ink-muted">
+                  No outreach path — needs vacancy + matched tenants, or signal ≥ 40 + acquisition dominant.
+                </div>
+              )}
 
               <div className="bg-surface-muted rounded-lg p-3 space-y-2">
                 <div className="text-[10px] text-ink-muted uppercase tracking-wider mb-2">Property Details</div>
@@ -608,14 +642,18 @@ export default function Properties() {
                 ) : (
                   <div className="space-y-2">
                     {selected.matched_tenants.map(t => {
-                      let label = 'Draft Owner Outreach (Tenant Match)'
+                      let outreachType = 'tenant_match'
                       let targetType = 'owner'
+                      let label = 'Draft Owner Outreach (Tenant Match)'
                       if (selected.listed_for_sale && (selected.sf_avail ?? 0) > 0) {
-                        label = 'Draft Outreach (For Sale + Vacancy)'
-                        targetType = 'owner'
+                        outreachType = 'for_sale_vacancy'
+                        targetType = selected.sales_contact ? 'sales_broker' : 'owner'
+                        label = targetType === 'sales_broker'
+                          ? 'Draft Broker Outreach (For Sale + Vacancy)'
+                          : 'Draft Owner Outreach (For Sale + Vacancy)'
                       } else if (selected.landlord_representative) {
-                        label = 'Draft Broker Outreach (Tenant Match)'
                         targetType = 'broker'
+                        label = 'Draft Broker Outreach (Tenant Match)'
                       }
                       const tCtx = `Industry: ${t.industry}; Headcount: ${t.headcount ?? 'N/A'}; SF Needed: ${t.sf_needed.toLocaleString()}; Submarket: ${t.submarket ?? 'N/A'}`
                       return (
@@ -649,9 +687,11 @@ export default function Properties() {
                               e.stopPropagation()
                               setOutreachModal({
                                 prop: selected,
-                                type: 'tenant_match',
+                                type: outreachType,
                                 targetType,
                                 tenantContext: tCtx,
+                                pairCompanyId: t.company_id,
+                                pairTenantName: t.name,
                               })
                             }}
                             className="mt-2 w-full text-[10px] py-1.5 rounded-lg border border-emerald-500/40

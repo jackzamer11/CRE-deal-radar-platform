@@ -108,6 +108,57 @@ def ensure_properties(cur: sqlite3.Cursor) -> int:
     return added
 
 
+def ensure_outreach_log(cur: sqlite3.Cursor) -> int:
+    """Add property_id and outreach_type columns to outreach_log if missing."""
+    added = 0
+    added += _add_column(cur, "outreach_log", "property_id",   "INTEGER REFERENCES properties(id)")
+    added += _add_column(cur, "outreach_log", "outreach_type", "TEXT DEFAULT 'tenant'")
+    return added
+
+
+def ensure_activity_logs(cur: sqlite3.Cursor) -> int:
+    """Add outreach-specific columns to activity_logs if missing."""
+    added = 0
+    added += _add_column(cur, "activity_logs", "outreach_type",  "TEXT")
+    added += _add_column(cur, "activity_logs", "target_type",    "TEXT")
+    added += _add_column(cur, "activity_logs", "contact_method", "TEXT")
+    added += _add_column(cur, "activity_logs", "subject",        "TEXT")
+    return added
+
+
+def ensure_outreach_drafts(cur: sqlite3.Cursor) -> int:
+    """Create the outreach_drafts table if it does not exist (idempotent)."""
+    cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='outreach_drafts'")
+    if cur.fetchone():
+        return 0
+    cur.execute("""
+        CREATE TABLE outreach_drafts (
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            property_id      TEXT NOT NULL,
+            company_id       TEXT,
+            outreach_type    TEXT NOT NULL,
+            subject          TEXT NOT NULL,
+            body             TEXT NOT NULL,
+            call_script_opening    TEXT,
+            call_script_core       TEXT,
+            call_script_pain_probe TEXT,
+            call_script_close      TEXT,
+            target_type      TEXT NOT NULL,
+            recipient_name   TEXT,
+            recipient_email  TEXT,
+            internal_context TEXT,
+            score            REAL,
+            priority         TEXT,
+            created_at       DATETIME,
+            last_viewed_at   DATETIME
+        )
+    """)
+    cur.execute("CREATE INDEX idx_outreach_drafts_property ON outreach_drafts(property_id)")
+    cur.execute("CREATE INDEX idx_outreach_drafts_pair ON outreach_drafts(property_id, company_id)")
+    print("  + created table outreach_drafts")
+    return 1
+
+
 def ensure_companies(cur: sqlite3.Cursor) -> int:
     """Add any columns the Company ORM model expects that may be missing."""
     added = 0
@@ -128,13 +179,16 @@ def run() -> None:
     conn = sqlite3.connect(db)
     cur = conn.cursor()
 
-    prop_added = ensure_properties(cur)
-    comp_added = ensure_companies(cur)
+    prop_added  = ensure_properties(cur)
+    comp_added  = ensure_companies(cur)
+    olog_added  = ensure_outreach_log(cur)
+    act_added   = ensure_activity_logs(cur)
+    draft_added = ensure_outreach_drafts(cur)
 
     conn.commit()
     conn.close()
 
-    total = prop_added + comp_added
+    total = prop_added + comp_added + olog_added + act_added + draft_added
     if total:
         print(f"ensure_schema: applied {total} column addition(s).")
     else:

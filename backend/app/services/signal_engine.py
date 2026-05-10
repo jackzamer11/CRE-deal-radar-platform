@@ -843,17 +843,32 @@ def determine_dominant_score_type(
     listing_rep:  Optional[float],
     acquisition:  Optional[float],
 ) -> Optional[str]:
-    """Pick the highest-scoring outreach axis among signals that ACTUALLY scored
-    (i.e. did not abstain → None). Returns None if nothing scored or the best
-    actionable score is below the threshold (15)."""
-    candidates = [(name, val) for name, val in (
-        ("tenant_match", tenant_match),
-        ("listing_rep",  listing_rep),
-        ("acquisition",  acquisition),
-    ) if val is not None]
-    if not candidates:
+    """Determine dominant outreach axis.
+
+    Weights: tenant_match × 0.667, acquisition × 0.333.
+    listing_rep is excluded from the dominant calculation (hidden in UI).
+    Tenant Match wins over Acquisition unless acquisition > tenant_match + 20.
+    Returns None if neither scored above 15.
+    """
+    tm  = tenant_match if tenant_match is not None else -1.0
+    acq = acquisition  if acquisition  is not None else -1.0
+
+    # Neither scored — nothing actionable
+    if tm < 0 and acq < 0:
         return None
-    best_name, best_value = max(candidates, key=lambda x: x[1])
+
+    # Determine winner
+    if tm >= 0 and acq >= 0:
+        # Acquisition only wins if it leads by more than 20 points
+        if acq > tm + 20:
+            best_name, best_value = "acquisition", acq
+        else:
+            best_name, best_value = "tenant_match", tm
+    elif tm >= 0:
+        best_name, best_value = "tenant_match", tm
+    else:
+        best_name, best_value = "acquisition", acq
+
     if best_value < 15:
         return None
     return best_name

@@ -52,6 +52,46 @@ class TenantMatchTarget(BaseModel):
     market_rent_psf: Optional[float]
 
 
+class TenantMatchAction(BaseModel):
+    """One property+tenant pair for Section A of the daily briefing."""
+    property_id:   str
+    address:       str
+    submarket:     str
+    sf_avail:      Optional[int]
+    landlord_representative: Optional[str]
+    listed_for_sale: bool
+    outreach_type: str  # tenant_match | for_sale_vacancy
+    target_type:   str  # broker | owner
+    # Tenant (company) data
+    tenant_company_id:  str
+    tenant_name:        str
+    tenant_industry:    str
+    tenant_headcount:   Optional[int]
+    tenant_sf_needed:   int
+    match_score:        float
+    lease_expiry_months: Optional[int]
+    # UI state
+    contact_status: str  # NOT_CONTACTED | CONTACTED | FOLLOW_UP
+
+
+class AcquisitionTarget(BaseModel):
+    """One property for Section B of the daily briefing."""
+    property_id:  str
+    address:      str
+    submarket:    str
+    year_built:   Optional[int]
+    total_sf:     int
+    vacancy_pct:  Optional[float]
+    signal_score: float
+    dominant_signal: Optional[str]  # human-readable e.g. "Debt Pressure"
+    asking_price:    Optional[float]
+    estimated_value: Optional[float]
+    target_type:  str   # sales_broker | owner
+    owner_name:   str
+    sales_contact: Optional[str]
+    contact_status: str  # NOT_CONTACTED | CONTACTED | FOLLOW_UP
+
+
 class DailyBriefing(BaseModel):
     briefing_date: date
     stats: DashboardStats
@@ -60,4 +100,6 @@ class DailyBriefing(BaseModel):
     pre_market_predictions: List[CallTarget]
     tenant_opportunities: List[CallTarget]
     tenant_match_properties: List[TenantMatchTarget]
+    tenant_match_actions: List[TenantMatchAction] = []
+    acquisition_targets:  List[AcquisitionTarget] = []
     signal_refresh_timestamp: Optional[str] = None

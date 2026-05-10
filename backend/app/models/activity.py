@@ -23,6 +23,12 @@ class ActivityLog(Base):
     action_taken = Column(Text, nullable=False)
     outcome = Column(Text, nullable=True)
 
+    # Outreach-specific tracking (nullable — only set for outreach_sent events)
+    outreach_type  = Column(String, nullable=True)   # tenant_match | for_sale_vacancy | acquisition
+    target_type    = Column(String, nullable=True)   # broker | owner | sales_broker | tenant
+    contact_method = Column(String, nullable=True)   # email | call
+    subject        = Column(String, nullable=True)
+
     # Follow-up
     follow_up_date = Column(Date, nullable=True)
     follow_up_action = Column(Text, nullable=True)

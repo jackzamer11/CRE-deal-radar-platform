@@ -19,7 +19,7 @@ from typing import Optional
 AGENT_NAME = "Jack Zamer"
 FIRM_NAME  = "The Commercial Real Estate Group"
 
-VALID_TYPES = {"tenant_match", "listing_rep", "acquisition"}
+VALID_TYPES = {"tenant_match", "for_sale_vacancy", "listing_rep", "acquisition"}
 
 # CBRE Q1 2026 NoVA office benchmarks (avg full-service rent / vacancy %).
 CBRE_2026_BENCHMARKS = {
@@ -141,19 +141,71 @@ def _build_tenant_match(p: dict, tenant_context: Optional[str], target_type: Opt
         f"You are {AGENT_NAME} at {FIRM_NAME}, a commercial real estate broker "
         f"specialising in Northern Virginia office. You are addressing {addressee}. "
         f"{framing} Be concise, specific, and relationship-oriented. "
-        f"Anchor numerical claims to the CBRE Q1 2026 NoVA submarket benchmarks "
-        f"provided. {sale_clause}"
+        f"Anchor numerical claims to the CBRE Q1 2026 NoVA submarket benchmarks provided. "
+        f"NEVER reveal the property street address in the email body — refer to it as "
+        f"'your property in [submarket]'. "
+        f"NEVER reveal the tenant company name — describe by industry, size, and timing only. "
+        f"NEVER suggest specific days of the week. "
+        f"Close every email and call script close with: 'I'd welcome a brief call at your convenience.' "
+        f"{sale_clause}"
     )
     user = (
         f"Property details:\n{ctx}{tenant_hint}\n"
         f"\nMarket benchmark: {benchmark or 'N/A'}\n\n"
         "Write:\n"
         "1. Email subject line (one line)\n"
-        "2. Email body (3-5 short paragraphs)\n"
+        "2. Email body (3-5 short paragraphs) — greet recipient by name if available; "
+        "   describe tenant as 'a [industry] firm with [headcount] employees seeking [SF range] "
+        "   in [submarket] with a lease expiring in approximately [X months]'; "
+        "   reference CBRE Q1 2026 submarket vacancy and asking rent; "
+        "   request tour availability, asking rent confirmation, OM materials (broker) or 15-min call (owner)\n"
         "3. Call script: Opening (2 sentences)\n"
         "4. Call script: Core message (3 sentences)\n"
         "5. Call script: Pain probe question (1 sentence)\n"
-        "6. Call script: Close / next step (2 sentences)\n\n"
+        "6. Call script: Close / next step (end with 'I'd welcome a brief call at your convenience.')\n\n"
+        "Format EXACTLY as:\n"
+        "SUBJECT: <subject>\n"
+        "EMAIL:\n<body>\n"
+        "OPENING:\n<opening>\n"
+        "CORE:\n<core>\n"
+        "PAIN_PROBE:\n<probe>\n"
+        "CLOSE:\n<close>"
+    )
+    return {"system": system, "user": user}
+
+
+def _build_for_sale_vacancy(p: dict, target_type: str) -> dict:
+    """For Sale + Vacancy outreach: property is listed AND has vacant SF.
+    References multiple tenants generally — never names any specific tenant."""
+    ctx = _prop_context(p)
+    benchmark = _submarket_context(p.get("submarket"))
+    landlord_rep = p.get("landlord_representative")
+    addressee = f"the landlord representative ({landlord_rep})" if landlord_rep else "the property owner"
+    framing = "broker-to-broker" if landlord_rep else "broker-to-owner"
+    system = (
+        f"You are {AGENT_NAME} at {FIRM_NAME}, a commercial real estate broker "
+        f"specialising in Northern Virginia office. You are addressing {addressee} ({framing}). "
+        f"This property is currently listed for sale AND has vacant space. "
+        f"Ask whether they are open to leasing the vacant space while the property is on the market. "
+        f"Reference demand generally ('multiple qualified tenants in this submarket') — NEVER name any specific tenant. "
+        f"Explain the value: securing a tenant can enhance the property's appeal and shorten the marketing window. "
+        f"Anchor to CBRE Q1 2026 NoVA submarket benchmarks provided. "
+        f"NEVER suggest specific days of the week. "
+        f"Close with: 'I'd welcome a brief call at your convenience.'"
+    )
+    user = (
+        f"Property details:\n{ctx}\n"
+        f"\nMarket benchmark: {benchmark or 'N/A'}\n\n"
+        "Write:\n"
+        "1. Email subject line (one line)\n"
+        "2. Email body (3-5 short paragraphs) — acknowledge property is listed for sale; "
+        "   ask if open to leasing vacant SF while on market; reference demand generally; "
+        "   cite CBRE Q1 2026 submarket vacancy and asking rent; "
+        "   explain tenant-in-place value proposition\n"
+        "3. Call script: Opening (2 sentences)\n"
+        "4. Call script: Core message (3 sentences)\n"
+        "5. Call script: Pain probe question (1 sentence)\n"
+        "6. Call script: Close (end with 'I'd welcome a brief call at your convenience.')\n\n"
         "Format EXACTLY as:\n"
         "SUBJECT: <subject>\n"
         "EMAIL:\n<body>\n"
@@ -200,22 +252,40 @@ def _build_listing_rep(p: dict) -> dict:
 def _build_acquisition(p: dict, target_type: str) -> dict:
     ctx = _prop_context(p)
     benchmark = _submarket_context(p.get("submarket"))
+    dom_signal = p.get("dominant_score_type", "")
+    signal_hint = {
+        "debt_pressure": "given current financing conditions",
+        "hold_period":   "given the current market cycle",
+        "vacancy_trend": "given the leasing environment",
+    }.get(dom_signal, "given current market conditions")
+    landlord_rep  = p.get("landlord_representative") or ""
+    sales_contact = p.get("sales_contact") or ""
+    addressee = f"the sales broker ({sales_contact})" if sales_contact else "the property owner"
     system = (
-        f"You are {AGENT_NAME} at {FIRM_NAME}. Write outreach on behalf of a principal "
-        "buyer/investor exploring value-add acquisitions in Northern Virginia office. "
-        "Focus on the value-add thesis: repositioning, re-leasing, or capital deployment. "
-        "Anchor pricing / cap-rate claims to the CBRE Q1 2026 submarket benchmarks provided."
+        f"You are {AGENT_NAME} at {FIRM_NAME}. "
+        f"Write discreet acquisition outreach addressed to {addressee}. "
+        f"Frame as: 'I represent a private buyer actively evaluating office assets in [submarket].' "
+        f"Reference the property as 'your property in [submarket]' — NEVER reveal the street address. "
+        f"Do NOT reveal buyer name, buyer capital, or any specific buyer details. "
+        f"Reference the dominant signal subtly without revealing platform intelligence: {signal_hint}. "
+        f"The ask: 'Are you open to a conversation about a potential off-market sale?' "
+        f"Cite CBRE Q1 2026 NoVA data: cap rates, vacancy, transaction volume. "
+        f"NEVER suggest specific days of the week. "
+        f"Close with: 'I'd welcome a brief call at your convenience.' "
+        f"Tone: professional, discreet, relationship-first."
     )
     user = (
         f"Property details:\n{ctx}\n"
         f"\nMarket benchmark: {benchmark or 'N/A'}\n\n"
         "Write:\n"
         "1. Email subject line (one line)\n"
-        "2. Email body (3-5 short paragraphs)\n"
+        "2. Email body (3-5 short paragraphs) — greet recipient by name if available; "
+        "   frame as representing a private buyer; reference property in submarket only; "
+        "   cite CBRE Q1 2026 cap rates and vacancy; ask about off-market conversation\n"
         "3. Call script: Opening (2 sentences)\n"
         "4. Call script: Core message (3 sentences)\n"
         "5. Call script: Pain probe question (1 sentence)\n"
-        "6. Call script: Close / next step (2 sentences)\n\n"
+        "6. Call script: Close (end with 'I'd welcome a brief call at your convenience.')\n\n"
         "Format EXACTLY as:\n"
         "SUBJECT: <subject>\n"
         "EMAIL:\n<body>\n"
@@ -290,10 +360,12 @@ def generate_property_outreach(
 
     if outreach_type == "tenant_match":
         prompt = _build_tenant_match(property_dict, tenant_context, target_type)
+    elif outreach_type == "for_sale_vacancy":
+        prompt = _build_for_sale_vacancy(property_dict, target_type)
     elif outreach_type == "listing_rep":
         prompt = _build_listing_rep(property_dict)
     else:
-        prompt = _build_acquisition(property_dict)
+        prompt = _build_acquisition(property_dict, target_type)
 
     raw    = _chat(prompt["system"], prompt["user"])
     parsed = _parse_response(raw)
