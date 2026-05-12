@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
-  Zap, TrendingUp, Users, AlertTriangle,
+  Zap, TrendingUp, AlertTriangle,
   RefreshCw, Plus, Database, Upload, Building2, Target, MessageSquarePlus,
 } from 'lucide-react'
 import { getDailyBriefing, runPipeline, getProperty } from '../api/client'
@@ -303,15 +303,7 @@ export default function Dashboard() {
   const tenantActions = briefing.tenant_match_actions ?? []
   const acqTargets    = briefing.acquisition_targets ?? []
 
-  const noContent = (
-    tenantActions.length === 0 &&
-    acqTargets.length === 0 &&
-    briefing.immediate_deals.length === 0 &&
-    briefing.high_priority_deals.length === 0 &&
-    briefing.pre_market_predictions.length === 0 &&
-    briefing.tenant_opportunities.length === 0 &&
-    briefing.tenant_match_properties.length === 0
-  )
+  const noContent = tenantActions.length === 0 && acqTargets.length === 0
 
   return (
     <div className="p-8 max-w-screen-xl">
@@ -374,10 +366,10 @@ export default function Dashboard() {
 
       {/* Stat cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-        <StatCard label="Immediate Deals"  value={stats.immediate_count}     sub="Call today"       icon={Zap}           color="text-red-400" />
-        <StatCard label="High Priority"    value={stats.high_count}          sub="This week"        icon={AlertTriangle} color="text-amber-400" />
-        <StatCard label="Pre-Market"       value={stats.pre_market_count}    sub="Predicted"        icon={TrendingUp}    color="text-purple-400" />
-        <StatCard label="Tenant Driven"    value={stats.tenant_driven_count} sub="Active matches"   icon={Users}         color="text-emerald-400" />
+        <StatCard label="Tenant Match Actions" value={tenantActions.length}   sub="Section A queue"  icon={Building2}     color="text-violet-400" />
+        <StatCard label="Acquisition Targets"  value={acqTargets.length}      sub="Signal ≥ 40"      icon={Zap}           color="text-emerald-400" />
+        <StatCard label="Properties"           value={stats.total_properties} sub="In portfolio"     icon={TrendingUp}    color="text-purple-400" />
+        <StatCard label="Avg Signal Score"     value={stats.avg_signal_score.toFixed(0)} sub="Portfolio avg" icon={AlertTriangle} color="text-amber-400" />
       </div>
 
       {/* Portfolio row */}
