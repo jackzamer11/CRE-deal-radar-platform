@@ -124,7 +124,7 @@ export default function OutreachDraftModal(props: Props) {
     .slice(0, 3)
   const isTabMode = entity_type === 'property'
     && props.outreach_type === 'tenant_match'
-    && tabTenants.length > 1
+    && tabTenants.length >= 1
   const [activeTabCompanyId, setActiveTabCompanyId] = useState<string | null>(
     entity_type === 'property' ? (props.pair_company_id ?? tabTenants[0]?.company_id ?? null) : null
   )

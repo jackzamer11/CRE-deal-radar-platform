@@ -204,7 +204,25 @@ export default function Dashboard() {
   const [showCoStarModal, setShowCoStarModal] = useState(false)
   const [pipelineRunning, setPipelineRunning] = useState(false)
   const [pipelineStatus, setPipelineStatus]   = useState<string | null>(null)
-  const [contactedPairs, setContactedPairs]   = useState<Record<string, boolean>>({})
+  const [contactedPairs, setContactedPairs] = useState<Record<string, boolean>>(() => {
+    try {
+      const stored = localStorage.getItem('deal_radar_contacted_pairs')
+      if (stored) {
+        const parsed = JSON.parse(stored)
+        if (Array.isArray(parsed)) {
+          return Object.fromEntries(parsed.map((k: string) => [k, true]))
+        }
+        if (typeof parsed === 'object' && parsed !== null) return parsed
+      }
+    } catch { /* ignore */ }
+    return {}
+  })
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('deal_radar_contacted_pairs', JSON.stringify(contactedPairs))
+    } catch { /* ignore quota errors */ }
+  }, [contactedPairs])
 
   const handleContacted = (pairKey: string) => {
     setContactedPairs(prev => ({ ...prev, [pairKey]: true }))
