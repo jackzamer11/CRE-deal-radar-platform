@@ -46,6 +46,84 @@ def _submarket_context(submarket: Optional[str]) -> str:
     return ""
 
 
+def search_property_intelligence(property_dict: dict) -> list:
+    """Run two Anthropic web searches on the property+owner and return structured findings.
+
+    Returns list of dicts: {fact, source_url, source_name, relevance_score}
+    Returns [] if ANTHROPIC_API_KEY not set or on any error.
+    """
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        return []
+
+    owner_name = property_dict.get("owner_name", "")
+    submarket  = property_dict.get("submarket", "")
+    address    = property_dict.get("address", "")
+
+    if not owner_name and not address:
+        return []
+
+    queries = [
+        f"{owner_name} {submarket} commercial real estate 2025 2026",
+        f"{address} office vacancy Northern Virginia 2025",
+    ]
+
+    try:
+        import anthropic
+        client = anthropic.Anthropic(api_key=api_key)
+
+        raw_findings: list[str] = []
+        for q in queries:
+            resp = client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=1024,
+                tools=[{"type": "web_search_20250305", "name": "web_search"}],
+                messages=[{
+                    "role": "user",
+                    "content": (
+                        f"Search for: {q}. "
+                        "Return up to 3 factual findings relevant to commercial real estate outreach. "
+                        "Each finding on its own line. Focus on: ownership changes, permit activity, "
+                        "debt or refinance activity, extended vacancy mentions, or submarket commentary. "
+                        "Format each as: FACT: [sentence] | URL: [url] | SOURCE: [domain]"
+                    ),
+                }],
+            )
+            for block in resp.content:
+                if hasattr(block, "text") and block.text.strip():
+                    raw_findings.append(block.text.strip())
+                    break
+
+        # Parse findings into structured list
+        findings = []
+        for raw in raw_findings:
+            for line in raw.splitlines():
+                line = line.strip()
+                if not line or "FACT:" not in line:
+                    continue
+                try:
+                    fact_part   = line.split("FACT:")[1].split("|")[0].strip() if "FACT:" in line else ""
+                    url_part    = line.split("URL:")[1].split("|")[0].strip()  if "URL:"  in line else ""
+                    src_part    = line.split("SOURCE:")[1].strip()              if "SOURCE:" in line else ""
+                    if fact_part:
+                        findings.append({
+                            "fact":            fact_part,
+                            "source_url":      url_part,
+                            "source_name":     src_part,
+                            "relevance_score": 2,
+                        })
+                except Exception:
+                    continue
+                if len(findings) >= 3:
+                    break
+            if len(findings) >= 3:
+                break
+
+        return findings[:3]
+    except Exception:
+        return []
+
+
 def _chat(system: str, user: str) -> str:
     from openai import OpenAI
     client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
@@ -337,6 +415,7 @@ def generate_property_outreach(
     outreach_type: str,
     target_type: Optional[str] = None,
     tenant_context: Optional[str] = None,
+    intel_context: Optional[list] = None,
 ) -> dict:
     """
     Call GPT-4o and return a structured outreach dict.
@@ -358,6 +437,13 @@ def generate_property_outreach(
         else:
             target_type = "owner"
 
+    # Build intel string from selected findings
+    intel_str = ""
+    if intel_context:
+        intel_lines = [f"- {f['fact']}" for f in intel_context if f.get('fact')]
+        if intel_lines:
+            intel_str = "Recent market intelligence (weave in naturally as your own market knowledge):\n" + "\n".join(intel_lines)
+
     if outreach_type == "tenant_match":
         prompt = _build_tenant_match(property_dict, tenant_context, target_type)
     elif outreach_type == "for_sale_vacancy":
@@ -366,6 +452,9 @@ def generate_property_outreach(
         prompt = _build_listing_rep(property_dict)
     else:
         prompt = _build_acquisition(property_dict, target_type)
+
+    if intel_str:
+        prompt["user"] = f"Market intelligence (weave into email naturally as your own knowledge):\n{intel_str}\n\n" + prompt["user"]
 
     raw    = _chat(prompt["system"], prompt["user"])
     parsed = _parse_response(raw)

@@ -118,12 +118,14 @@ export const draftPropertyOutreach = (
   outreachType: string,
   tenantContext?: string,
   targetType?: string,
+  intelContext?: string,
 ): Promise<OutreachDraft> =>
   api.post(`/properties/${propertyId}/draft-outreach`, null, {
     params: {
       outreach_type: outreachType,
-      ...(tenantContext ? { tenant_context: tenantContext } : {}),
-      ...(targetType    ? { target_type: targetType }       : {}),
+      ...(tenantContext ? { tenant_context: tenantContext }   : {}),
+      ...(targetType    ? { target_type: targetType }         : {}),
+      ...(intelContext  ? { intel_context_raw: intelContext } : {}),
     },
   }).then(r => r.data)
 
@@ -156,6 +158,7 @@ export interface OutreachDraftPayload {
   property_id: string
   company_id?: string | null
   outreach_type: string
+  direction?: string | null
   subject: string
   body: string
   call_script_opening?: string | null
@@ -177,9 +180,13 @@ export const getOutreachDraft = (
   propertyId: string,
   companyId: string,
   outreachType?: string,
+  direction?: string,
 ): Promise<OutreachDraftRecord | null> =>
   api.get(`/outreach-drafts/${propertyId}/${companyId}`, {
-    params: outreachType ? { outreach_type: outreachType } : {},
+    params: {
+      ...(outreachType ? { outreach_type: outreachType } : {}),
+      ...(direction    ? { direction }                   : {}),
+    },
   }).then(r => r.data)
 
 export const saveOutreachDraft = (payload: OutreachDraftPayload): Promise<OutreachDraftRecord> =>
@@ -187,6 +194,17 @@ export const saveOutreachDraft = (payload: OutreachDraftPayload): Promise<Outrea
 
 export const deleteOutreachDraft = (draftId: number): Promise<{ deleted: number }> =>
   api.delete(`/outreach-drafts/${draftId}`).then(r => r.data)
+
+export const searchIntelligence = (
+  propertyId: string,
+  companyId: string | null | undefined,
+  direction: string,
+): Promise<{ findings: import('../types').IntelFinding[] }> =>
+  api.post('/outreach-drafts/search-intelligence', {
+    property_id: propertyId,
+    company_id:  companyId ?? null,
+    direction,
+  }).then(r => r.data)
 
 // ── Opportunities ──────────────────────────────────────────────────────────
 

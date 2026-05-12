@@ -1,16 +1,17 @@
 import { useEffect, useState, useCallback } from 'react'
 import {
   X, Copy, Check, Mail, Phone, Loader2, Save, ExternalLink, ChevronDown, ChevronRight, RotateCcw,
+  Search,
 } from 'lucide-react'
 import {
   draftOutreach, logOutreach,
   draftPropertyOutreach, logPropertyOutreach,
   updateOutreachLog,
   getOutreachDraft, saveOutreachDraft, deleteOutreachDraft,
-  createActivity,
+  createActivity, searchIntelligence,
 } from '../api/client'
 import type {
-  CompanyListOut, PropertyListOut, OutreachDraft, MatchedTenant, OutreachDraftRecord,
+  CompanyListOut, PropertyListOut, OutreachDraft, MatchedTenant, OutreachDraftRecord, IntelFinding,
 } from '../types'
 
 const OUTREACH_TYPE_LABELS: Record<string, string> = {
@@ -27,6 +28,7 @@ interface CompanyProps {
   outreach_type?: never
   onClose: () => void
   onSaved: () => void
+  onContacted?: (pairKey: string) => void
 }
 
 interface PropertyProps {
@@ -42,13 +44,17 @@ interface PropertyProps {
   // Recipient pre-fill (Change 7)
   recipient_name?: string
   recipient_email?: string
-  // For for_sale_vacancy internal panel (Change 5)
+  // For for_sale_vacancy internal panel (Change 5) + tenant tabs
   matched_tenants?: MatchedTenant[]
   onClose: () => void
   onSaved: () => void
+  onContacted?: (pairKey: string) => void
 }
 
 type Props = CompanyProps | PropertyProps
+
+type Direction = 'property_side' | 'tenant_side'
+type IntelPhase = 'idle' | 'loading' | 'review' | 'generating'
 
 function CopyButton({ text, label = 'Copy' }: { text: string; label?: string }) {
   const [copied, setCopied] = useState(false)
@@ -95,7 +101,7 @@ function Section({
 }
 
 export default function OutreachDraftModal(props: Props) {
-  const { entity_type, onClose, onSaved } = props
+  const { entity_type, onClose, onSaved, onContacted } = props
 
   const propertyAddress = entity_type === 'property' ? props.property.address : ''
   const tenantName      = entity_type === 'property' ? (props.pair_tenant_name ?? '') : ''
@@ -108,6 +114,31 @@ export default function OutreachDraftModal(props: Props) {
     ? OUTREACH_TYPE_LABELS[props.outreach_type] ?? props.outreach_type
     : 'Tenant Outreach'
 
+  // ── Direction toggle ────────────────────────────────────────────────────────
+  const [direction, setDirection] = useState<Direction>('property_side')
+
+  // ── Tenant tab state (tenant_match only, top 3 by match_score) ─────────────
+  const matchedTenants = entity_type === 'property' ? (props.matched_tenants ?? []) : []
+  const tabTenants = [...matchedTenants]
+    .sort((a, b) => b.match_score - a.match_score)
+    .slice(0, 3)
+  const isTabMode = entity_type === 'property'
+    && props.outreach_type === 'tenant_match'
+    && tabTenants.length > 1
+  const [activeTabCompanyId, setActiveTabCompanyId] = useState<string | null>(
+    entity_type === 'property' ? (props.pair_company_id ?? tabTenants[0]?.company_id ?? null) : null
+  )
+  const activeTabTenant = tabTenants.find(t => t.company_id === activeTabCompanyId) ?? tabTenants[0]
+
+  // Effective pair company id — may change when tab changes
+  const effectiveCompanyId = isTabMode ? activeTabCompanyId : (
+    entity_type === 'property' ? (props.pair_company_id ?? null) : null
+  )
+  const effectiveTenantName = isTabMode
+    ? (activeTabTenant?.name ?? tenantName)
+    : tenantName
+
+  // ── Draft state ─────────────────────────────────────────────────────────────
   const [draft, setDraft]         = useState<OutreachDraft | null>(null)
   const [persistedId, setPersistedId] = useState<number | null>(null)
   const [error, setError]         = useState<string | null>(null)
@@ -117,7 +148,11 @@ export default function OutreachDraftModal(props: Props) {
   const [saving, setSaving]       = useState(false)
   const [resetting, setResetting] = useState(false)
 
-  // Recipient (Change 7) — pre-filled from props, editable
+  // ── Intel phase ─────────────────────────────────────────────────────────────
+  const [intelPhase, setIntelPhase] = useState<IntelPhase>('idle')
+  const [intelFindings, setIntelFindings] = useState<IntelFinding[]>([])
+
+  // ── Recipient ────────────────────────────────────────────────────────────────
   const initialRecipientName  = entity_type === 'property' ? (props.recipient_name  ?? '') : ''
   const initialRecipientEmail = entity_type === 'property' ? (props.recipient_email ?? '') : ''
   const [recipientName,  setRecipientName]  = useState(initialRecipientName)
@@ -140,13 +175,17 @@ export default function OutreachDraftModal(props: Props) {
     target_type:   rec.target_type,
   })
 
-  const persistDraft = useCallback(async (d: OutreachDraft) => {
+  const persistDraft = useCallback(async (d: OutreachDraft, checkedFindings: IntelFinding[]) => {
     if (entity_type !== 'property') return
+    const intelCtx = checkedFindings.length > 0
+      ? JSON.stringify(checkedFindings.map(f => f.fact))
+      : (props.tenant_context ?? null)
     try {
       const rec = await saveOutreachDraft({
         property_id:  props.property.property_id,
-        company_id:   props.pair_company_id ?? null,
+        company_id:   effectiveCompanyId ?? null,
         outreach_type: props.outreach_type,
+        direction,
         subject:      d.email_subject,
         body:         d.email_body,
         call_script_opening:    d.call_script.opening,
@@ -156,7 +195,7 @@ export default function OutreachDraftModal(props: Props) {
         target_type:  props.target_type ?? d.target_type ?? 'owner',
         recipient_name:  recipientName  || null,
         recipient_email: recipientEmail || null,
-        internal_context: props.tenant_context ?? null,
+        internal_context: intelCtx,
         score:    d.score,
         priority: d.priority,
       })
@@ -166,36 +205,42 @@ export default function OutreachDraftModal(props: Props) {
     }
   }, [entity_type,
       entity_type === 'property' ? props.property.property_id : null,
-      entity_type === 'property' ? props.pair_company_id : null,
+      effectiveCompanyId,
       entity_type === 'property' ? props.outreach_type : null,
       entity_type === 'property' ? props.target_type : null,
       entity_type === 'property' ? props.tenant_context : null,
+      direction,
       recipientName, recipientEmail])
 
-  const generateFresh = useCallback(async () => {
+  const generateFresh = useCallback(async (checkedFindings: IntelFinding[] = []) => {
     setError(null)
     setDraft(null)
+    setIntelPhase('generating')
     try {
       let result: OutreachDraft
       if (entity_type === 'company') {
         result = await draftOutreach(props.company.company_id)
       } else {
+        // Build intel_context from checked findings
+        const intelList = checkedFindings.map(f => f.fact)
         result = await draftPropertyOutreach(
           props.property.property_id,
           props.outreach_type,
           props.tenant_context,
           props.target_type,
+          intelList.length > 0 ? JSON.stringify(intelList) : undefined,
         )
       }
       setDraft(result)
-      // Persist new draft for property-side outreach
+      setIntelPhase('idle')
       if (entity_type === 'property') {
-        await persistDraft(result)
+        await persistDraft(result, checkedFindings)
       }
     } catch (e: unknown) {
       const msg = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
         || 'Generation failed. Check that OPENAI_API_KEY is set and try again.'
       setError(msg)
+      setIntelPhase('idle')
     }
   }, [entity_type,
       entity_type === 'company' ? props.company.company_id : null,
@@ -205,15 +250,49 @@ export default function OutreachDraftModal(props: Props) {
       entity_type === 'property' ? props.target_type : null,
       persistDraft])
 
+  const runIntelAndGenerate = useCallback(async () => {
+    if (entity_type !== 'property') { await generateFresh(); return }
+    setIntelPhase('loading')
+    setIntelFindings([])
+    setDraft(null)
+    setError(null)
+    try {
+      const resp = await searchIntelligence(
+        props.property.property_id,
+        effectiveCompanyId,
+        direction,
+      )
+      const findings = (resp.findings ?? []).map(f => ({ ...f, checked: true }))
+      if (findings.length === 0) {
+        // No intel — go straight to generation
+        await generateFresh([])
+      } else {
+        setIntelFindings(findings)
+        setIntelPhase('review')
+      }
+    } catch {
+      // If intel search fails, fall through to generation
+      await generateFresh([])
+    }
+  }, [entity_type,
+      entity_type === 'property' ? props.property.property_id : null,
+      effectiveCompanyId,
+      direction,
+      generateFresh])
+
   const load = useCallback(async () => {
     setError(null)
-    // Property-side: try persisted draft first (Change 4)
-    if (entity_type === 'property' && props.pair_company_id) {
+    setDraft(null)
+    setIntelFindings([])
+    setIntelPhase('idle')
+    // Property-side: try persisted draft first
+    if (entity_type === 'property' && effectiveCompanyId) {
       try {
         const existing = await getOutreachDraft(
           props.property.property_id,
-          props.pair_company_id,
+          effectiveCompanyId,
           props.outreach_type,
+          direction,
         )
         if (existing) {
           setDraft(draftToBaseDraft(existing))
@@ -223,17 +302,19 @@ export default function OutreachDraftModal(props: Props) {
           return
         }
       } catch {
-        // fall through to fresh generation
+        // fall through
       }
     }
-    await generateFresh()
+    // No cached draft — run intel + generate
+    await runIntelAndGenerate()
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [entity_type,
       entity_type === 'property' ? props.property.property_id : null,
-      entity_type === 'property' ? props.pair_company_id : null,
+      effectiveCompanyId,
       entity_type === 'property' ? props.outreach_type : null,
-      generateFresh])
+      direction])
 
+  // Reload when tab or direction changes
   useEffect(() => { load() }, [load])
 
   const handleResetDraft = async () => {
@@ -244,7 +325,8 @@ export default function OutreachDraftModal(props: Props) {
         try { await deleteOutreachDraft(persistedId) } catch { /* ignore */ }
         setPersistedId(null)
       }
-      await generateFresh()
+      setDraft(null)
+      await runIntelAndGenerate()
     } finally {
       setResetting(false)
     }
@@ -308,29 +390,34 @@ export default function OutreachDraftModal(props: Props) {
         })
       }
 
-      // Change 8: also write to Activity Log when contact was made
-      if (emailSent || callMade) {
-        const action_type = callMade ? 'CALL' : 'EMAIL'
+      // Always fire activity log on Save & Mark Contacted
+      try {
         const contact_method = callMade ? 'phone' : 'email'
-        const action_taken = callMade
-          ? `Called ${recipientName || 'contact'}${tenantName ? ` re ${tenantName}` : ''}`
-          : `Emailed ${recipientName || 'contact'}${tenantName ? ` re ${tenantName}` : ''}`
-        try {
-          await createActivity({
-            action_type,
-            action_taken,
-            outcome: notes.trim() || undefined,
-            property_id: propertyDbId,
-            company_id:  companyDbId,
-            outreach_type: entity_type === 'property' ? props.outreach_type : 'tenant',
-            target_type:   entity_type === 'property' ? (props.target_type ?? 'owner') : 'tenant',
-            contact_method,
-            subject: draft.email_subject,
-          } as Parameters<typeof createActivity>[0])
-        } catch {
-          // Activity log failure shouldn't block save
-        }
+        const action_type    = callMade ? 'CALL'  : 'EMAIL'
+        const action_taken   = callMade
+          ? `Called ${recipientName || 'contact'}${effectiveTenantName ? ` re ${effectiveTenantName}` : ''}`
+          : `Emailed ${recipientName || 'contact'}${effectiveTenantName ? ` re ${effectiveTenantName}` : ''}`
+        await createActivity({
+          action_type,
+          action_taken,
+          outcome: notes.trim() || undefined,
+          property_id: propertyDbId,
+          company_id:  companyDbId,
+          outreach_type: entity_type === 'property' ? props.outreach_type : 'tenant',
+          target_type:   entity_type === 'property' ? (props.target_type ?? 'owner') : 'tenant',
+          contact_method,
+          subject: draft.email_subject,
+        } as Parameters<typeof createActivity>[0])
+      } catch {
+        // Activity log failure shouldn't block save
       }
+
+      // Notify parent so status badge can update in real-time
+      if (onContacted && entity_type === 'property') {
+        const pairKey = `${props.property.property_id}:${effectiveCompanyId ?? ''}:${props.outreach_type}`
+        onContacted(pairKey)
+      }
+
       onSaved()
       onClose()
     } finally {
@@ -338,10 +425,34 @@ export default function OutreachDraftModal(props: Props) {
     }
   }
 
-  const matchedTenants = entity_type === 'property' ? (props.matched_tenants ?? []) : []
   const showInternalPanel = entity_type === 'property'
     && props.outreach_type === 'for_sale_vacancy'
     && matchedTenants.length > 0
+
+  // ── Pair header text ─────────────────────────────────────────────────────────
+  const pairHeaderLine = entity_type === 'property' && (() => {
+    if (props.outreach_type === 'for_sale_vacancy') {
+      return (
+        <div className="text-[11px] text-emerald-400 mt-1.5 font-medium">
+          Drafting for: <span className="text-ink-primary">{propertyAddress}</span>
+          <span className="text-ink-muted mx-1">→</span>
+          <span className="text-ink-primary">All Matched Tenants (For Sale + Vacancy)</span>
+        </div>
+      )
+    }
+    if (effectiveTenantName) {
+      return (
+        <div className="text-[11px] text-emerald-400 mt-1.5 font-medium">
+          Drafting for: <span className="text-ink-primary">{propertyAddress}</span>
+          <span className="text-ink-muted mx-1">→</span>
+          <span className="text-ink-primary">{effectiveTenantName}</span>
+        </div>
+      )
+    }
+    return null
+  })()
+
+  const isLoading = !draft && !error && intelPhase !== 'review'
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
@@ -356,14 +467,7 @@ export default function OutreachDraftModal(props: Props) {
               </span>
             </div>
             <div className="text-xs text-ink-muted mt-0.5">{entityLabel}</div>
-            {/* Change 5: pair header */}
-            {entity_type === 'property' && tenantName && (
-              <div className="text-[11px] text-emerald-400 mt-1.5 font-medium">
-                Drafting for: <span className="text-ink-primary">{propertyAddress}</span>
-                <span className="text-ink-muted mx-1">→</span>
-                <span className="text-ink-primary">{tenantName}</span>
-              </div>
-            )}
+            {pairHeaderLine}
           </div>
           <button onClick={onClose} className="text-ink-muted hover:text-ink-primary p-1 ml-3 flex-shrink-0">
             <X size={18} />
@@ -373,12 +477,124 @@ export default function OutreachDraftModal(props: Props) {
         {/* Body */}
         <div className="flex-1 overflow-y-auto flex">
           <div className="flex-1 overflow-y-auto p-5 space-y-4 min-w-0">
+
+            {/* Direction toggle — property outreach only */}
+            {entity_type === 'property' && (
+              <div className="flex gap-2">
+                <button
+                  onClick={() => { if (direction !== 'property_side') setDirection('property_side') }}
+                  className={`flex-1 text-[11px] py-1.5 rounded-lg border font-semibold transition-colors ${
+                    direction === 'property_side'
+                      ? 'bg-emerald-600 border-emerald-600 text-white'
+                      : 'border-surface-border text-ink-muted hover:text-ink-primary'
+                  }`}
+                >
+                  Property Side
+                </button>
+                <button
+                  onClick={() => { if (direction !== 'tenant_side') setDirection('tenant_side') }}
+                  className={`flex-1 text-[11px] py-1.5 rounded-lg border font-semibold transition-colors ${
+                    direction === 'tenant_side'
+                      ? 'bg-emerald-600 border-emerald-600 text-white'
+                      : 'border-surface-border text-ink-muted hover:text-ink-primary'
+                  }`}
+                >
+                  Tenant Side
+                </button>
+              </div>
+            )}
+
+            {/* Tenant tabs for tenant_match with multiple matches */}
+            {isTabMode && (
+              <div className="flex gap-1 border-b border-surface-border pb-0">
+                {tabTenants.map(t => (
+                  <button
+                    key={t.company_id}
+                    onClick={() => { if (activeTabCompanyId !== t.company_id) setActiveTabCompanyId(t.company_id) }}
+                    className={`text-[11px] px-3 py-1.5 rounded-t-lg border border-b-0 font-semibold transition-colors ${
+                      activeTabCompanyId === t.company_id
+                        ? 'bg-emerald-600 border-emerald-600 text-white'
+                        : 'border-surface-border text-ink-muted hover:text-ink-primary'
+                    }`}
+                  >
+                    {t.name}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {/* Intelligence Review Phase */}
+            {intelPhase === 'review' && (
+              <div className="border border-accent-blue/30 rounded-xl p-4 space-y-3 bg-accent-blue/5">
+                <div className="flex items-center gap-2">
+                  <Search size={13} className="text-accent-blue" />
+                  <span className="text-xs font-semibold text-ink-primary">Intelligence Review</span>
+                  <span className="text-[10px] text-ink-muted">— select facts to include in the draft</span>
+                </div>
+                <div className="space-y-2">
+                  {intelFindings.map((f, i) => (
+                    <label key={i} className="flex items-start gap-2 cursor-pointer group">
+                      <input
+                        type="checkbox"
+                        checked={f.checked ?? true}
+                        onChange={e => {
+                          const updated = intelFindings.map((x, j) =>
+                            j === i ? { ...x, checked: e.target.checked } : x
+                          )
+                          setIntelFindings(updated)
+                        }}
+                        className="mt-0.5 accent-emerald-500 flex-shrink-0"
+                      />
+                      <div className="min-w-0">
+                        <div className="text-xs text-ink-secondary group-hover:text-ink-primary leading-snug">{f.fact}</div>
+                        <div className="text-[10px] text-ink-muted mt-0.5">
+                          {f.source_name}
+                          {f.source_url && f.source_url !== 'N/A' && (
+                            <a
+                              href={f.source_url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="ml-1.5 text-accent-blue hover:underline"
+                              onClick={e => e.stopPropagation()}
+                            >
+                              ↗
+                            </a>
+                          )}
+                        </div>
+                      </div>
+                    </label>
+                  ))}
+                </div>
+                <div className="flex gap-2 pt-1">
+                  <button
+                    onClick={() => generateFresh(intelFindings.filter(f => f.checked))}
+                    className="flex-1 text-xs py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-semibold"
+                  >
+                    Generate Email
+                  </button>
+                  <button
+                    onClick={() => generateFresh([])}
+                    className="text-xs px-4 py-2 rounded-lg border border-surface-border text-ink-muted hover:text-ink-primary"
+                  >
+                    Skip Intelligence / Generate Anyway
+                  </button>
+                </div>
+              </div>
+            )}
+
             {/* Loading */}
-            {!draft && !error && (
+            {isLoading && (
               <div className="flex flex-col items-center justify-center py-16 gap-4 text-ink-muted">
                 <Loader2 size={28} className="animate-spin text-accent-blue" />
-                <div className="text-sm">{resetting ? 'Regenerating draft…' : 'Loading draft…'}</div>
-                <div className="text-xs text-ink-muted">GPT generation takes 10–15 seconds.</div>
+                <div className="text-sm">
+                  {intelPhase === 'loading'    ? 'Searching web for intelligence…' :
+                   intelPhase === 'generating' ? 'Generating draft…' :
+                   resetting                   ? 'Regenerating draft…' :
+                                                 'Loading draft…'}
+                </div>
+                {intelPhase === 'generating' && (
+                  <div className="text-xs text-ink-muted">GPT generation takes 10–15 seconds.</div>
+                )}
               </div>
             )}
 
@@ -387,7 +603,7 @@ export default function OutreachDraftModal(props: Props) {
               <div className="text-sm text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg p-4">
                 <div className="font-semibold mb-1">Generation failed</div>
                 <div className="text-xs">{error}</div>
-                <button onClick={generateFresh} className="mt-3 text-xs px-3 py-1.5 rounded-lg bg-red-500/20 hover:bg-red-500/30 text-red-300">
+                <button onClick={() => generateFresh()} className="mt-3 text-xs px-3 py-1.5 rounded-lg bg-red-500/20 hover:bg-red-500/30 text-red-300">
                   Retry
                 </button>
               </div>

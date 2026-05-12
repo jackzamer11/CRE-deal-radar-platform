@@ -361,11 +361,20 @@ export interface DailyBriefing {
   signal_refresh_timestamp: string | null
 }
 
+export interface IntelFinding {
+  fact: string
+  source_url: string
+  source_name: string
+  relevance_score: number
+  checked?: boolean
+}
+
 export interface OutreachDraftRecord {
   id: number
   property_id: string
   company_id: string | null
   outreach_type: string
+  direction?: string
   subject: string
   body: string
   call_script_opening: string | null

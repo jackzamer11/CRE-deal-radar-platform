@@ -22,6 +22,7 @@ class DraftOut(BaseModel):
     property_id: str
     company_id: Optional[str]
     outreach_type: str
+    direction: Optional[str] = 'property_side'
     subject: str
     body: str
     call_script_opening:    Optional[str]
@@ -41,10 +42,17 @@ class DraftOut(BaseModel):
         from_attributes = True
 
 
+class IntelPayload(BaseModel):
+    property_id: str
+    company_id:  Optional[str] = None
+    direction:   str = "property_side"
+
+
 class DraftCreate(BaseModel):
     property_id: str
     company_id:  Optional[str] = None
     outreach_type: str
+    direction: Optional[str] = 'property_side'
     subject: str
     body: str
     call_script_opening:    Optional[str] = None
@@ -80,6 +88,7 @@ def get_draft_for_pair(
     property_id: str,
     company_id: str,
     outreach_type: Optional[str] = None,
+    direction: Optional[str] = None,
     db: Session = Depends(get_db),
 ):
     """Return the most recent draft for a property+company pair."""
@@ -89,6 +98,8 @@ def get_draft_for_pair(
     )
     if outreach_type:
         q = q.filter(OutreachDraft.outreach_type == outreach_type)
+    if direction:
+        q = q.filter(OutreachDraft.direction == direction)
     draft = q.order_by(OutreachDraft.last_viewed_at.desc()).first()
     if not draft:
         return None
@@ -106,6 +117,7 @@ def save_draft(payload: DraftCreate, db: Session = Depends(get_db)):
             OutreachDraft.property_id  == payload.property_id,
             OutreachDraft.company_id   == payload.company_id,
             OutreachDraft.outreach_type == payload.outreach_type,
+            OutreachDraft.direction == (payload.direction or 'property_side'),
         )
         .first()
     )
@@ -123,6 +135,7 @@ def save_draft(payload: DraftCreate, db: Session = Depends(get_db)):
         existing.internal_context      = payload.internal_context
         existing.score                 = payload.score
         existing.priority              = payload.priority
+        existing.direction             = payload.direction or 'property_side'
         existing.created_at            = now
         existing.last_viewed_at        = now
         db.commit()
@@ -133,6 +146,7 @@ def save_draft(payload: DraftCreate, db: Session = Depends(get_db)):
         property_id            = payload.property_id,
         company_id             = payload.company_id,
         outreach_type          = payload.outreach_type,
+        direction              = payload.direction or 'property_side',
         subject                = payload.subject,
         body                   = payload.body,
         call_script_opening    = payload.call_script_opening,
@@ -152,6 +166,39 @@ def save_draft(payload: DraftCreate, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(draft)
     return draft
+
+
+@router.post("/search-intelligence", tags=["outreach-drafts"])
+def search_intelligence(payload: IntelPayload, db: Session = Depends(get_db)):
+    """Run web searches and return structured findings for intel review panel."""
+    from app.models.property import Property
+    from app.models.company import Company
+
+    property_id = payload.property_id
+    company_id  = payload.company_id
+    direction   = payload.direction
+
+    findings = []
+
+    if direction == "property_side":
+        prop = db.query(Property).filter(Property.property_id == property_id).first()
+        if prop:
+            from app.services.property_outreach_service import search_property_intelligence
+            prop_dict = {
+                "address":    prop.address,
+                "submarket":  prop.submarket,
+                "owner_name": prop.owner_name,
+            }
+            findings = search_property_intelligence(prop_dict)
+    else:
+        # tenant_side — search company intelligence
+        if company_id:
+            comp = db.query(Company).filter(Company.company_id == company_id).first()
+            if comp:
+                from app.services.outreach_service import search_company_intelligence
+                findings = search_company_intelligence(comp.name)
+
+    return {"findings": findings}
 
 
 @router.delete("/{draft_id}", response_model=dict)

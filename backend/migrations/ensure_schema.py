@@ -130,13 +130,14 @@ def ensure_outreach_drafts(cur: sqlite3.Cursor) -> int:
     """Create the outreach_drafts table if it does not exist (idempotent)."""
     cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='outreach_drafts'")
     if cur.fetchone():
-        return 0
+        return _add_column(cur, "outreach_drafts", "direction", "TEXT DEFAULT 'property_side'")
     cur.execute("""
         CREATE TABLE outreach_drafts (
             id               INTEGER PRIMARY KEY AUTOINCREMENT,
             property_id      TEXT NOT NULL,
             company_id       TEXT,
             outreach_type    TEXT NOT NULL,
+            direction        TEXT DEFAULT 'property_side',
             subject          TEXT NOT NULL,
             body             TEXT NOT NULL,
             call_script_opening    TEXT,

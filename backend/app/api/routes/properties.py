@@ -1158,14 +1158,17 @@ def draft_property_outreach(
     outreach_type: str = Query("tenant_match", regex="^(tenant_match|for_sale_vacancy|listing_rep|acquisition)$"),
     tenant_context: Optional[str] = Query(None),
     target_type: Optional[str] = Query(None),
+    intel_context_raw: Optional[str] = Query(None),
     db: Session = Depends(get_db),
 ):
+    import json
     prop = db.query(Property).filter(Property.property_id == property_id).first()
     if not prop:
         raise HTTPException(status_code=404, detail="Property not found")
 
+    intel_list = json.loads(intel_context_raw) if intel_context_raw else None
     prop_dict = {c.key: getattr(prop, c.key) for c in prop.__table__.columns}
-    result = generate_property_outreach(prop_dict, outreach_type, tenant_context, target_type)
+    result = generate_property_outreach(prop_dict, outreach_type, tenant_context, target_type, intel_context=intel_list)
 
     score_map = {
         "tenant_match": prop.tenant_match_score or 0.0,

@@ -54,11 +54,12 @@ function StatusBadge({ status }: { status: string }) {
 }
 
 function TenantActionRow({
-  action, onDraft, onNavigate,
+  action, onDraft, onNavigate, isContacted,
 }: {
   action: TenantMatchAction
   onDraft: (a: TenantMatchAction) => void
   onNavigate: (a: TenantMatchAction) => void
+  isContacted?: boolean
 }) {
   const typeLabel = action.outreach_type === 'for_sale_vacancy'
     ? 'For Sale + Vacancy'
@@ -74,7 +75,7 @@ function TenantActionRow({
         role="button"
       >
         <div className="flex items-center gap-2 flex-wrap mb-1.5">
-          <StatusBadge status={action.contact_status} />
+          <StatusBadge status={isContacted ? 'CONTACTED' : action.contact_status} />
           <span className="text-[9px] px-2 py-0.5 rounded border font-bold bg-violet-500/15 text-violet-400 border-violet-500/30">
             {typeLabel}
           </span>
@@ -203,6 +204,11 @@ export default function Dashboard() {
   const [showCoStarModal, setShowCoStarModal] = useState(false)
   const [pipelineRunning, setPipelineRunning] = useState(false)
   const [pipelineStatus, setPipelineStatus]   = useState<string | null>(null)
+  const [contactedPairs, setContactedPairs]   = useState<Record<string, boolean>>({})
+
+  const handleContacted = (pairKey: string) => {
+    setContactedPairs(prev => ({ ...prev, [pairKey]: true }))
+  }
 
   const [draftTarget, setDraftTarget] = useState<{
     prop: PropertyOut
@@ -428,6 +434,7 @@ export default function Dashboard() {
                     action={a}
                     onDraft={handleTenantDraft}
                     onNavigate={navTenantAction}
+                    isContacted={contactedPairs[`${a.property_id}:${a.tenant_company_id}:${a.outreach_type}`] === true}
                   />
                 ))}
               </div>
@@ -487,6 +494,7 @@ export default function Dashboard() {
             matched_tenants={draftTarget.matched}
             onClose={() => setDraftTarget(null)}
             onSaved={() => { setDraftTarget(null); load() }}
+            onContacted={handleContacted}
           />
         )
       })()}

@@ -133,6 +133,76 @@ def _web_search_company_intel(company_name: str) -> str:
         return ""
 
 
+def search_company_intelligence(company_name: str) -> list:
+    """Execute two web searches on the company and return structured findings.
+
+    Returns list of dicts: {fact, source_url, source_name, relevance_score}
+    Returns [] if ANTHROPIC_API_KEY not set or on any error.
+    """
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        return []
+
+    queries = [
+        f"{company_name} office expansion Northern Virginia 2025 2026",
+        f"{company_name} hiring growth lease 2025 2026",
+    ]
+
+    try:
+        import anthropic
+        client = anthropic.Anthropic(api_key=api_key)
+
+        raw_findings: list[str] = []
+        for q in queries:
+            resp = client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=1024,
+                tools=[{"type": "web_search_20250305", "name": "web_search"}],
+                messages=[{
+                    "role": "user",
+                    "content": (
+                        f"Search for: {q}. "
+                        "Return up to 3 factual findings relevant to tenant outreach for office leasing. "
+                        "Each finding on its own line. Focus on: recent office moves, expansion announcements, "
+                        "hiring surges, funding rounds, NoVA presence, or lease activity. "
+                        "Format each as: FACT: [sentence] | URL: [url] | SOURCE: [domain]"
+                    ),
+                }],
+            )
+            for block in resp.content:
+                if hasattr(block, "text") and block.text.strip():
+                    raw_findings.append(block.text.strip())
+                    break
+
+        findings = []
+        for raw in raw_findings:
+            for line in raw.splitlines():
+                line = line.strip()
+                if not line or "FACT:" not in line:
+                    continue
+                try:
+                    fact_part   = line.split("FACT:")[1].split("|")[0].strip() if "FACT:" in line else ""
+                    url_part    = line.split("URL:")[1].split("|")[0].strip()  if "URL:"  in line else ""
+                    src_part    = line.split("SOURCE:")[1].strip()              if "SOURCE:" in line else ""
+                    if fact_part:
+                        findings.append({
+                            "fact":            fact_part,
+                            "source_url":      url_part,
+                            "source_name":     src_part,
+                            "relevance_score": 2,
+                        })
+                except Exception:
+                    continue
+                if len(findings) >= 3:
+                    break
+            if len(findings) >= 3:
+                break
+
+        return findings[:3]
+    except Exception:
+        return []
+
+
 def generate_outreach(company: dict) -> dict:
     """
     Build GPT-4o outreach draft for a company dict.

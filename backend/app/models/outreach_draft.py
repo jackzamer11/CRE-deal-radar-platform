@@ -11,6 +11,7 @@ class OutreachDraft(Base):
     property_id = Column(String, nullable=False, index=True)
     company_id  = Column(String, nullable=True,  index=True)  # null for acquisition outreach
     outreach_type = Column(String, nullable=False)  # tenant_match | for_sale_vacancy | acquisition
+    direction = Column(String, nullable=True, default='property_side')  # property_side | tenant_side
     subject = Column(String, nullable=False)
     body    = Column(Text,   nullable=False)
     call_script_opening    = Column(Text, nullable=True)
