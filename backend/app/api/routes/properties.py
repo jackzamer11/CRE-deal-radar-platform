@@ -1159,16 +1159,41 @@ def draft_property_outreach(
     tenant_context: Optional[str] = Query(None),
     target_type: Optional[str] = Query(None),
     intel_context_raw: Optional[str] = Query(None),
+    direction: str = Query("property_side", regex="^(property_side|tenant_side)$"),
+    company_id: Optional[str] = Query(None),
     db: Session = Depends(get_db),
 ):
     import json
+    from app.models.company import Company
+
     prop = db.query(Property).filter(Property.property_id == property_id).first()
     if not prop:
         raise HTTPException(status_code=404, detail="Property not found")
 
     intel_list = json.loads(intel_context_raw) if intel_context_raw else None
     prop_dict = {c.key: getattr(prop, c.key) for c in prop.__table__.columns}
-    result = generate_property_outreach(prop_dict, outreach_type, tenant_context, target_type, intel_context=intel_list)
+
+    # If tenant_side, look up the company record for its profile
+    tenant_dict = None
+    if direction == "tenant_side" and company_id:
+        comp = db.query(Company).filter(Company.company_id == company_id).first()
+        if comp:
+            tenant_dict = {c.key: getattr(comp, c.key) for c in comp.__table__.columns}
+
+    # Detect secondary demand: more than one matched tenant on this property
+    try:
+        matched = _compute_matched_tenants(prop, db)
+        has_secondary_demand = len(matched) > 1
+    except Exception:
+        has_secondary_demand = False
+
+    result = generate_property_outreach(
+        prop_dict, outreach_type, tenant_context, target_type,
+        intel_context=intel_list,
+        direction=direction,
+        tenant_dict=tenant_dict,
+        has_secondary_demand=has_secondary_demand,
+    )
 
     score_map = {
         "tenant_match": prop.tenant_match_score or 0.0,

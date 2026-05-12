@@ -229,6 +229,8 @@ export default function OutreachDraftModal(props: Props) {
           props.tenant_context,
           props.target_type,
           intelList.length > 0 ? JSON.stringify(intelList) : undefined,
+          direction,
+          effectiveCompanyId ?? undefined,
         )
       }
       setDraft(result)
@@ -352,77 +354,85 @@ export default function OutreachDraftModal(props: Props) {
   const handleSave = async () => {
     if (!draft) return
     setSaving(true)
-    try {
-      const base = {
-        email_subject:          draft.email_subject,
-        email_body:             draft.email_body,
-        call_script_opening:    draft.call_script.opening,
-        call_script_core:       draft.call_script.core_message,
-        call_script_pain_probe: draft.call_script.pain_probe,
-        call_script_close:      draft.call_script.the_close,
-        projected_sf:           draft.projected_sf ?? null,
-        score_at_generation:    draft.score,
-        priority_at_generation: draft.priority,
-        email_sent:             emailSent,
-        call_made:              callMade,
-      }
 
-      let logId: number
-      let propertyDbId: number | undefined
-      let companyDbId:  number | undefined
+    const base = {
+      email_subject:          draft.email_subject,
+      email_body:             draft.email_body,
+      call_script_opening:    draft.call_script.opening,
+      call_script_core:       draft.call_script.core_message,
+      call_script_pain_probe: draft.call_script.pain_probe,
+      call_script_close:      draft.call_script.the_close,
+      projected_sf:           draft.projected_sf ?? null,
+      score_at_generation:    draft.score,
+      priority_at_generation: draft.priority,
+      email_sent:             emailSent,
+      call_made:              callMade,
+    }
+
+    let logId: number | undefined
+    const propertyDbId = entity_type === 'property' ? props.property.id : undefined
+    const companyDbId  = entity_type === 'company'  ? props.company.id  : undefined
+
+    // 1) Persist outreach_log — independent fault tolerance
+    try {
       if (entity_type === 'company') {
         const log = await logOutreach(props.company.company_id, base)
         logId = log.id
-        companyDbId = props.company.id
       } else {
         const log = await logPropertyOutreach(props.property.property_id, {
           ...base,
           outreach_type: props.outreach_type,
         })
         logId = log.id
-        propertyDbId = props.property.id
       }
+    } catch {
+      // outreach_log failure shouldn't block activity logging or status update
+    }
 
-      if (notes.trim() || emailSent || callMade) {
+    // 2) Update outreach_log with notes/contacted flag — independent
+    if (logId != null && (notes.trim() || emailSent || callMade)) {
+      try {
         await updateOutreachLog(logId, {
           outcome_notes:    notes.trim() || undefined,
           marked_contacted: emailSent || callMade,
         })
-      }
-
-      // Always fire activity log on Save & Mark Contacted
-      try {
-        const contact_method = callMade ? 'phone' : 'email'
-        const action_type    = callMade ? 'CALL'  : 'EMAIL'
-        const action_taken   = callMade
-          ? `Called ${recipientName || 'contact'}${effectiveTenantName ? ` re ${effectiveTenantName}` : ''}`
-          : `Emailed ${recipientName || 'contact'}${effectiveTenantName ? ` re ${effectiveTenantName}` : ''}`
-        await createActivity({
-          action_type,
-          action_taken,
-          outcome: notes.trim() || undefined,
-          property_id: propertyDbId,
-          company_id:  companyDbId,
-          outreach_type: entity_type === 'property' ? props.outreach_type : 'tenant',
-          target_type:   entity_type === 'property' ? (props.target_type ?? 'owner') : 'tenant',
-          contact_method,
-          subject: draft.email_subject,
-        } as Parameters<typeof createActivity>[0])
-      } catch {
-        // Activity log failure shouldn't block save
-      }
-
-      // Notify parent so status badge can update in real-time
-      if (onContacted && entity_type === 'property') {
-        const pairKey = `${props.property.property_id}:${effectiveCompanyId ?? ''}:${props.outreach_type}`
-        onContacted(pairKey)
-      }
-
-      onSaved()
-      onClose()
-    } finally {
-      setSaving(false)
+      } catch { /* ignore */ }
     }
+
+    // 3) ALWAYS fire activity log on Save & Mark Contacted — independent
+    try {
+      const contact_method = callMade ? 'phone' : 'email'
+      const action_type    = callMade ? 'CALL'  : 'EMAIL'
+      const action_taken   = callMade
+        ? `Called ${recipientName || 'contact'}${effectiveTenantName ? ` re ${effectiveTenantName}` : ''}`
+        : `Emailed ${recipientName || 'contact'}${effectiveTenantName ? ` re ${effectiveTenantName}` : ''}`
+      const notesLine = `Outreach sent: ${draft.email_subject}${recipientName ? ` to ${recipientName}` : ''}`
+      await createActivity({
+        action_type,
+        action_taken,
+        outcome: notes.trim() || notesLine,
+        property_id: propertyDbId,
+        company_id:  companyDbId,
+        outreach_type: entity_type === 'property' ? props.outreach_type : 'tenant',
+        target_type:   entity_type === 'property'
+          ? (direction === 'tenant_side' ? 'tenant' : (props.target_type ?? 'owner'))
+          : 'tenant',
+        contact_method,
+        subject: draft.email_subject,
+      } as Parameters<typeof createActivity>[0])
+    } catch {
+      // Activity log failure shouldn't block status update
+    }
+
+    // 4) Notify parent so status badge can update in real-time — always
+    if (onContacted && entity_type === 'property') {
+      const pairKey = `${props.property.property_id}:${effectiveCompanyId ?? ''}:${props.outreach_type}`
+      onContacted(pairKey)
+    }
+
+    setSaving(false)
+    onSaved()
+    onClose()
   }
 
   const showInternalPanel = entity_type === 'property'

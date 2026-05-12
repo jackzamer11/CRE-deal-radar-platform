@@ -119,6 +119,8 @@ export const draftPropertyOutreach = (
   tenantContext?: string,
   targetType?: string,
   intelContext?: string,
+  direction?: string,
+  companyId?: string,
 ): Promise<OutreachDraft> =>
   api.post(`/properties/${propertyId}/draft-outreach`, null, {
     params: {
@@ -126,6 +128,8 @@ export const draftPropertyOutreach = (
       ...(tenantContext ? { tenant_context: tenantContext }   : {}),
       ...(targetType    ? { target_type: targetType }         : {}),
       ...(intelContext  ? { intel_context_raw: intelContext } : {}),
+      ...(direction     ? { direction }                       : {}),
+      ...(companyId     ? { company_id: companyId }           : {}),
     },
   }).then(r => r.data)
 
