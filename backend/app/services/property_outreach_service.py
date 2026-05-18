@@ -121,7 +121,8 @@ def search_property_intelligence(property_dict: dict) -> list:
                 break
 
         return findings[:3]
-    except Exception:
+    except Exception as e:
+        print(f"[search_property_intelligence] Search error: {e}")
         return []
 
 

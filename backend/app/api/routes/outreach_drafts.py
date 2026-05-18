@@ -171,12 +171,16 @@ def save_draft(payload: DraftCreate, db: Session = Depends(get_db)):
 @router.post("/search-intelligence", tags=["outreach-drafts"])
 def search_intelligence(payload: IntelPayload, db: Session = Depends(get_db)):
     """Run web searches and return structured findings for intel review panel."""
+    import os as _os
     from app.models.property import Property
     from app.models.company import Company
 
     property_id = payload.property_id
     company_id  = payload.company_id
     direction   = payload.direction
+
+    print(f"[search-intelligence] ANTHROPIC_API_KEY set: {bool(_os.environ.get('ANTHROPIC_API_KEY'))}")
+    print(f"[search-intelligence] property_id={property_id} company_id={company_id} direction={direction}")
 
     findings = []
 
@@ -198,6 +202,7 @@ def search_intelligence(payload: IntelPayload, db: Session = Depends(get_db)):
                 from app.services.outreach_service import search_company_intelligence
                 findings = search_company_intelligence(comp.name)
 
+    print(f"[search-intelligence] findings count: {len(findings)}")
     return {"findings": findings}
 
 
