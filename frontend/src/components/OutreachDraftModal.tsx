@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useRef } from 'react'
 import {
   X, Copy, Check, Mail, Phone, Loader2, Save, ExternalLink, ChevronDown, ChevronRight, RotateCcw,
   Search,
@@ -320,8 +320,20 @@ export default function OutreachDraftModal(props: Props) {
       entity_type === 'property' ? props.outreach_type : null,
       direction])
 
-  // Reload when tab or direction changes
-  useEffect(() => { load() }, [load])
+  // Key representing the current load target — used to deduplicate the effect.
+  // React 18 Strict Mode fires effects twice (mount → cleanup → remount) in dev;
+  // without a guard both invocations race to call searchIntelligence, producing
+  // two backend requests.  The ref persists across the cleanup cycle, so the
+  // remount sees the same key and skips.  When effectiveCompanyId or direction
+  // actually changes (tab switch, toggle) the key differs → load() runs again.
+  const loadedForKeyRef = useRef('')
+
+  useEffect(() => {
+    const key = `${effectiveCompanyId ?? '_'}::${direction}`
+    if (loadedForKeyRef.current === key) return
+    loadedForKeyRef.current = key
+    load()
+  }, [load, effectiveCompanyId, direction])
 
   const handleResetDraft = async () => {
     if (resetting) return
