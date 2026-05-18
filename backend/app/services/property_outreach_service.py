@@ -174,13 +174,30 @@ def _build_tenant_match(
     tenant_context: Optional[str],
     target_type: Optional[str],
     has_secondary_demand: bool = False,
+    tenant_dict: Optional[dict] = None,
 ) -> dict:
     ctx = _prop_context(p)
     benchmark = _submarket_context(p.get("submarket"))
 
-    # Sanitised tenant context — never reveal company name; pass through industry,
-    # headcount, SF needed, lease expiry months from caller-supplied string.
-    tenant_hint = f"\nPrimary matched tenant profile (do NOT reveal tenant name): {tenant_context}" if tenant_context else ""
+    # When tenant_dict is available, build a null-safe natural-language hint so GPT
+    # never sees bare "N/A" tokens in the profile (which produce awkward output).
+    if tenant_dict is not None:
+        industry = tenant_dict.get("industry") or "professional services firm"
+        hc       = tenant_dict.get("current_headcount")
+        sf       = tenant_dict.get("estimated_sf_needed")
+        exp      = tenant_dict.get("lease_expiry_months")
+        hc_str   = f"{hc} employees" if hc is not None else "a team"
+        sf_str   = f"{sf:,} SF" if sf else "office space in the area"
+        exp_str  = f"approximately {exp} months" if exp is not None else "in the coming months"
+        tenant_hint = (
+            f"\nPrimary matched tenant profile (do NOT reveal tenant name): "
+            f"a {industry} firm with {hc_str} seeking {sf_str} in "
+            f"{p.get('submarket', 'Northern Virginia')} with a lease expiring {exp_str}"
+        )
+    elif tenant_context:
+        tenant_hint = f"\nPrimary matched tenant profile (do NOT reveal tenant name): {tenant_context}"
+    else:
+        tenant_hint = ""
 
     landlord_rep = p.get("landlord_representative")
     listed_for_sale = bool(p.get("listed_for_sale"))
@@ -269,6 +286,7 @@ def _build_for_sale_vacancy(
     p: dict,
     target_type: str,
     tenant_context: Optional[str] = None,
+    tenant_dict: Optional[dict] = None,
 ) -> dict:
     """For Sale + Vacancy outreach: property is listed AND has vacant SF.
 
@@ -282,6 +300,20 @@ def _build_for_sale_vacancy(
     landlord_rep = p.get("landlord_representative")
     addressee = f"the landlord representative ({landlord_rep})" if landlord_rep else "the property owner"
     framing = "broker-to-broker" if landlord_rep else "broker-to-owner"
+
+    # When tenant_dict is available, build a null-safe natural-language tenant context.
+    if tenant_dict is not None:
+        industry = tenant_dict.get("industry") or "professional services firm"
+        hc       = tenant_dict.get("current_headcount")
+        sf       = tenant_dict.get("estimated_sf_needed")
+        exp      = tenant_dict.get("lease_expiry_months")
+        hc_str   = str(hc) if hc is not None else "a team"
+        sf_str   = f"{sf:,} SF" if sf else "the available space"
+        exp_str  = f"approximately {exp} months" if exp is not None else "in the coming months"
+        tenant_context = (
+            f"a {industry} firm with {hc_str} employees seeking {sf_str} "
+            f"with a lease expiring in {exp_str}"
+        )
 
     if tenant_context:
         tenant_hint = (
@@ -362,13 +394,13 @@ def _build_tenant_side(p: dict, tenant_dict: dict) -> dict:
     asking_rent = p.get("market_rent_psf") or p.get("asking_price_psf")
 
     tenant_name    = tenant_dict.get("name") or "the tenant"
-    contact_name   = tenant_dict.get("contact_name") or ""
-    industry       = tenant_dict.get("industry") or "your industry"
-    headcount      = tenant_dict.get("headcount")
-    sf_needed      = tenant_dict.get("sf_needed")
+    contact_name   = tenant_dict.get("primary_contact_name") or ""
+    industry       = tenant_dict.get("industry") or "professional services firm"
+    headcount      = tenant_dict.get("current_headcount")
+    sf_needed      = tenant_dict.get("estimated_sf_needed")
     lease_expiry_m = tenant_dict.get("lease_expiry_months")
-    submarket_pref = tenant_dict.get("submarket") or submarket
-    growth_rate    = tenant_dict.get("growth_rate")
+    submarket_pref = tenant_dict.get("current_submarket") or submarket
+    growth_rate    = tenant_dict.get("headcount_growth_pct")
 
     greeting = (
         f"Hi {contact_name},"
@@ -389,14 +421,18 @@ def _build_tenant_side(p: dict, tenant_dict: dict) -> dict:
         f" with {sf_avail:,} square feet available" if sf_avail else ""
     )
 
+    hc_display  = str(headcount) if headcount is not None else "a team"
+    sf_display  = f"{sf_needed:,} SF" if sf_needed else "office space in the area"
+    exp_display = f"{lease_expiry_m} months" if lease_expiry_m is not None else "in the coming months"
+
     tenant_profile_lines = [
         f"Tenant: {tenant_name}",
         f"Industry: {industry}",
-        f"Headcount: {headcount if headcount is not None else 'N/A'}",
-        f"SF Needed: {f'{sf_needed:,}' if sf_needed else 'N/A'}",
-        f"Lease Expiry: {f'{lease_expiry_m} months' if lease_expiry_m is not None else 'N/A'}",
+        f"Headcount: {hc_display}",
+        f"SF Needed: {sf_display}",
+        f"Lease Expiry: {exp_display}",
         f"Submarket Preference: {submarket_pref}",
-        f"Growth Rate: {growth_rate if growth_rate is not None else 'N/A'}",
+        f"Growth Rate: {growth_rate if growth_rate is not None else 'not available'}",
     ]
     tenant_profile = "\n".join(tenant_profile_lines)
 
@@ -612,9 +648,9 @@ def generate_property_outreach(
     if direction == "tenant_side" and tenant_dict and outreach_type in ("tenant_match", "for_sale_vacancy"):
         prompt = _build_tenant_side(property_dict, tenant_dict)
     elif outreach_type == "tenant_match":
-        prompt = _build_tenant_match(property_dict, tenant_context, target_type, has_secondary_demand=has_secondary_demand)
+        prompt = _build_tenant_match(property_dict, tenant_context, target_type, has_secondary_demand=has_secondary_demand, tenant_dict=tenant_dict)
     elif outreach_type == "for_sale_vacancy":
-        prompt = _build_for_sale_vacancy(property_dict, target_type, tenant_context)
+        prompt = _build_for_sale_vacancy(property_dict, target_type, tenant_context, tenant_dict=tenant_dict)
     elif outreach_type == "listing_rep":
         prompt = _build_listing_rep(property_dict)
     else:

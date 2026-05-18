@@ -158,6 +158,15 @@ def _compute_tenant_actions(db: Session) -> list:
                 contact_status=contact_status,
             ))
 
+    # Deduplicate: keep only the highest-scoring tenant per property so each
+    # property shows exactly one row (its best match) in Section A.
+    best_per_prop: dict = {}
+    for action in actions:
+        pid = action.property_id
+        if pid not in best_per_prop or action.match_score > best_per_prop[pid].match_score:
+            best_per_prop[pid] = action
+    actions = list(best_per_prop.values())
+
     # Sort: lease_expiry_months ASC (nulls last), then match_score DESC
     actions.sort(key=lambda a: (
         a.lease_expiry_months if a.lease_expiry_months is not None else 9999,
