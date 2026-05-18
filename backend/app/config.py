@@ -1,4 +1,5 @@
 import os
+from typing import Optional
 from dotenv import load_dotenv
 from pydantic_settings import BaseSettings
 
@@ -16,6 +17,9 @@ class Settings(BaseSettings):
     # Set SEED_ON_INIT=true only on first-ever bootstrap with no real data.
     # Defaults to false so platform restarts never re-insert fake seed records.
     seed_on_init: bool = False
+
+    openai_api_key: Optional[str] = None
+    anthropic_api_key: Optional[str] = None
 
     # Signal engine parameters
     nova_avg_hold_years: float = 7.0
