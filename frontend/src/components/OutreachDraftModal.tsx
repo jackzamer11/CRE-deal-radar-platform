@@ -126,7 +126,11 @@ export default function OutreachDraftModal(props: Props) {
     && props.outreach_type === 'tenant_match'
     && tabTenants.length >= 1
   const [activeTabCompanyId, setActiveTabCompanyId] = useState<string | null>(
-    entity_type === 'property' ? (props.pair_company_id ?? tabTenants[0]?.company_id ?? null) : null
+    entity_type !== 'property'
+      ? null
+      : (props.pair_company_id && tabTenants.some(t => t.company_id === props.pair_company_id))
+        ? props.pair_company_id
+        : tabTenants[0]?.company_id ?? null
   )
   const activeTabTenant = tabTenants.find(t => t.company_id === activeTabCompanyId) ?? tabTenants[0]
 
@@ -488,8 +492,8 @@ export default function OutreachDraftModal(props: Props) {
         <div className="flex-1 overflow-y-auto flex">
           <div className="flex-1 overflow-y-auto p-5 space-y-4 min-w-0">
 
-            {/* Direction toggle — property outreach only */}
-            {entity_type === 'property' && (
+            {/* Direction toggle — property outreach only, not for for_sale_vacancy */}
+            {entity_type === 'property' && props.outreach_type !== 'for_sale_vacancy' && (
               <div className="flex gap-2">
                 <button
                   onClick={() => { if (direction !== 'property_side') setDirection('property_side') }}
@@ -530,6 +534,19 @@ export default function OutreachDraftModal(props: Props) {
                     {t.name}
                   </button>
                 ))}
+              </div>
+            )}
+
+            {/* Active tenant context bar — always visible while tab mode is active */}
+            {isTabMode && activeTabTenant && (
+              <div className="flex items-center gap-2 flex-wrap text-[10px] text-ink-muted bg-surface-muted border border-surface-border rounded-lg px-3 py-2">
+                <span className="text-ink-secondary font-semibold">{activeTabTenant.name}</span>
+                <span>·</span>
+                <span>{activeTabTenant.industry}</span>
+                <span>·</span>
+                <span>{activeTabTenant.headcount ?? '—'} HC</span>
+                <span>·</span>
+                <span>{activeTabTenant.sf_needed.toLocaleString()} SF needed</span>
               </div>
             )}
 
