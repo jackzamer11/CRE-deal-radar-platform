@@ -75,7 +75,7 @@ def search_property_intelligence(property_dict: dict) -> list:
         raw_findings: list[str] = []
         for q in queries:
             resp = client.messages.create(
-                model="claude-haiku-4-5-20251001",
+                model="claude-sonnet-4-6",
                 max_tokens=1024,
                 tools=[{"type": "web_search_20250305", "name": "web_search"}],
                 messages=[{
@@ -85,7 +85,8 @@ def search_property_intelligence(property_dict: dict) -> list:
                         "Return up to 3 factual findings relevant to commercial real estate outreach. "
                         "Each finding on its own line. Focus on: ownership changes, permit activity, "
                         "debt or refinance activity, extended vacancy mentions, or submarket commentary. "
-                        "Format each as: FACT: [sentence] | URL: [url] | SOURCE: [domain]"
+                        "Output EACH finding on its own line in EXACTLY this format — no other text:\n"
+                        "FACT: [sentence] | URL: [url or N/A] | SOURCE: [domain]"
                     ),
                 }],
             )
@@ -94,18 +95,18 @@ def search_property_intelligence(property_dict: dict) -> list:
                     raw_findings.append(block.text.strip())
                     break
 
-        # Parse findings into structured list
+        # Parse findings — strip leading list markers so "1. FACT:" and "- FACT:" both match
         findings = []
         for raw in raw_findings:
             for line in raw.splitlines():
-                line = line.strip()
+                line = line.strip().lstrip("0123456789.-•*) \t")
                 if not line or "FACT:" not in line:
                     continue
                 try:
-                    fact_part   = line.split("FACT:")[1].split("|")[0].strip() if "FACT:" in line else ""
-                    url_part    = line.split("URL:")[1].split("|")[0].strip()  if "URL:"  in line else ""
-                    src_part    = line.split("SOURCE:")[1].strip()              if "SOURCE:" in line else ""
-                    if fact_part:
+                    fact_part = line.split("FACT:")[1].split("|")[0].strip()
+                    url_part  = line.split("URL:")[1].split("|")[0].strip() if "URL:"    in line else ""
+                    src_part  = line.split("SOURCE:")[1].strip()             if "SOURCE:" in line else ""
+                    if fact_part and len(fact_part) > 10:
                         findings.append({
                             "fact":            fact_part,
                             "source_url":      url_part,

@@ -555,8 +555,7 @@ export default function OutreachDraftModal(props: Props) {
               <div className="border border-accent-blue/30 rounded-xl p-4 space-y-3 bg-accent-blue/5">
                 <div className="flex items-center gap-2">
                   <Search size={13} className="text-accent-blue" />
-                  <span className="text-xs font-semibold text-ink-primary">Intelligence Review</span>
-                  <span className="text-[10px] text-ink-muted">— select facts to include in the draft</span>
+                  <span className="text-xs font-semibold text-ink-primary">Intelligence Found — Review Before Generating</span>
                 </div>
                 <div className="space-y-2">
                   {intelFindings.map((f, i) => (
