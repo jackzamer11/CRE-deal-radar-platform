@@ -204,6 +204,7 @@ export default function OutreachDraftModal(props: Props) {
         priority: d.priority,
       })
       setPersistedId(rec.id)
+      setDraft(draftToBaseDraft(rec))
     } catch {
       // Persistence failure shouldn't block usage of the live draft
     }
@@ -240,7 +241,7 @@ export default function OutreachDraftModal(props: Props) {
       setDraft(result)
       setIntelPhase('idle')
       if (entity_type === 'property') {
-        await persistDraft(result, checkedFindings)
+        void persistDraft(result, checkedFindings)
       }
     } catch (e: unknown) {
       const msg = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
