@@ -4,6 +4,7 @@ Persistent outreach draft storage.
 Each property+company pair has at most one draft per outreach_type stored here.
 Drafts are loaded instantly (no GPT call) until explicitly reset.
 """
+import time
 from datetime import datetime
 from typing import List, Optional
 
@@ -15,6 +16,14 @@ from app.database import get_db
 from app.models.outreach_draft import OutreachDraft
 
 router = APIRouter(prefix="/outreach-drafts", tags=["outreach-drafts"])
+
+# ── In-memory intel cache (per process, 10-minute TTL) ─────────────────────────
+_INTEL_CACHE_TTL = 600  # seconds
+_intel_cache: dict = {}  # key → (timestamp, findings_list)
+
+
+def _intel_cache_key(property_id: str, company_id: Optional[str], direction: str) -> str:
+    return f"{property_id}:{company_id or ''}:{direction}"
 
 
 class DraftOut(BaseModel):
@@ -182,6 +191,15 @@ def search_intelligence(payload: IntelPayload, db: Session = Depends(get_db)):
     print(f"[search-intelligence] ANTHROPIC_API_KEY set: {bool(_os.environ.get('ANTHROPIC_API_KEY'))}")
     print(f"[search-intelligence] property_id={property_id} company_id={company_id} direction={direction}")
 
+    # ── Cache check ────────────────────────────────────────────────────────────
+    cache_key = _intel_cache_key(property_id, company_id, direction)
+    now = time.time()
+    if cache_key in _intel_cache:
+        cached_ts, cached_findings = _intel_cache[cache_key]
+        if now - cached_ts < _INTEL_CACHE_TTL:
+            print(f"[search-intelligence] cache hit ({int(now - cached_ts)}s old), returning {len(cached_findings)} findings")
+            return {"findings": cached_findings}
+
     findings = []
 
     if direction == "property_side":
@@ -201,6 +219,9 @@ def search_intelligence(payload: IntelPayload, db: Session = Depends(get_db)):
             if comp:
                 from app.services.outreach_service import search_company_intelligence
                 findings = search_company_intelligence(comp.name)
+
+    # ── Cache store ────────────────────────────────────────────────────────────
+    _intel_cache[cache_key] = (now, findings)
 
     print(f"[search-intelligence] findings count: {len(findings)}")
     return {"findings": findings}
