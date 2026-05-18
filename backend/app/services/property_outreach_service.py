@@ -642,7 +642,11 @@ def generate_property_outreach(
     # Build intel string from selected findings
     intel_str = ""
     if intel_context:
-        intel_lines = [f"- {f['fact']}" for f in intel_context if f.get('fact')]
+        intel_lines = [
+            f"- {f['fact']}" if isinstance(f, dict) else f"- {f}"
+            for f in intel_context
+            if (f.get('fact') if isinstance(f, dict) else f)
+        ]
         if intel_lines:
             intel_str = "Recent market intelligence (weave in naturally as your own market knowledge):\n" + "\n".join(intel_lines)
 
