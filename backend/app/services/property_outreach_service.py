@@ -640,15 +640,13 @@ def generate_property_outreach(
             target_type = "owner"
 
     # Build intel string from selected findings
-    intel_str = ""
+    intel_lines: list[str] = []
     if intel_context:
         intel_lines = [
-            f"- {f['fact']}" if isinstance(f, dict) else f"- {f}"
+            f["fact"] if isinstance(f, dict) else f
             for f in intel_context
-            if (f.get('fact') if isinstance(f, dict) else f)
+            if (f.get("fact") if isinstance(f, dict) else f)
         ]
-        if intel_lines:
-            intel_str = "Recent market intelligence (weave in naturally as your own market knowledge):\n" + "\n".join(intel_lines)
 
     # Direction switch: tenant_side writes TO the tenant company about the property
     if direction == "tenant_side" and tenant_dict and outreach_type in ("tenant_match", "for_sale_vacancy"):
@@ -662,8 +660,21 @@ def generate_property_outreach(
     else:
         prompt = _build_acquisition(property_dict, target_type)
 
-    if intel_str:
-        prompt["user"] = f"Market intelligence (weave into email naturally as your own knowledge):\n{intel_str}\n\n" + prompt["user"]
+    if intel_lines:
+        intel_block = (
+            "Recent market intelligence to weave naturally into the email "
+            "(do NOT list these as bullet points — reference them conversationally "
+            "as your own knowledge of the market, and make sure at least one of "
+            "these facts is incorporated into the email body):\n"
+            + "\n".join(f"- {fact}" for fact in intel_lines)
+        )
+        prompt["user"] = f"{intel_block}\n\n" + prompt["user"]
+        prompt["system"] = (
+            prompt["system"]
+            + " You have been provided with recent market intelligence findings — "
+              "you MUST reference at least one of them conversationally in the email body "
+              "(not as a bulleted list)."
+        )
 
     raw    = _chat(prompt["system"], prompt["user"])
     parsed = _parse_response(raw)
