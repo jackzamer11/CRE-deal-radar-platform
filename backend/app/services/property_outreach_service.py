@@ -265,34 +265,77 @@ def _build_tenant_match(
     return {"system": system, "user": user}
 
 
-def _build_for_sale_vacancy(p: dict, target_type: str) -> dict:
+def _build_for_sale_vacancy(
+    p: dict,
+    target_type: str,
+    tenant_context: Optional[str] = None,
+) -> dict:
     """For Sale + Vacancy outreach: property is listed AND has vacant SF.
-    References multiple tenants generally — never names any specific tenant."""
+
+    When tenant_context is provided (specific matched tenant), the email leads
+    with that tenant's profile while maintaining the For Sale + Vacancy framing.
+    Without it, references demand generally ('multiple qualified tenants').
+    """
     ctx = _prop_context(p)
     benchmark = _submarket_context(p.get("submarket"))
+    submarket = p.get("submarket") or "Northern Virginia"
     landlord_rep = p.get("landlord_representative")
     addressee = f"the landlord representative ({landlord_rep})" if landlord_rep else "the property owner"
     framing = "broker-to-broker" if landlord_rep else "broker-to-owner"
+
+    if tenant_context:
+        tenant_hint = (
+            f"\nSpecific tenant profile (NEVER reveal their company name): {tenant_context}"
+        )
+        demand_clause = (
+            "Lead with the specific qualified tenant profile (industry, headcount, SF range, "
+            "approximate lease expiry in months) — NEVER reveal the tenant company name. "
+            "Open with: 'I wanted to reach out regarding your property in [submarket] which is "
+            "currently listed for sale. We have a qualified tenant — a [industry] firm with "
+            "[headcount] employees seeking [SF range] in [submarket] with a lease expiring in "
+            "approximately [X months] — who may be interested in leasing the available space "
+            "while the property is on the market.' "
+            "Ask: 'Would you be open to discussing a potential lease arrangement while the sale "
+            "process continues?'"
+        )
+    else:
+        tenant_hint = ""
+        demand_clause = (
+            "Reference demand generally ('multiple qualified tenants in this submarket') — "
+            "NEVER name any specific tenant. "
+            "Ask whether they are open to leasing the vacant space while the property is on the market."
+        )
+
     system = (
         f"You are {AGENT_NAME} at {FIRM_NAME}, a commercial real estate broker "
         f"specialising in Northern Virginia office. You are addressing {addressee} ({framing}). "
         f"This property is currently listed for sale AND has vacant space. "
-        f"Ask whether they are open to leasing the vacant space while the property is on the market. "
-        f"Reference demand generally ('multiple qualified tenants in this submarket') — NEVER name any specific tenant. "
-        f"Explain the value: securing a tenant can enhance the property's appeal and shorten the marketing window. "
+        f"{demand_clause} "
+        f"Explain the value: securing a tenant can enhance the property's appeal and shorten "
+        f"the marketing window. "
         f"Anchor to CBRE Q1 2026 NoVA submarket benchmarks provided. "
+        f"NEVER reveal the property street address — refer to it as 'your property in {submarket}'. "
         f"NEVER suggest specific days of the week. "
         f"Close with: 'I'd welcome a brief call at your convenience.'"
     )
-    user = (
-        f"Property details:\n{ctx}\n"
-        f"\nMarket benchmark: {benchmark or 'N/A'}\n\n"
-        "Write:\n"
-        "1. Email subject line (one line)\n"
+    body_instruction = (
+        "2. Email body (3-5 short paragraphs) — lead with the specific tenant profile "
+        "   (industry, headcount, SF range, lease expiry months) without naming the tenant; "
+        "   acknowledge property is listed for sale; ask if open to leasing while on market; "
+        "   cite CBRE Q1 2026 submarket vacancy and asking rent; "
+        "   explain tenant-in-place value proposition\n"
+        if tenant_context else
         "2. Email body (3-5 short paragraphs) — acknowledge property is listed for sale; "
         "   ask if open to leasing vacant SF while on market; reference demand generally; "
         "   cite CBRE Q1 2026 submarket vacancy and asking rent; "
         "   explain tenant-in-place value proposition\n"
+    )
+    user = (
+        f"Property details:\n{ctx}{tenant_hint}\n"
+        f"\nMarket benchmark: {benchmark or 'N/A'}\n\n"
+        "Write:\n"
+        "1. Email subject line (one line)\n"
+        f"{body_instruction}"
         "3. Call script: Opening (2 sentences)\n"
         "4. Call script: Core message (3 sentences)\n"
         "5. Call script: Pain probe question (1 sentence)\n"
@@ -336,7 +379,7 @@ def _build_tenant_side(p: dict, tenant_dict: dict) -> dict:
     lease_clause = (
         f"Given your lease expiring in approximately {lease_expiry_m} months"
         if lease_expiry_m is not None
-        else "Given your upcoming lease decision"
+        else "Given your upcoming lease expiry"
     )
 
     rent_clause = (
@@ -571,7 +614,7 @@ def generate_property_outreach(
     elif outreach_type == "tenant_match":
         prompt = _build_tenant_match(property_dict, tenant_context, target_type, has_secondary_demand=has_secondary_demand)
     elif outreach_type == "for_sale_vacancy":
-        prompt = _build_for_sale_vacancy(property_dict, target_type)
+        prompt = _build_for_sale_vacancy(property_dict, target_type, tenant_context)
     elif outreach_type == "listing_rep":
         prompt = _build_listing_rep(property_dict)
     else:

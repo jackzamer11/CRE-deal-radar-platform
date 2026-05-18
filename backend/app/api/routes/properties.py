@@ -1173,12 +1173,23 @@ def draft_property_outreach(
     intel_list = json.loads(intel_context_raw) if intel_context_raw else None
     prop_dict = {c.key: getattr(prop, c.key) for c in prop.__table__.columns}
 
-    # If tenant_side, look up the company record for its profile
+    # Always do fresh Company lookup when company_id provided — ensures the email
+    # uses the correct tenant profile even when tabs switch (frontend tenant_context
+    # is frozen at modal-open time and may be stale).
     tenant_dict = None
-    if direction == "tenant_side" and company_id:
+    if company_id:
         comp = db.query(Company).filter(Company.company_id == company_id).first()
         if comp:
             tenant_dict = {c.key: getattr(comp, c.key) for c in comp.__table__.columns}
+            hc  = comp.current_headcount
+            sf  = comp.estimated_sf_needed
+            exp = comp.lease_expiry_months
+            tenant_context = (
+                f"Industry: {comp.industry or 'N/A'}; "
+                f"Headcount: {hc if hc is not None else 'N/A'}; "
+                f"SF Needed: {f'{int(sf):,}' if sf else 'N/A'}; "
+                f"Lease Expiry: {f'{exp}mo' if exp is not None else 'N/A'}"
+            )
 
     # Detect secondary demand: more than one matched tenant on this property
     try:
@@ -1188,7 +1199,7 @@ def draft_property_outreach(
         has_secondary_demand = False
 
     result = generate_property_outreach(
-        prop_dict, outreach_type, tenant_context, target_type,
+        prop_dict, outreach_type, target_type, tenant_context,
         intel_context=intel_list,
         direction=direction,
         tenant_dict=tenant_dict,
