@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 
 from app.database import init_db
-from app.api.routes import properties, companies, opportunities, activity, dashboard, outreach, outreach_drafts
+from app.api.routes import properties, companies, opportunities, activity, dashboard, outreach, outreach_drafts, import_routes
 from app.ingestion.scheduler import start_scheduler, stop_scheduler
 from app.config import settings, NOVA_OFFICE_BENCHMARKS, SUBMARKET_BENCHMARKS
 
@@ -41,6 +41,7 @@ def create_app() -> FastAPI:
     app.include_router(activity.router,        prefix="/api")
     app.include_router(outreach.router,        prefix="/api")
     app.include_router(outreach_drafts.router, prefix="/api")
+    app.include_router(import_routes.router,   prefix="/api")
 
     @app.on_event("startup")
     def on_startup():

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
-import { ClipboardList, Plus, X, Phone, Mail, Users, FileText, Search, RefreshCw } from 'lucide-react'
-import { getActivity, createActivity } from '../api/client'
+import { ClipboardList, Plus, X, Phone, Mail, Users, FileText, Search, RefreshCw, Pencil } from 'lucide-react'
+import { getActivity, createActivity, updateActivityNote } from '../api/client'
 import type { ActivityLog, ActionType } from '../types'
 
 const ACTION_ICONS: Record<ActionType, React.ElementType> = {
@@ -21,6 +21,24 @@ const ACTION_COLORS: Record<ActionType, string> = {
   NOTE:          'text-ink-secondary bg-surface-muted',
 }
 
+const OUTREACH_TYPE_LABELS: Record<string, string> = {
+  tenant_match:     'Tenant Match Outreach',
+  for_sale_vacancy: 'For Sale + Vacancy Outreach',
+  lease_renewal:    'Lease Renewal Outreach',
+  listing_rep:      'Listing Rep Outreach',
+}
+
+function OutreachTypeBadge({ outreachType }: { outreachType: string | null }) {
+  if (!outreachType) return null
+  const label = OUTREACH_TYPE_LABELS[outreachType] ?? 'Outreach'
+  return (
+    <span className="text-[9px] px-2 py-0.5 rounded border font-semibold
+                     bg-violet-500/10 text-violet-400 border-violet-500/20">
+      {label}
+    </span>
+  )
+}
+
 function ActionBadge({ type }: { type: ActionType }) {
   const Icon = ACTION_ICONS[type] || FileText
   const color = ACTION_COLORS[type] || ACTION_COLORS.NOTE
@@ -35,6 +53,85 @@ function formatDate(dateStr: string): string {
   return new Date(dateStr).toLocaleDateString('en-US', {
     month: 'short', day: 'numeric', year: 'numeric',
   })
+}
+
+function NoteSection({
+  log,
+  onSaved,
+}: {
+  log: ActivityLog
+  onSaved: (updated: ActivityLog) => void
+}) {
+  const [editing, setEditing] = useState(false)
+  const [input, setInput]     = useState(log.notes ?? '')
+  const [saving, setSaving]   = useState(false)
+
+  const handleSave = async () => {
+    setSaving(true)
+    try {
+      const updated = await updateActivityNote(log.id, input)
+      onSaved(updated)
+      setEditing(false)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  if (editing) {
+    return (
+      <div className="mt-2 space-y-1.5">
+        <textarea
+          value={input}
+          onChange={e => setInput(e.target.value)}
+          rows={3}
+          placeholder="Add a note…"
+          className="w-full text-xs bg-surface-muted border border-surface-border rounded-lg px-3 py-2
+                     text-ink-primary placeholder:text-ink-muted focus:outline-none focus:border-accent-blue/50
+                     resize-none"
+        />
+        <div className="flex items-center gap-2">
+          <button
+            onClick={handleSave}
+            disabled={saving}
+            className="text-[10px] px-3 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700
+                       text-white font-semibold disabled:opacity-50"
+          >
+            {saving ? 'Saving…' : 'Save Note'}
+          </button>
+          <button
+            onClick={() => { setEditing(false); setInput(log.notes ?? '') }}
+            className="text-[10px] text-ink-muted hover:text-ink-primary"
+          >
+            Cancel
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  if (log.notes) {
+    return (
+      <div className="mt-1.5 flex items-start gap-1.5">
+        <p className="text-[11px] text-ink-muted flex-1 leading-snug">{log.notes}</p>
+        <button
+          onClick={() => { setInput(log.notes ?? ''); setEditing(true) }}
+          className="text-ink-muted hover:text-accent-blue flex-shrink-0 mt-0.5"
+          title="Edit note"
+        >
+          <Pencil size={10} />
+        </button>
+      </div>
+    )
+  }
+
+  return (
+    <button
+      onClick={() => setEditing(true)}
+      className="mt-1 text-[10px] text-ink-muted hover:text-accent-blue"
+    >
+      + Add Note
+    </button>
+  )
 }
 
 export default function ActivityLogPage() {
@@ -77,6 +174,10 @@ export default function ActivityLogPage() {
     } finally {
       setSaving(false)
     }
+  }
+
+  const handleNoteUpdated = (updated: ActivityLog) => {
+    setLogs(prev => prev.map(l => l.id === updated.id ? { ...l, notes: updated.notes } : l))
   }
 
   // Group by date
@@ -204,7 +305,7 @@ export default function ActivityLogPage() {
                     <div key={log.id} className="flex items-start gap-3 bg-surface-card border border-surface-border rounded-xl p-3">
                       <ActionBadge type={log.action_type as ActionType} />
                       <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 mb-0.5">
+                        <div className="flex items-center gap-2 mb-0.5 flex-wrap">
                           <span className="text-[10px] font-bold uppercase tracking-wider text-ink-muted">
                             {log.action_type}
                           </span>
@@ -221,12 +322,18 @@ export default function ActivityLogPage() {
                           )}
                         </div>
                         <p className="text-xs text-ink-secondary">{log.action_taken}</p>
+                        {log.outreach_type && (
+                          <div className="mt-1">
+                            <OutreachTypeBadge outreachType={log.outreach_type} />
+                          </div>
+                        )}
                         {log.outcome && (
                           <p className="text-xs text-ink-muted mt-1">→ {log.outcome}</p>
                         )}
                         {log.follow_up_action && (
                           <p className="text-xs text-amber-400 mt-1">↻ {log.follow_up_action}</p>
                         )}
+                        <NoteSection log={log} onSaved={handleNoteUpdated} />
                       </div>
                     </div>
                   ))}

@@ -19,6 +19,12 @@ from typing import Optional
 AGENT_NAME = "Jack Zamer"
 FIRM_NAME  = "The Commercial Real Estate Group"
 
+_SIGNATURE_INSTRUCTION = (
+    "Always end the email body with exactly this signature block on its own lines "
+    "(after the last paragraph, on a new line):\n\n"
+    "Thank you,\n\nJack Zamer\nVice President, The Commercial Real Estate Group\n571-205-6228"
+)
+
 VALID_TYPES = {"tenant_match", "for_sale_vacancy", "listing_rep", "acquisition"}
 
 # CBRE Q1 2026 NoVA office benchmarks (avg full-service rent / vacancy %).
@@ -675,6 +681,9 @@ def generate_property_outreach(
               "you MUST reference at least one of them conversationally in the email body "
               "(not as a bulleted list)."
         )
+
+    # Inject signature instruction into every call's system prompt
+    prompt["system"] = prompt["system"] + "\n\n" + _SIGNATURE_INSTRUCTION
 
     raw    = _chat(prompt["system"], prompt["user"])
     parsed = _parse_response(raw)

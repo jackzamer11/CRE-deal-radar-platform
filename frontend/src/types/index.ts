@@ -263,6 +263,8 @@ export interface ActivityLog {
   property_address: string | null
   company_name: string | null
   opportunity_ref: string | null
+  outreach_type: string | null
+  notes: string | null
 }
 
 export interface CallTarget {

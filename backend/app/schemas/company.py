@@ -19,6 +19,14 @@ class CompanyBase(BaseModel):
     lease_expiry_months: Optional[int] = None
     lease_expiry_source: Optional[str] = None
     lease_expiry_last_verified: Optional[date] = None
+
+    @model_validator(mode="after")
+    def _decay_lease_months(self) -> "CompanyBase":
+        if self.lease_expiry_date:
+            today = date.today()
+            ld = self.lease_expiry_date
+            self.lease_expiry_months = max(0, (ld.year - today.year) * 12 + (ld.month - today.month))
+        return self
     expansion_signal: bool = False
     contraction_signal: bool = False
     relocation_signal: bool = False
@@ -127,6 +135,10 @@ class CompanyListOut(BaseModel):
     def _compute_rep_class(self) -> "CompanyListOut":
         from app.services.rep_classification import classify_rep
         self.rep_class = classify_rep(self.tenant_representative)
+        if self.lease_expiry_date:
+            today = date.today()
+            ld = self.lease_expiry_date
+            self.lease_expiry_months = max(0, (ld.year - today.year) * 12 + (ld.month - today.month))
         return self
 
     class Config:

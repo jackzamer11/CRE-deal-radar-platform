@@ -4,7 +4,7 @@ import {
   Zap, TrendingUp, AlertTriangle,
   RefreshCw, Plus, Database, Upload, Building2, Target, MessageSquarePlus,
 } from 'lucide-react'
-import { getDailyBriefing, runPipeline, getProperty } from '../api/client'
+import { getDailyBriefing, runPipeline, getProperty, importLeaseActivity } from '../api/client'
 import type {
   DailyBriefing, TenantMatchAction, AcquisitionTarget,
   PropertyOut, MatchedTenant,
@@ -204,6 +204,7 @@ export default function Dashboard() {
   const [showCoStarModal, setShowCoStarModal] = useState(false)
   const [pipelineRunning, setPipelineRunning] = useState(false)
   const [pipelineStatus, setPipelineStatus]   = useState<string | null>(null)
+  const [leaseImportStatus, setLeaseImportStatus] = useState<string | null>(null)
   const [contactedPairs, setContactedPairs] = useState<Record<string, boolean>>(() => {
     try {
       const stored = localStorage.getItem('deal_radar_contacted_pairs')
@@ -361,6 +362,33 @@ export default function Dashboard() {
           >
             <Upload size={13} /> Import CoStar
           </button>
+          <label
+            className="flex items-center gap-2 px-4 py-2 rounded-lg bg-surface-card border border-surface-border
+                       text-ink-secondary hover:text-ink-primary text-xs font-semibold transition-colors cursor-pointer"
+            title="Upload CoStar Lease Activity export (.xlsx)"
+          >
+            <Upload size={13} /> Import Lease Comps
+            <input
+              type="file"
+              accept=".xlsx,.xls,.csv"
+              className="hidden"
+              onChange={async e => {
+                const file = e.target.files?.[0]
+                if (!file) return
+                e.target.value = ''
+                setLeaseImportStatus(null)
+                try {
+                  const result = await importLeaseActivity(file)
+                  setLeaseImportStatus(
+                    `Lease comps imported — ${result.updated} properties updated` +
+                    (result.skipped_no_match > 0 ? `, ${result.skipped_no_match} unmatched` : '')
+                  )
+                } catch {
+                  setLeaseImportStatus('Lease comps import failed — check file format')
+                }
+              }}
+            />
+          </label>
           <button
             onClick={handleRunPipeline}
             disabled={pipelineRunning}
@@ -385,6 +413,16 @@ export default function Dashboard() {
         <div className="mb-6 px-4 py-2.5 rounded-lg bg-emerald-500/10 border border-emerald-500/25 text-emerald-400 text-xs flex items-center justify-between">
           <span>{pipelineStatus}</span>
           <button onClick={() => setPipelineStatus(null)} className="text-ink-muted hover:text-ink-primary ml-4">✕</button>
+        </div>
+      )}
+      {leaseImportStatus && (
+        <div className={`mb-6 px-4 py-2.5 rounded-lg text-xs flex items-center justify-between ${
+          leaseImportStatus.includes('failed')
+            ? 'bg-red-500/10 border border-red-500/25 text-red-400'
+            : 'bg-emerald-500/10 border border-emerald-500/25 text-emerald-400'
+        }`}>
+          <span>{leaseImportStatus}</span>
+          <button onClick={() => setLeaseImportStatus(null)} className="text-ink-muted hover:text-ink-primary ml-4">✕</button>
         </div>
       )}
 
