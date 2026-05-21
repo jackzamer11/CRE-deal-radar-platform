@@ -963,15 +963,20 @@ async def costar_import(
 
     df.columns = [c.strip() for c in df.columns]
 
+    print(f"[CoStar import] Columns found: {list(df.columns)}")
+
     # Check required columns
     col_set = set(df.columns)
     missing = [c for c in COSTAR_REQUIRED_COLS if c not in col_set]
     if missing:
+        print(f"[CoStar import] Missing required columns: {missing}")
         raise HTTPException(status_code=400, detail=f"Missing CoStar columns: {', '.join(missing)}")
 
     df = df.replace("", None)
     rows = df.to_dict(orient="records")
     total_rows = len(rows)
+
+    print(f"[CoStar import] Total rows before filter: {total_rows}")
 
     filtered_state     = 0
     filtered_submarket = 0
@@ -984,6 +989,8 @@ async def costar_import(
         p.address.strip().lower(): p
         for p in db.query(Property).all()
     }
+
+    print(f"[CoStar import] Existing properties in DB: {len(existing)}")
 
     for idx, row in enumerate(rows, start=2):
         # Filter 1: State must be VA
@@ -1103,6 +1110,13 @@ async def costar_import(
             inserted += 1
 
     db.commit()
+
+    print(
+        f"[CoStar import] Result — inserted: {inserted}, updated: {updated}, "
+        f"errors: {len(errors)}, filtered_state: {filtered_state}, "
+        f"filtered_submarket: {filtered_submarket}, filtered_status: {filtered_status}, "
+        f"unmapped_submarkets: {sorted(unmapped_submarkets)}"
+    )
 
     return {
         "total_rows":          total_rows,
