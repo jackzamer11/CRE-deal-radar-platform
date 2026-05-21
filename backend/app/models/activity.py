@@ -29,6 +29,9 @@ class ActivityLog(Base):
     contact_method = Column(String, nullable=True)   # email | call
     subject        = Column(String, nullable=True)
 
+    # Broker notes on this activity
+    notes = Column(Text, nullable=True)
+
     # Follow-up
     follow_up_date = Column(Date, nullable=True)
     follow_up_action = Column(Text, nullable=True)

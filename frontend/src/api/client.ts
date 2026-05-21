@@ -243,6 +243,12 @@ export interface ActivityFilters {
 export const getActivity = (filters?: ActivityFilters): Promise<ActivityLog[]> =>
   api.get('/activity', { params: filters }).then(r => r.data)
 
+export const updateActivityNote = (
+  entryId: number,
+  notes: string,
+): Promise<ActivityLog> =>
+  api.patch(`/activity/${entryId}/notes`, { notes }).then(r => r.data)
+
 export const createActivity = (payload: {
   action_type: string
   action_taken: string
@@ -334,6 +340,21 @@ export const importCoStarTenants = (file: File): Promise<CoStarTenantImportResul
   const form = new FormData()
   form.append('file', file)
   return api.post('/companies/costar-import', form, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  }).then(r => r.data)
+}
+
+export interface LeaseActivityImportResult {
+  updated: number
+  skipped_no_match: number
+  skipped_existing: number
+  errors: string[]
+}
+
+export const importLeaseActivity = (file: File): Promise<LeaseActivityImportResult> => {
+  const form = new FormData()
+  form.append('file', file)
+  return api.post('/import/costar-lease-activity', form, {
     headers: { 'Content-Type': 'multipart/form-data' },
   }).then(r => r.data)
 }

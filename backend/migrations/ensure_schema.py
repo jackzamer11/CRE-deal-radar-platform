@@ -123,6 +123,7 @@ def ensure_activity_logs(cur: sqlite3.Cursor) -> int:
     added += _add_column(cur, "activity_logs", "target_type",    "TEXT")
     added += _add_column(cur, "activity_logs", "contact_method", "TEXT")
     added += _add_column(cur, "activity_logs", "subject",        "TEXT")
+    added += _add_column(cur, "activity_logs", "notes",          "TEXT")
     return added
 
 
@@ -163,12 +164,36 @@ def ensure_outreach_drafts(cur: sqlite3.Cursor) -> int:
 def ensure_companies(cur: sqlite3.Cursor) -> int:
     """Add any columns the Company ORM model expects that may be missing."""
     added = 0
-    # Currently the companies table is up-to-date; this is a forward-safety net.
     added += _add_column(cur, "companies", "last_modified_by_user", "DATETIME")
     added += _add_column(
         cur, "companies", "lease_trajectory", "TEXT DEFAULT 'AUTO' NOT NULL"
     )
+    added += _add_column(cur, "companies", "lease_expiry_date", "DATE")
     return added
+
+
+def backfill_lease_expiry_dates(cur: sqlite3.Cursor) -> int:
+    """For companies with lease_expiry_months but no lease_expiry_date, compute and store the date."""
+    try:
+        from dateutil.relativedelta import relativedelta
+        from datetime import date
+    except ImportError:
+        return 0
+    cur.execute("""
+        SELECT id, lease_expiry_months FROM companies
+        WHERE lease_expiry_date IS NULL AND lease_expiry_months IS NOT NULL AND lease_expiry_months > 0
+    """)
+    rows = cur.fetchall()
+    today = date.today()
+    for row_id, months in rows:
+        expiry = today + relativedelta(months=int(months))
+        cur.execute(
+            "UPDATE companies SET lease_expiry_date = ? WHERE id = ?",
+            (expiry.isoformat(), row_id),
+        )
+    if rows:
+        print(f"  + backfilled lease_expiry_date for {len(rows)} companies")
+    return len(rows)
 
 
 def run() -> None:
@@ -180,18 +205,19 @@ def run() -> None:
     conn = sqlite3.connect(db)
     cur = conn.cursor()
 
-    prop_added  = ensure_properties(cur)
-    comp_added  = ensure_companies(cur)
-    olog_added  = ensure_outreach_log(cur)
-    act_added   = ensure_activity_logs(cur)
-    draft_added = ensure_outreach_drafts(cur)
+    prop_added   = ensure_properties(cur)
+    comp_added   = ensure_companies(cur)
+    olog_added   = ensure_outreach_log(cur)
+    act_added    = ensure_activity_logs(cur)
+    draft_added  = ensure_outreach_drafts(cur)
+    bf_added     = backfill_lease_expiry_dates(cur)
 
     conn.commit()
     conn.close()
 
-    total = prop_added + comp_added + olog_added + act_added + draft_added
+    total = prop_added + comp_added + olog_added + act_added + draft_added + bf_added
     if total:
-        print(f"ensure_schema: applied {total} column addition(s).")
+        print(f"ensure_schema: applied {total} column addition(s)/backfill(s).")
     else:
         print("ensure_schema: schema is up-to-date.")
 

@@ -28,6 +28,7 @@ class ActivityOut(BaseModel):
     target_type:    Optional[str] = None
     contact_method: Optional[str] = None
     subject:        Optional[str] = None
+    notes:          Optional[str] = None
 
     # Denormalized
     property_address: Optional[str] = None
@@ -80,6 +81,34 @@ def list_activity(
             item.opportunity_ref = log.opportunity.opportunity_id
         result.append(item)
     return result
+
+
+class ActivityNoteUpdate(BaseModel):
+    notes: str
+
+
+@router.patch("/{entry_id}/notes", response_model=ActivityOut)
+def update_activity_notes(
+    entry_id: int,
+    payload: ActivityNoteUpdate,
+    db: Session = Depends(get_db),
+):
+    """Update (or set) the broker note on an activity log entry."""
+    from fastapi import HTTPException
+    log = db.query(ActivityLog).filter(ActivityLog.id == entry_id).first()
+    if not log:
+        raise HTTPException(status_code=404, detail="Activity log entry not found")
+    log.notes = payload.notes
+    db.commit()
+    db.refresh(log)
+    item = ActivityOut.model_validate(log)
+    if log.property:
+        item.property_address = log.property.address
+    if log.company:
+        item.company_name = log.company.name
+    if log.opportunity:
+        item.opportunity_ref = log.opportunity.opportunity_id
+    return item
 
 
 @router.post("/", response_model=ActivityOut)

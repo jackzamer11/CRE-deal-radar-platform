@@ -299,6 +299,11 @@ def create_company(payload: CompanyManualCreate, db: Session = Depends(get_db)):
         growth_factor = 1 + ((growth_pct or 0) / 100.0) * 1.25
         estimated_sf_needed = int(payload.current_headcount * growth_factor * 175)
 
+    lease_expiry_date_val = None
+    if payload.lease_expiry_months and payload.lease_expiry_months > 0:
+        from dateutil.relativedelta import relativedelta
+        lease_expiry_date_val = date.today() + relativedelta(months=payload.lease_expiry_months)
+
     company = Company(
         company_id            = company_id,
         name                  = payload.name,
@@ -314,6 +319,7 @@ def create_company(payload: CompanyManualCreate, db: Session = Depends(get_db)):
         current_sf            = payload.current_sf,
         sf_per_head           = sf_per_head,
         lease_expiry_months   = payload.lease_expiry_months,
+        lease_expiry_date     = lease_expiry_date_val,
         estimated_sf_needed   = estimated_sf_needed,
         primary_contact_name  = payload.primary_contact_name,
         primary_contact_title = payload.primary_contact_title,
@@ -684,6 +690,9 @@ def update_lease_expiry(
         company.lease_expiry_months = months
     elif payload.lease_expiry_months is not None:
         company.lease_expiry_months = payload.lease_expiry_months
+        if payload.lease_expiry_months > 0:
+            from dateutil.relativedelta import relativedelta
+            company.lease_expiry_date = date.today() + relativedelta(months=payload.lease_expiry_months)
 
     company.lease_expiry_source        = payload.lease_expiry_source
     company.lease_expiry_last_verified = date.today()

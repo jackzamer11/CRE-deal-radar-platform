@@ -30,6 +30,12 @@ SUBMARKET_AVG_VACANCY: dict[str, float] = {
 AGENT_NAME = "Jack Zamer"
 FIRM_NAME  = "The Commercial Real Estate Group"
 
+_SIGNATURE_INSTRUCTION = (
+    "Always end the email body with exactly this signature block on its own lines "
+    "(after the last paragraph, on a new line):\n\n"
+    "Thank you,\n\nJack Zamer\nVice President, The Commercial Real Estate Group\n571-205-6228"
+)
+
 
 def project_sf(company: dict) -> Optional[int]:
     """
@@ -402,6 +408,7 @@ def generate_outreach(company: dict) -> dict:
         rules.append(trajectory_note)
     if contraction_note:
         rules.append(contraction_note)
+    rules.append(_SIGNATURE_INSTRUCTION)
 
     numbered_rules = "\n".join(f"{i+1}. {r}" for i, r in enumerate(rules))
 
