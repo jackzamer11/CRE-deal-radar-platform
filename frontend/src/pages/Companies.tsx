@@ -45,6 +45,25 @@ function ExpiryBadge({ months }: { months: number | null }) {
   return <span className={`mono text-xs ${color}`}>{months}mo</span>
 }
 
+function isLeaseExpired(c: { lease_expiry_months: number | null; lease_expiry_date: string | null }): boolean {
+  if (c.lease_expiry_months === 0) return true
+  if (c.lease_expiry_date) {
+    const today = new Date(); today.setHours(0, 0, 0, 0)
+    const exp = new Date(`${c.lease_expiry_date}T00:00:00`)
+    return exp <= today
+  }
+  return false
+}
+
+function ExpiredBadge() {
+  return (
+    <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-semibold tracking-wide
+                     bg-red-500/15 text-red-400 border border-red-500/30">
+      ● EXPIRED
+    </span>
+  )
+}
+
 function RepBadge({ repClass, repName }: { repClass: RepClass; repName: string | null }) {
   if (repClass === 'BLANK') {
     return (
@@ -369,6 +388,7 @@ export default function Companies() {
                   </span>
                 )}
                 <RepBadge repClass={c.rep_class} repName={c.tenant_representative} />
+                {isLeaseExpired(c) && <ExpiredBadge />}
                 <PriorityBadge priority={c.priority} />
               </div>
             </div>

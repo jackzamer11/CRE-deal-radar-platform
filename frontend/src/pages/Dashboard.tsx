@@ -335,6 +335,7 @@ export default function Dashboard() {
 
   const tenantActions = briefing.tenant_match_actions ?? []
   const acqTargets    = briefing.acquisition_targets ?? []
+  const expiredLeases = briefing.expired_leases ?? []
 
   const noContent = tenantActions.length === 0 && acqTargets.length === 0
 
@@ -488,6 +489,49 @@ export default function Dashboard() {
             void silentRefresh()
           }}
         />
+      )}
+
+      {/* Expired Leases — Action Required (renders above Section A) */}
+      {expiredLeases.length > 0 && (
+        <section className="mb-10">
+          <SectionHeader
+            icon={AlertTriangle}
+            color="text-red-400"
+            title="Expired Leases — Action Required"
+            count={expiredLeases.length}
+          />
+          <div className="space-y-3">
+            {expiredLeases.map(lease => (
+              <div
+                key={lease.company_id}
+                className="bg-surface-card border border-red-500/30 rounded-xl p-4 flex items-start gap-4"
+              >
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap mb-1.5">
+                    <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-semibold tracking-wide
+                                     bg-red-500/15 text-red-400 border border-red-500/30">
+                      ● EXPIRED
+                    </span>
+                    <span className="text-sm font-semibold text-ink-primary truncate">{lease.name}</span>
+                  </div>
+                  <div className="flex items-center gap-3 text-[11px] text-ink-secondary flex-wrap">
+                    <span>{lease.industry}</span>
+                    {lease.sf_needed != null && <span>{(lease.sf_needed / 1000).toFixed(0)}K SF needed</span>}
+                    {lease.submarket && <span>{lease.submarket}</span>}
+                  </div>
+                </div>
+                <button
+                  onClick={() => navigate(`/companies?selected=${lease.company_id}`)}
+                  className="flex-shrink-0 flex items-center gap-1 text-[10px] px-3 py-1.5 rounded-lg
+                             bg-red-600 hover:bg-red-700 text-white font-semibold transition-colors"
+                >
+                  <MessageSquarePlus size={11} />
+                  Follow Up
+                </button>
+              </div>
+            ))}
+          </div>
+        </section>
       )}
 
       {noContent ? (
