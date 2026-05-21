@@ -5,7 +5,7 @@ import type { CoStarImportResult } from '../api/client'
 
 interface Props {
   onClose: () => void
-  onDone: () => void
+  onDone: (result: CoStarImportResult) => void
 }
 
 export default function CoStarImportModal({ onClose, onDone }: Props) {
@@ -36,8 +36,11 @@ export default function CoStarImportModal({ onClose, onDone }: Props) {
     setResult(null)
     try {
       const res = await importCoStarExport(file)
-      setResult(res)
-      if (res.inserted > 0 || res.updated > 0) onDone()
+      if (res.inserted > 0 || res.updated > 0) {
+        onDone(res)  // Dashboard handles close + toast + silent refresh
+      } else {
+        setResult(res)  // Nothing changed — stay open and show filter breakdown
+      }
     } catch (e: any) {
       setApiError(
         e?.response?.data?.detail
