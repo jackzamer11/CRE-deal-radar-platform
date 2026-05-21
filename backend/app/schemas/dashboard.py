@@ -92,6 +92,16 @@ class AcquisitionTarget(BaseModel):
     contact_status: str  # NOT_CONTACTED | CONTACTED | FOLLOW_UP
 
 
+class ExpiredLease(BaseModel):
+    """A tenant company whose lease has expired (lease_expiry_date <= today)."""
+    company_id: str
+    name:       str
+    industry:   str
+    sf_needed:  Optional[int]
+    submarket:  Optional[str]
+    headcount:  Optional[int]
+
+
 class DailyBriefing(BaseModel):
     briefing_date: date
     stats: DashboardStats
@@ -102,4 +112,5 @@ class DailyBriefing(BaseModel):
     tenant_match_properties: List[TenantMatchTarget]
     tenant_match_actions: List[TenantMatchAction] = []
     acquisition_targets:  List[AcquisitionTarget] = []
+    expired_leases: List[ExpiredLease] = []
     signal_refresh_timestamp: Optional[str] = None

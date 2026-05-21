@@ -350,6 +350,15 @@ export interface AcquisitionTarget {
   contact_status: string
 }
 
+export interface ExpiredLease {
+  company_id: string
+  name: string
+  industry: string
+  sf_needed: number | null
+  submarket: string | null
+  headcount: number | null
+}
+
 export interface DailyBriefing {
   briefing_date: string
   stats: DashboardStats
@@ -360,6 +369,7 @@ export interface DailyBriefing {
   tenant_match_properties: TenantMatchTarget[]
   tenant_match_actions: TenantMatchAction[]
   acquisition_targets: AcquisitionTarget[]
+  expired_leases: ExpiredLease[]
   signal_refresh_timestamp: string | null
 }
 

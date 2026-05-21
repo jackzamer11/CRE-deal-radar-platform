@@ -21,7 +21,7 @@ from app.models.company import Company
 from app.models.outreach_log import OutreachLog
 from app.schemas.dashboard import (
     DailyBriefing, DashboardStats, CallTarget, TenantMatchTarget,
-    TenantMatchAction, AcquisitionTarget,
+    TenantMatchAction, AcquisitionTarget, ExpiredLease,
 )
 
 
@@ -219,6 +219,31 @@ def _compute_acquisition_targets(db: Session) -> list:
     return targets
 
 
+def _compute_expired_leases(db: Session) -> list:
+    """Companies whose lease_expiry_date is today or in the past."""
+    today = date.today()
+    companies = (
+        db.query(Company)
+        .filter(
+            Company.lease_expiry_date.isnot(None),
+            Company.lease_expiry_date <= today,
+        )
+        .order_by(Company.lease_expiry_date.asc())
+        .all()
+    )
+    return [
+        ExpiredLease(
+            company_id=co.company_id,
+            name=co.name,
+            industry=co.industry,
+            sf_needed=co.estimated_sf_needed,
+            submarket=co.current_submarket,
+            headcount=co.current_headcount,
+        )
+        for co in companies
+    ]
+
+
 def _to_call_target(opp: Opportunity, rank: int) -> CallTarget:
     prop = opp.property
     company = opp.company
@@ -346,6 +371,7 @@ def generate_daily_briefing(db: Session) -> DailyBriefing:
 
     tenant_match_actions = _compute_tenant_actions(db)
     acquisition_targets  = _compute_acquisition_targets(db)
+    expired_leases       = _compute_expired_leases(db)
 
     return DailyBriefing(
         briefing_date=date.today(),
@@ -357,5 +383,6 @@ def generate_daily_briefing(db: Session) -> DailyBriefing:
         tenant_match_properties=tenant_match_targets,
         tenant_match_actions=tenant_match_actions,
         acquisition_targets=acquisition_targets,
+        expired_leases=expired_leases,
         signal_refresh_timestamp=str(date.today()),
     )
