@@ -95,22 +95,26 @@ _REQUIRED_INTERNAL = {
 # Key = CoStar submarket name (lowercase, stripped).
 # Value = platform submarket string, or None for ambiguous (skip with reason).
 COSTAR_SUBMARKET_MAP: dict = {
-    "old town alexandria":  "Alexandria (Old Town)",
-    "alexandria/old town":  "Alexandria (Old Town)",
-    "falls church":         "Falls Church",
-    "reston":               "Reston",
-    "tysons":               "Tysons",
-    "tysons corner":        "Tysons",
-    "clarendon":            "Arlington (Clarendon)",
-    "rosslyn":              "Arlington (Rosslyn)",
-    "rosslyn/ballston":     None,   # ambiguous — specific error message
-    "ballston":             "Arlington (Ballston)",
-    "columbia pike":        "Arlington (Columbia Pike)",
-    "mclean":               "McLean",
-    "vienna":               "Vienna",
-    "tysons/vienna":        "Vienna",
-    "fairfax city":         "Fairfax City",
-    "fairfax":              "Fairfax City",
+    "old town alexandria":       "Alexandria (Old Town)",
+    "alexandria/old town":       "Alexandria (Old Town)",
+    "falls church":              "Falls Church",
+    "reston":                    "Reston",
+    "herndon":                   "Reston",
+    "tysons":                    "Tysons",
+    "tysons corner":             "Tysons",
+    "clarendon":                 "Arlington (Clarendon)",
+    "rosslyn":                   "Arlington (Rosslyn)",
+    "rosslyn/ballston":          None,   # ambiguous — specific error message
+    "ballston":                  "Arlington (Ballston)",
+    "columbia pike":             "Arlington (Columbia Pike)",
+    "mclean":                    "McLean",
+    "vienna":                    "Vienna",
+    "tysons/vienna":             "Vienna",
+    "fairfax city":              "Fairfax City",
+    "fairfax":                   "Fairfax City",
+    "springfield/burke":         "Springfield",
+    "route 28 corridor north":   "Dulles Corridor",
+    "route 28 corridor south":   "Dulles Corridor",
 }
 
 COSTAR_CLASS_MAP: dict = {

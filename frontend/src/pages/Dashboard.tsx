@@ -5,6 +5,7 @@ import {
   RefreshCw, Plus, Database, Upload, Building2, Target, MessageSquarePlus,
 } from 'lucide-react'
 import { getDailyBriefing, runPipeline, getProperty, importLeaseActivity } from '../api/client'
+import type { CoStarImportResult } from '../api/client'
 import type {
   DailyBriefing, TenantMatchAction, AcquisitionTarget,
   PropertyOut, MatchedTenant,
@@ -205,6 +206,7 @@ export default function Dashboard() {
   const [pipelineRunning, setPipelineRunning] = useState(false)
   const [pipelineStatus, setPipelineStatus]   = useState<string | null>(null)
   const [leaseImportStatus, setLeaseImportStatus] = useState<string | null>(null)
+  const [costarImportStatus, setCostarImportStatus] = useState<string | null>(null)
   const [contactedPairs, setContactedPairs] = useState<Record<string, boolean>>(() => {
     try {
       const stored = localStorage.getItem('deal_radar_contacted_pairs')
@@ -288,6 +290,12 @@ export default function Dashboard() {
     } finally {
       setLoading(false)
     }
+  }
+
+  const silentRefresh = async () => {
+    try {
+      setBriefing(await getDailyBriefing())
+    } catch { /* ignore — stale data is fine */ }
   }
 
   const handleRunPipeline = async () => {
@@ -425,6 +433,13 @@ export default function Dashboard() {
           <button onClick={() => setLeaseImportStatus(null)} className="text-ink-muted hover:text-ink-primary ml-4">✕</button>
         </div>
       )}
+      {costarImportStatus && (
+        <div className="mb-6 px-4 py-2.5 rounded-lg text-xs flex items-center justify-between
+                        bg-emerald-500/10 border border-emerald-500/25 text-emerald-400">
+          <span>{costarImportStatus}</span>
+          <button onClick={() => setCostarImportStatus(null)} className="text-ink-muted hover:text-ink-primary ml-4">✕</button>
+        </div>
+      )}
 
       {/* Stat cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
@@ -462,7 +477,18 @@ export default function Dashboard() {
         />
       )}
       {showBulkModal && <BulkUploadModal onClose={() => setShowBulkModal(false)} onDone={load} />}
-      {showCoStarModal && <CoStarImportModal onClose={() => setShowCoStarModal(false)} onDone={load} />}
+      {showCoStarModal && (
+        <CoStarImportModal
+          onClose={() => setShowCoStarModal(false)}
+          onDone={(result: CoStarImportResult) => {
+            setCostarImportStatus(
+              `Import complete — ${result.updated} updated, ${result.inserted} inserted, ${result.skipped} skipped`
+            )
+            setShowCoStarModal(false)
+            void silentRefresh()
+          }}
+        />
+      )}
 
       {noContent ? (
         <div className="text-center py-16 text-ink-muted">
