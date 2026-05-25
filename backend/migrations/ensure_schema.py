@@ -105,6 +105,11 @@ def ensure_properties(cur: sqlite3.Cursor) -> int:
     # ── User-edit guard (Part 7) ──────────────────────────────────────────
     added += _add_column(cur, "properties", "last_modified_by_user", "DATETIME")
 
+    # ── Snooze fields ─────────────────────────────────────────────────────
+    added += _add_column(cur, "properties", "snoozed_until",        "DATE")
+    added += _add_column(cur, "properties", "snooze_reason",        "TEXT")
+    added += _add_column(cur, "properties", "returned_from_snooze", "BOOLEAN")
+
     return added
 
 

@@ -1,8 +1,9 @@
 import { useEffect, useState, useRef } from 'react'
 import { useSearchParams, useNavigate } from 'react-router-dom'
-import { Building2, Filter, RefreshCw, X, Plus, Upload, Pencil, Check, MessageSquarePlus } from 'lucide-react'
+import { Building2, Filter, RefreshCw, X, Plus, Upload, Pencil, Check, MessageSquarePlus, Clock } from 'lucide-react'
 import {
   getProperties, getProperty, updatePropertyInPlaceRent, getPropertyOutreachHistory,
+  unsnoozeProperty,
 } from '../api/client'
 import type { PropertyListOut, PropertyOut, OutreachLog } from '../types'
 import { PriorityBadge } from '../components/PriorityBadge'
@@ -11,6 +12,7 @@ import AddPropertyModal from '../components/AddPropertyModal'
 import BulkUploadModal from '../components/BulkUploadModal'
 import CoStarImportModal from '../components/CoStarImportModal'
 import OutreachDraftModal from '../components/OutreachDraftModal'
+import SnoozeModal from '../components/SnoozeModal'
 
 const SUBMARKETS = [
   'Arlington (Clarendon)', 'Arlington (Rosslyn)', 'Arlington (Ballston)',
@@ -138,6 +140,11 @@ export default function Properties() {
   const [selectedLogs, setSelectedLogs]     = useState<OutreachLog[]>([])
   const [showAddModal, setShowAddModal]     = useState(false)
   const [editProperty, setEditProperty]     = useState<PropertyOut | null>(null)
+  const [snoozeTarget, setSnoozeTarget]     = useState<PropertyOut | null>(null)
+  const [showSnoozedOnly, setShowSnoozedOnly] = useState(false)
+  const [undoToast, setUndoToast]           = useState<{
+    propertyId: string; address: string; timer: ReturnType<typeof setTimeout>
+  } | null>(null)
   const [showBulkModal, setShowBulkModal]   = useState(false)
   const [showCoStarModal, setShowCoStarModal] = useState(false)
   const [outreachModal, setOutreachModal]   = useState<{
@@ -207,6 +214,42 @@ export default function Properties() {
     }
   }
 
+  // ── Snooze helpers ──────────────────────────────────────────────────────
+  const applySnooze = (prop: PropertyOut) => {
+    setSnoozeTarget(null)
+    // Update local state
+    setSelected(s => s?.property_id === prop.property_id ? prop : s)
+    setProperties(ps => ps.map(p => p.property_id === prop.property_id
+      ? { ...p, snoozed_until: prop.snoozed_until, snooze_reason: prop.snooze_reason } : p))
+    // Show UNDO toast for 5 seconds
+    if (undoToast) clearTimeout(undoToast.timer)
+    const timer = setTimeout(() => setUndoToast(null), 5000)
+    setUndoToast({ propertyId: prop.property_id, address: prop.address, timer })
+  }
+
+  const handleUndoSnooze = async () => {
+    if (!undoToast) return
+    clearTimeout(undoToast.timer)
+    const pid = undoToast.propertyId
+    setUndoToast(null)
+    try {
+      const prop = await unsnoozeProperty(pid)
+      setSelected(s => s?.property_id === pid ? prop : s)
+      setProperties(ps => ps.map(p => p.property_id === pid
+        ? { ...p, snoozed_until: null, snooze_reason: null } : p))
+    } catch { /* ignore — state already cleared */ }
+  }
+
+  const handleUnsnoozeSelected = async () => {
+    if (!selected) return
+    try {
+      const prop = await unsnoozeProperty(selected.property_id)
+      setSelected(prop)
+      setProperties(ps => ps.map(p => p.property_id === prop.property_id
+        ? { ...p, snoozed_until: null, snooze_reason: null } : p))
+    } catch { /* ignore */ }
+  }
+
   const handleRentUpdated = (propertyId: string, newVal: number) => {
     setProperties(ps => ps.map(p =>
       p.property_id === propertyId ? { ...p, in_place_rent_psf: newVal } : p
@@ -266,10 +309,18 @@ export default function Properties() {
 
   const clearFilters = () => {
     setSubmarket(''); setPriority(''); setListedOnly(undefined)
-    setScoreTypeFilter(''); setNeedsOutreach(false)
+    setScoreTypeFilter(''); setNeedsOutreach(false); setShowSnoozedOnly(false)
   }
 
-  const anyFilter = submarket || priority || listedOnly !== undefined || scoreTypeFilter || needsOutreach
+  const anyFilter = submarket || priority || listedOnly !== undefined || scoreTypeFilter || needsOutreach || showSnoozedOnly
+
+  // Client-side snooze filter (all properties are already loaded)
+  const isSnoozedActive = (p: PropertyListOut) =>
+    p.snoozed_until != null && p.snoozed_until > new Date().toISOString().slice(0, 10)
+
+  const displayedProperties = showSnoozedOnly
+    ? properties.filter(isSnoozedActive)
+    : properties
 
   const colCount = 19
 
@@ -280,7 +331,7 @@ export default function Properties() {
         <div className="flex items-center gap-3">
           <Building2 size={20} className="text-accent-blue" />
           <h1 className="text-xl font-bold text-ink-primary">Properties</h1>
-          <span className="text-ink-muted text-sm">({properties.length})</span>
+          <span className="text-ink-muted text-sm">({displayedProperties.length})</span>
           {needsOutreach && (
             <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-400 border border-amber-500/30 font-semibold">
               Top 20 Needing Outreach
@@ -362,6 +413,16 @@ export default function Properties() {
           <MessageSquarePlus size={12} />
           Top 20 Needing Outreach
         </button>
+        <button
+          onClick={() => setShowSnoozedOnly(v => !v)}
+          className={`flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border font-medium transition-colors
+            ${showSnoozedOnly
+              ? 'bg-amber-500/15 text-amber-400 border-amber-500/40'
+              : 'bg-surface-card border-surface-border text-ink-muted hover:text-ink-primary'}`}
+        >
+          <Clock size={12} />
+          Snoozed
+        </button>
         {anyFilter && (
           <button
             onClick={clearFilters}
@@ -404,12 +465,15 @@ export default function Properties() {
                 <tr><td colSpan={colCount} className="text-center py-8 text-ink-muted">Loading...</td></tr>
               ) : properties.length === 0 ? (
                 <tr><td colSpan={colCount} className="text-center py-8 text-ink-muted">No properties found</td></tr>
-              ) : properties.map(p => (
+              ) : displayedProperties.map(p => (
                 <tr key={p.id} onClick={() => handleSelect(p)}>
                   <td className="mono text-xs text-accent-blue">{p.property_id}</td>
                   <td className="max-w-xs">
                     <div className="truncate text-ink-primary font-medium" title={p.address}>{p.address}</div>
                     <div className="text-[10px] text-ink-muted">{p.asset_class}</div>
+                    {showSnoozedOnly && p.snooze_reason && (
+                      <div className="text-[10px] text-amber-400 truncate">{p.snooze_reason}</div>
+                    )}
                   </td>
                   <td className="text-ink-secondary text-xs">{p.submarket}</td>
                   <td className="mono text-xs">{fmtK(p.total_sf)}</td>
@@ -443,6 +507,11 @@ export default function Properties() {
                   <td className="mono text-xs text-ink-secondary">{fmt(p.sf_avail, '', ' SF')}</td>
                   <td>
                     <div className="flex flex-col gap-1">
+                      {p.snoozed_until && isSnoozedActive(p) && (
+                        <span className="text-[10px] bg-amber-500/15 text-amber-400 border border-amber-500/30 px-2 py-0.5 rounded font-semibold flex items-center gap-1">
+                          <Clock size={9} /> SNOOZED
+                        </span>
+                      )}
                       {p.listed_for_sale ? (
                         <span className="text-[10px] bg-amber-500/15 text-amber-400 border border-amber-500/30 px-2 py-0.5 rounded font-semibold">
                           FOR SALE
@@ -453,7 +522,7 @@ export default function Properties() {
                           FOR LEASE
                         </span>
                       ) : null}
-                      {!p.listed_for_sale && !p.listed_for_lease && (
+                      {!p.listed_for_sale && !p.listed_for_lease && !isSnoozedActive(p) && (
                         <span className="text-[10px] bg-surface-muted text-ink-muted border border-surface-border px-2 py-0.5 rounded">
                           OFF-MKT
                         </span>
@@ -492,6 +561,38 @@ export default function Properties() {
             setProperties(ps => ps.map(p => p.property_id === prop.property_id ? prop : p))
           }}
         />
+      )}
+      {snoozeTarget && (
+        <SnoozeModal
+          propertyId={snoozeTarget.property_id}
+          propertyAddress={snoozeTarget.address}
+          onClose={() => setSnoozeTarget(null)}
+          onSnoozed={applySnooze}
+        />
+      )}
+
+      {/* UNDO toast — 5 second window after snooze confirmed */}
+      {undoToast && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3
+                        bg-surface-card border border-amber-500/40 rounded-xl px-5 py-3 shadow-2xl
+                        animate-in slide-in-from-bottom-2 duration-200">
+          <Clock size={14} className="text-amber-400 flex-shrink-0" />
+          <span className="text-sm text-ink-secondary">
+            <span className="font-semibold text-amber-400">Snoozed</span>
+            {' '}· {undoToast.address.split(',')[0]}
+          </span>
+          <button
+            onClick={handleUndoSnooze}
+            className="ml-2 px-3 py-1 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-400
+                       text-xs font-semibold transition-colors border border-amber-500/40"
+          >
+            UNDO
+          </button>
+          <button onClick={() => { clearTimeout(undoToast.timer); setUndoToast(null) }}
+                  className="text-ink-muted hover:text-ink-primary ml-1">
+            <X size={14} />
+          </button>
+        </div>
       )}
       {showBulkModal && (
         <BulkUploadModal onClose={() => setShowBulkModal(false)} onDone={load} />
@@ -559,6 +660,13 @@ export default function Properties() {
                 >
                   <Pencil size={15} />
                 </button>
+                <button
+                  onClick={() => setSnoozeTarget(selected)}
+                  title={selected.snoozed_until ? 'Edit snooze' : 'Snooze property'}
+                  className="text-ink-muted hover:text-amber-400 p-1 rounded transition-colors"
+                >
+                  <Clock size={15} />
+                </button>
                 <button onClick={closePanel} className="text-ink-muted hover:text-ink-primary p-1">
                   <X size={18} />
                 </button>
@@ -570,6 +678,28 @@ export default function Properties() {
                 <PriorityBadge priority={selected.priority} />
                 <DominantBadge type={selected.dominant_score_type} />
               </div>
+
+              {/* Snoozed badge with inline unsnooze */}
+              {selected.snoozed_until && new Date(selected.snoozed_until) > new Date() && (
+                <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-amber-500/10 border border-amber-500/30">
+                  <Clock size={12} className="text-amber-400 flex-shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <span className="text-[11px] text-amber-400 font-semibold">
+                      SNOOZED until {new Date(selected.snoozed_until).toLocaleDateString()}
+                    </span>
+                    {selected.snooze_reason && (
+                      <div className="text-[10px] text-ink-muted truncate">{selected.snooze_reason}</div>
+                    )}
+                  </div>
+                  <button
+                    onClick={handleUnsnoozeSelected}
+                    title="Remove snooze"
+                    className="text-amber-400/60 hover:text-amber-400 flex-shrink-0 transition-colors"
+                  >
+                    <X size={13} />
+                  </button>
+                </div>
+              )}
 
               {/* Traditional scores */}
               <div className="grid grid-cols-2 gap-2">

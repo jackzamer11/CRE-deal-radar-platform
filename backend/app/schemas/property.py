@@ -63,6 +63,11 @@ class PropertyBase(BaseModel):
     estimated_ltv: Optional[float] = None
     notes: Optional[str] = None
 
+    # Snooze
+    snoozed_until:        Optional[date]  = None
+    snooze_reason:        Optional[str]   = None
+    returned_from_snooze: Optional[bool]  = None
+
     # CoStar enrichment fields
     star_rating: Optional[int] = None
     sf_avail: Optional[int] = None
@@ -174,6 +179,9 @@ class PropertyListOut(BaseModel):
     sales_contact: Optional[str] = None
     signals_scored_count: int = 0
     insufficient_data: bool = False
+    snoozed_until:        Optional[date] = None
+    snooze_reason:        Optional[str]  = None
+    returned_from_snooze: Optional[bool] = None
 
     @model_validator(mode="after")
     def _derive_listed_for_lease(self) -> "PropertyListOut":

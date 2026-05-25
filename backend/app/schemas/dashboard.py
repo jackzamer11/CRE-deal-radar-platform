@@ -113,4 +113,6 @@ class DailyBriefing(BaseModel):
     tenant_match_actions: List[TenantMatchAction] = []
     acquisition_targets:  List[AcquisitionTarget] = []
     expired_leases: List[ExpiredLease] = []
+    # property_ids whose snooze expired on this briefing load — show "Returned from Snooze" badge
+    returned_from_snooze_property_ids: List[str] = []
     signal_refresh_timestamp: Optional[str] = None

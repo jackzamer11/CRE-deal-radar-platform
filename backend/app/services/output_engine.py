@@ -63,14 +63,46 @@ def _adjacent_submarkets(sub: str) -> list:
     return adj.get(sub, [])
 
 
+def _is_snoozed(prop: Property) -> bool:
+    """Return True if the property is currently under an active snooze."""
+    return prop.snoozed_until is not None and prop.snoozed_until > date.today()
+
+
+def _process_snooze_returns(db: Session) -> list:
+    """
+    On each briefing load, find properties whose snooze has just expired.
+    - Clears snoozed_until / snooze_reason
+    - Sets returned_from_snooze = True (historical record)
+    Returns list of property_ids that returned this load (for badge display).
+    """
+    today = date.today()
+    expiring = (
+        db.query(Property)
+        .filter(Property.snoozed_until.isnot(None), Property.snoozed_until <= today)
+        .all()
+    )
+    prop_ids = []
+    for prop in expiring:
+        prop.snoozed_until        = None
+        prop.snooze_reason        = None
+        prop.returned_from_snooze = True
+        prop_ids.append(prop.property_id)
+    if expiring:
+        db.commit()
+    return prop_ids
+
+
 def _compute_tenant_actions(db: Session) -> list:
     """Compute Section A: property+tenant match pairs for the briefing."""
     # Properties with sf_avail > 0 and dominant_score_type == tenant_match
+    # Snoozed properties are excluded regardless of urgency.
     props = (
         db.query(Property)
         .filter(
             Property.dominant_score_type == "tenant_match",
             Property.sf_avail > 0,
+            # Active snooze: snoozed_until IS NULL or snoozed_until <= today (already processed)
+            (Property.snoozed_until == None),
         )
         .all()
     )
@@ -80,6 +112,7 @@ def _compute_tenant_actions(db: Session) -> list:
         .filter(
             Property.listed_for_sale == True,
             Property.sf_avail > 0,
+            (Property.snoozed_until == None),
         )
         .all()
     )
@@ -176,12 +209,13 @@ def _compute_tenant_actions(db: Session) -> list:
 
 
 def _compute_acquisition_targets(db: Session) -> list:
-    """Compute Section B: acquisition target properties."""
+    """Compute Section B: acquisition target properties. Excludes snoozed properties."""
     props = (
         db.query(Property)
         .filter(
             Property.signal_score >= 40,
             Property.dominant_score_type == "acquisition",
+            (Property.snoozed_until == None),
         )
         .order_by(Property.signal_score.desc())
         .all()
@@ -271,7 +305,12 @@ def _to_call_target(opp: Opportunity, rank: int) -> CallTarget:
 def generate_daily_briefing(db: Session) -> DailyBriefing:
     """
     Produces the daily operational briefing from the current database state.
+    On every load, expired snoozes are auto-cleared and the returned property
+    IDs are included in returned_from_snooze_property_ids for badge display.
     """
+    # ── Auto-clear expired snoozes ─────────────────────────────────────────
+    returned_from_snooze_ids = _process_snooze_returns(db)
+
     # ── Immediate deals (all types, sorted by score desc) ──────────────────
     immediate = (
         db.query(Opportunity)
@@ -384,5 +423,6 @@ def generate_daily_briefing(db: Session) -> DailyBriefing:
         tenant_match_actions=tenant_match_actions,
         acquisition_targets=acquisition_targets,
         expired_leases=expired_leases,
+        returned_from_snooze_property_ids=returned_from_snooze_ids,
         signal_refresh_timestamp=str(date.today()),
     )

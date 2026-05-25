@@ -47,6 +47,15 @@ export const createProperty = (payload: Record<string, unknown>): Promise<Proper
 export const updateProperty = (propertyId: string, payload: Record<string, unknown>): Promise<PropertyOut> =>
   api.put(`/properties/${propertyId}`, payload).then(r => r.data)
 
+export const snoozeProperty = (
+  propertyId: string,
+  payload: { snoozed_until: string; snooze_reason?: string },
+): Promise<PropertyOut> =>
+  api.post(`/properties/${propertyId}/snooze`, payload).then(r => r.data)
+
+export const unsnoozeProperty = (propertyId: string): Promise<PropertyOut> =>
+  api.post(`/properties/${propertyId}/unsnooze`).then(r => r.data)
+
 export const refreshAllSignals = (): Promise<{ refreshed: number; timestamp: string }> =>
   api.post('/properties/refresh-signals').then(r => r.data)
 

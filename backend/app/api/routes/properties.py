@@ -336,6 +336,11 @@ class PropertyManualCreate(BaseModel):
     parking_ratio: Optional[float] = None
 
 
+class SnoozeRequest(BaseModel):
+    snoozed_until: date                  # must be at least tomorrow (validated on frontend)
+    snooze_reason: Optional[str] = None  # free text — e.g. "Under contract — PSA signed"
+
+
 class PropertyUpdate(BaseModel):
     """All fields optional — only fields present in the request body are updated."""
     address:                      Optional[str]   = None
@@ -1250,6 +1255,53 @@ def update_property(property_id: str, payload: PropertyUpdate, db: Session = Dep
         )
 
     _run_signals(prop)
+    db.commit()
+    db.refresh(prop)
+    out = _enrich(prop)
+    out.matched_tenants = _compute_matched_tenants(prop, db)
+    return out
+
+
+@router.post("/{property_id}/snooze", response_model=PropertyOut)
+def snooze_property(property_id: str, payload: SnoozeRequest, db: Session = Depends(get_db)):
+    """Snooze a property — hide it from Daily Briefing and Section A until snoozed_until date."""
+    from app.models.activity import ActivityLog
+    prop = db.query(Property).filter(Property.property_id == property_id).first()
+    if not prop:
+        raise HTTPException(status_code=404, detail="Property not found")
+    prop.snoozed_until        = payload.snoozed_until
+    prop.snooze_reason        = payload.snooze_reason
+    prop.returned_from_snooze = None
+    reason_str = f": {payload.snooze_reason}" if payload.snooze_reason else ""
+    db.add(ActivityLog(
+        property_id=prop.id,
+        action_type="NOTE",
+        action_taken=f"Snoozed until {payload.snoozed_until.isoformat()}{reason_str}",
+        created_by="user",
+    ))
+    db.commit()
+    db.refresh(prop)
+    out = _enrich(prop)
+    out.matched_tenants = _compute_matched_tenants(prop, db)
+    return out
+
+
+@router.post("/{property_id}/unsnooze", response_model=PropertyOut)
+def unsnooze_property(property_id: str, db: Session = Depends(get_db)):
+    """Remove a snooze — property immediately returns to Daily Briefing / Section A."""
+    from app.models.activity import ActivityLog
+    prop = db.query(Property).filter(Property.property_id == property_id).first()
+    if not prop:
+        raise HTTPException(status_code=404, detail="Property not found")
+    prop.snoozed_until        = None
+    prop.snooze_reason        = None
+    prop.returned_from_snooze = None
+    db.add(ActivityLog(
+        property_id=prop.id,
+        action_type="NOTE",
+        action_taken="Unsnoozed manually",
+        created_by="user",
+    ))
     db.commit()
     db.refresh(prop)
     out = _enrich(prop)
