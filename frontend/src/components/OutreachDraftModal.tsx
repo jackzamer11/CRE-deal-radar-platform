@@ -442,7 +442,11 @@ export default function OutreachDraftModal(props: Props) {
         outcome: notes.trim() || notesLine,
         property_id: propertyDbId,
         company_id:  companyDbId,
-        outreach_type: entity_type === 'property' ? props.outreach_type : 'tenant',
+        outreach_type: entity_type === 'property'
+          ? (props.outreach_type === 'tenant_match'
+              ? (direction === 'tenant_side' ? 'tenant_match_tenant' : 'tenant_match_owner')
+              : props.outreach_type)
+          : 'tenant',
         target_type:   entity_type === 'property'
           ? (direction === 'tenant_side' ? 'tenant' : (props.target_type ?? 'owner'))
           : 'tenant',

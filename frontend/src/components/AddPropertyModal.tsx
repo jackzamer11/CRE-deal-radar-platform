@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { X, Building2, ChevronRight } from 'lucide-react'
-import { createProperty } from '../api/client'
+import { createProperty, updateProperty } from '../api/client'
 import type { PropertyOut } from '../types'
 
 const SUBMARKETS = [
@@ -20,6 +20,8 @@ const SUBMARKETS = [
 interface Props {
   onClose: () => void
   onSaved: (prop: PropertyOut) => void
+  editPropertyId?: string    // if set → edit mode (PUT)
+  initialData?: PropertyOut  // pre-populate form in edit mode
 }
 
 type Step = 'location' | 'ownership' | 'financials' | 'leasing'
@@ -62,6 +64,41 @@ const defaultForm = {
 
 type FormState = typeof defaultForm
 
+/** Populate form state from an existing PropertyOut for edit mode. */
+function propertyToForm(data: PropertyOut): FormState {
+  const acqYear = data.acquisition_date
+    ? String(new Date(data.acquisition_date).getFullYear())
+    : ''
+  const lastLeaseYear = data.last_lease_signed_date
+    ? String(new Date(data.last_lease_signed_date).getFullYear())
+    : ''
+  return {
+    address:              data.address ?? '',
+    submarket:            data.submarket ?? '',
+    asset_class:          data.asset_class ?? 'Class B',
+    total_sf:             data.total_sf != null ? String(data.total_sf) : '',
+    year_built:           data.year_built != null ? String(data.year_built) : '',
+    last_renovation_year: data.last_renovation_year != null ? String(data.last_renovation_year) : '',
+    owner_name:           data.owner_name ?? '',
+    owner_type:           data.owner_type ?? 'LLC',
+    owner_phone:          data.owner_phone ?? '',
+    owner_email:          data.owner_email ?? '',
+    acquisition_year:     acqYear,
+    acquisition_price:    data.acquisition_price != null ? String(data.acquisition_price) : '',
+    in_place_rent_psf:    data.in_place_rent_psf != null ? String(data.in_place_rent_psf) : '',
+    occupancy_pct:        data.occupancy_pct != null ? String(data.occupancy_pct) : '',
+    asking_price:         data.asking_price != null ? String(data.asking_price) : '',
+    sf_expiring_12mo:     data.sf_expiring_12mo != null ? String(data.sf_expiring_12mo) : '',
+    sf_expiring_24mo:     data.sf_expiring_24mo != null ? String(data.sf_expiring_24mo) : '',
+    last_lease_signed_year: lastLeaseYear,
+    is_listed:            data.listed_for_sale ?? false,
+    days_on_market:       data.days_on_market != null ? String(data.days_on_market) : '',
+    estimated_loan_maturity_year:
+      data.estimated_loan_maturity_year != null ? String(data.estimated_loan_maturity_year) : '',
+    notes: data.notes ?? '',
+  }
+}
+
 function Field({
   label, required, hint, children,
 }: {
@@ -88,9 +125,10 @@ const inputCls = `w-full bg-surface border border-surface-border text-ink-primar
 const selectCls = `w-full bg-surface border border-surface-border text-ink-primary text-sm
   rounded-lg px-3 py-2 outline-none focus:border-accent-blue transition-colors`
 
-export default function AddPropertyModal({ onClose, onSaved }: Props) {
+export default function AddPropertyModal({ onClose, onSaved, editPropertyId, initialData }: Props) {
+  const isEdit = !!editPropertyId
   const [step, setStep] = useState<Step>('location')
-  const [form, setForm] = useState<FormState>(defaultForm)
+  const [form, setForm] = useState<FormState>(initialData ? propertyToForm(initialData) : defaultForm)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -140,7 +178,9 @@ export default function AddPropertyModal({ onClose, onSaved }: Props) {
           ? parseInt(form.estimated_loan_maturity_year) : undefined,
         notes:                form.notes || undefined,
       }
-      const result = await createProperty(payload)
+      const result = isEdit
+        ? await updateProperty(editPropertyId!, payload)
+        : await createProperty(payload)
       onSaved(result)
     } catch (e: any) {
       setError(e?.response?.data?.detail || 'Failed to save property')
@@ -160,7 +200,7 @@ export default function AddPropertyModal({ onClose, onSaved }: Props) {
               <Building2 size={15} className="text-accent-blue" />
             </div>
             <div>
-              <div className="font-semibold text-ink-primary">Add Property</div>
+              <div className="font-semibold text-ink-primary">{isEdit ? 'Edit Property' : 'Add Property'}</div>
               <div className="text-[11px] text-ink-muted">Signals computed automatically after save</div>
             </div>
           </div>
@@ -380,7 +420,9 @@ export default function AddPropertyModal({ onClose, onSaved }: Props) {
               className="px-5 py-2 rounded-lg bg-emerald-600 text-white text-sm font-semibold
                          hover:bg-emerald-700 transition-colors disabled:opacity-50"
             >
-              {saving ? 'Saving & Computing Signals...' : 'Save Property'}
+              {saving
+                ? 'Saving…'
+                : isEdit ? 'Save Changes' : 'Save Property'}
             </button>
           )}
         </div>
