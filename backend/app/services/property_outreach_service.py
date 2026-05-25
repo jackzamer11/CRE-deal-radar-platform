@@ -69,29 +69,26 @@ def search_property_intelligence(property_dict: dict) -> list:
     if not owner_name and not address:
         return []
 
+    # Keep queries short — only the identifiers, no boilerplate context, to stay under 1,500 input tokens
     queries = [
-        f"{owner_name} {submarket} commercial real estate 2025 2026",
-        f"{address} office vacancy Northern Virginia 2025",
+        f"{owner_name} {submarket} office",
+        f"{address} Northern Virginia",
     ]
 
-    try:
-        import anthropic
-        client = anthropic.Anthropic(api_key=api_key)
+    import anthropic
+    client = anthropic.Anthropic(api_key=api_key)
 
+    try:
         raw_findings: list[str] = []
         for q in queries:
             resp = client.messages.create(
                 model="claude-sonnet-4-6",
-                max_tokens=1024,
+                max_tokens=500,
                 tools=[{"type": "web_search_20250305", "name": "web_search"}],
                 messages=[{
                     "role": "user",
                     "content": (
-                        f"Search for: {q}. "
-                        "Return up to 3 factual findings relevant to commercial real estate outreach. "
-                        "Each finding on its own line. Focus on: ownership changes, permit activity, "
-                        "debt or refinance activity, extended vacancy mentions, or submarket commentary. "
-                        "Output EACH finding on its own line in EXACTLY this format — no other text:\n"
+                        f"{q}. "
                         "FACT: [sentence] | URL: [url or N/A] | SOURCE: [domain]"
                     ),
                 }],
@@ -127,6 +124,9 @@ def search_property_intelligence(property_dict: dict) -> list:
                 break
 
         return findings[:3]
+    except anthropic.RateLimitError:
+        print("[search-intelligence] Rate limited — skipping panel")
+        return []
     except Exception as e:
         print(f"[search_property_intelligence] Search error: {e}")
         return []
