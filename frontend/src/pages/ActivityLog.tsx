@@ -22,10 +22,12 @@ const ACTION_COLORS: Record<ActionType, string> = {
 }
 
 const OUTREACH_TYPE_LABELS: Record<string, string> = {
-  tenant_match:     'Tenant Match Outreach',
-  for_sale_vacancy: 'For Sale + Vacancy Outreach',
-  lease_renewal:    'Lease Renewal Outreach',
-  listing_rep:      'Listing Rep Outreach',
+  tenant_match:         'Tenant Match Outreach',        // legacy — kept for existing log entries
+  tenant_match_owner:   'Owner Outreach (Tenant Match)',
+  tenant_match_tenant:  'Tenant Outreach (Tenant Match)',
+  for_sale_vacancy:     'For Sale + Vacancy Outreach',
+  lease_renewal:        'Lease Renewal Outreach',
+  listing_rep:          'Listing Rep Outreach',
 }
 
 function OutreachTypeBadge({ outreachType }: { outreachType: string | null }) {
