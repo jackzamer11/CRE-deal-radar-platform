@@ -64,6 +64,10 @@ export interface PropertyListOut {
   landlord_representative: string | null
   landlord_rep_contact: string | null
   sales_contact: string | null
+  // Snooze state (null = not snoozed)
+  snoozed_until: string | null
+  snooze_reason: string | null
+  returned_from_snooze: boolean | null
 }
 
 export interface PropertyOut extends PropertyListOut {
@@ -373,6 +377,7 @@ export interface DailyBriefing {
   tenant_match_actions: TenantMatchAction[]
   acquisition_targets: AcquisitionTarget[]
   expired_leases: ExpiredLease[]
+  returned_from_snooze_property_ids: string[]
   signal_refresh_timestamp: string | null
 }
 

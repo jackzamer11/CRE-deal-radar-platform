@@ -120,6 +120,11 @@ class Property(Base):
     # Set on every user-initiated PATCH; guards against pipeline overwrites.
     last_modified_by_user = Column(DateTime, nullable=True)
 
+    # Snooze — temporarily hide from Daily Briefing / Section A
+    snoozed_until        = Column(Date,    nullable=True)   # if today < this, property is hidden from queue
+    snooze_reason        = Column(String,  nullable=True)   # free text (e.g. "Under contract — PSA signed")
+    returned_from_snooze = Column(Boolean, nullable=True)   # set True when snooze expires on briefing load
+
     # Relationships
     opportunities = relationship("Opportunity", back_populates="property", cascade="all, delete-orphan")
     activity_logs = relationship("ActivityLog", back_populates="property")
