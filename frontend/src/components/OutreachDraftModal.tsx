@@ -144,6 +144,16 @@ export default function OutreachDraftModal(props: Props) {
     ? (activeTabTenant?.name ?? tenantName)
     : tenantName
 
+  // Name of the tenant whose profile the property-side email leads with.
+  // Looks up effectiveCompanyId in the full matched_tenants list (not just the
+  // top-3 tabTenants) so it stays correct even when pair_company_id ranked
+  // outside the tabs (e.g. when opened from the Daily Briefing).
+  const leadingTenantName: string | null = entity_type === 'property'
+    ? ((props.matched_tenants ?? []).find(t => t.company_id === effectiveCompanyId)?.name
+       ?? props.pair_tenant_name
+       ?? null)
+    : null
+
   // ── Draft state ─────────────────────────────────────────────────────────────
   const [draft, setDraft]         = useState<OutreachDraft | null>(null)
   const [persistedId, setPersistedId] = useState<number | null>(null)
@@ -710,6 +720,13 @@ export default function OutreachDraftModal(props: Props) {
                         Add recipient before sending — contact not on file
                       </div>
                     )}
+                  </div>
+                )}
+
+                {/* Leading-with label — property_side only */}
+                {direction === 'property_side' && leadingTenantName && (
+                  <div className="text-[11px] text-ink-muted mb-1">
+                    Leading with: <span className="text-ink-secondary">{leadingTenantName}</span>
                   </div>
                 )}
 
