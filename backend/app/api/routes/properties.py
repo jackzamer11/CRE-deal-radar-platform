@@ -336,6 +336,32 @@ class PropertyManualCreate(BaseModel):
     parking_ratio: Optional[float] = None
 
 
+class PropertyUpdate(BaseModel):
+    """All fields optional — only fields present in the request body are updated."""
+    address:                      Optional[str]   = None
+    submarket:                    Optional[str]   = None
+    asset_class:                  Optional[str]   = None
+    total_sf:                     Optional[int]   = None
+    year_built:                   Optional[int]   = None
+    last_renovation_year:         Optional[int]   = None
+    owner_name:                   Optional[str]   = None
+    owner_type:                   Optional[str]   = None
+    owner_phone:                  Optional[str]   = None
+    owner_email:                  Optional[str]   = None
+    acquisition_year:             Optional[int]   = None
+    acquisition_price:            Optional[float] = None
+    in_place_rent_psf:            Optional[float] = None
+    occupancy_pct:                Optional[float] = None
+    sf_expiring_12mo:             Optional[float] = None
+    sf_expiring_24mo:             Optional[float] = None
+    last_lease_signed_year:       Optional[int]   = None
+    listed_for_sale:              Optional[bool]  = None
+    asking_price:                 Optional[float] = None
+    days_on_market:               Optional[int]   = None
+    estimated_loan_maturity_year: Optional[int]   = None
+    notes:                        Optional[str]   = None
+
+
 router = APIRouter(prefix="/properties", tags=["properties"])
 
 
@@ -1150,6 +1176,82 @@ def get_property(property_id: str, db: Session = Depends(get_db)):
     prop = db.query(Property).filter(Property.property_id == property_id).first()
     if not prop:
         raise HTTPException(status_code=404, detail="Property not found")
+    out = _enrich(prop)
+    out.matched_tenants = _compute_matched_tenants(prop, db)
+    return out
+
+
+@router.put("/{property_id}", response_model=PropertyOut)
+def update_property(property_id: str, payload: PropertyUpdate, db: Session = Depends(get_db)):
+    """Partial update — only fields present in the request body are applied.
+    Derived fields (vacancy, rollover, cap_rate, etc.) are recomputed automatically.
+    Signal scores are refreshed after every update."""
+    prop = db.query(Property).filter(Property.property_id == property_id).first()
+    if not prop:
+        raise HTTPException(status_code=404, detail="Property not found")
+
+    # ── Apply direct-mapped fields ─────────────────────────────────────────
+    if payload.address is not None:       prop.address   = payload.address
+    if payload.asset_class is not None:   prop.asset_class = payload.asset_class
+    if payload.total_sf is not None:      prop.total_sf  = payload.total_sf
+    if payload.year_built is not None:    prop.year_built = payload.year_built
+    if payload.last_renovation_year is not None:
+        prop.last_renovation_year = payload.last_renovation_year
+    if payload.owner_name is not None:    prop.owner_name  = payload.owner_name
+    if payload.owner_type is not None:    prop.owner_type  = payload.owner_type
+    if payload.owner_phone is not None:   prop.owner_phone = payload.owner_phone
+    if payload.owner_email is not None:   prop.owner_email = payload.owner_email
+    if payload.acquisition_price is not None:
+        prop.acquisition_price = payload.acquisition_price
+    if payload.in_place_rent_psf is not None:
+        prop.in_place_rent_psf = payload.in_place_rent_psf
+    if payload.occupancy_pct is not None: prop.occupancy_pct = payload.occupancy_pct
+    if payload.sf_expiring_12mo is not None: prop.sf_expiring_12mo = payload.sf_expiring_12mo
+    if payload.sf_expiring_24mo is not None: prop.sf_expiring_24mo = payload.sf_expiring_24mo
+    if payload.listed_for_sale is not None:  prop.listed_for_sale  = payload.listed_for_sale
+    if payload.asking_price is not None:     prop.asking_price     = payload.asking_price
+    if payload.days_on_market is not None:   prop.days_on_market   = payload.days_on_market
+    if payload.estimated_loan_maturity_year is not None:
+        prop.estimated_loan_maturity_year = payload.estimated_loan_maturity_year
+    if payload.notes is not None:            prop.notes = payload.notes
+
+    # ── Submarket: also refresh market benchmarks ───────────────────────────
+    if payload.submarket is not None:
+        prop.submarket        = payload.submarket
+        prop.market_rent_psf  = settings.submarket_market_rent.get(payload.submarket, 26.0)
+        prop.market_cap_rate  = settings.submarket_cap_rate.get(payload.submarket, 6.5)
+        prop.submarket_avg_dom = settings.submarket_avg_dom.get(payload.submarket, 120)
+
+    # ── Year-based derived fields ───────────────────────────────────────────
+    if payload.acquisition_year is not None:
+        acq_date = date(payload.acquisition_year, 1, 1)
+        prop.acquisition_date = acq_date
+        prop.years_owned = round((date.today() - acq_date).days / 365.25, 1)
+    if payload.last_lease_signed_year is not None:
+        prop.last_lease_signed_date = date(payload.last_lease_signed_year, 6, 1)
+        prop.years_since_last_lease = round(CURRENT_YEAR - payload.last_lease_signed_year, 1)
+
+    # ── Recompute all derived numeric fields from current prop state ────────
+    if prop.occupancy_pct is not None:
+        prop.vacancy_pct = round(100.0 - prop.occupancy_pct, 2)
+        prop.leased_sf   = prop.total_sf * (prop.occupancy_pct / 100.0)
+        prop.vacant_sf   = prop.total_sf * (prop.vacancy_pct   / 100.0)
+    else:
+        prop.vacancy_pct = None
+        prop.leased_sf   = None
+        prop.vacant_sf   = None
+    if prop.total_sf and prop.sf_expiring_12mo is not None:
+        prop.lease_rollover_pct = round(prop.sf_expiring_12mo / prop.total_sf * 100, 2)
+    if prop.asking_price and prop.total_sf:
+        prop.asking_price_psf = round(prop.asking_price / prop.total_sf, 2)
+    if prop.asking_price and prop.in_place_rent_psf and prop.leased_sf:
+        prop.cap_rate = round(
+            prop.in_place_rent_psf * prop.leased_sf * 0.55 / prop.asking_price * 100, 2
+        )
+
+    _run_signals(prop)
+    db.commit()
+    db.refresh(prop)
     out = _enrich(prop)
     out.matched_tenants = _compute_matched_tenants(prop, db)
     return out

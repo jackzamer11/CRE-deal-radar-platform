@@ -44,6 +44,9 @@ export const getProperty = (propertyId: string): Promise<PropertyOut> =>
 export const createProperty = (payload: Record<string, unknown>): Promise<PropertyOut> =>
   api.post('/properties/', payload).then(r => r.data)
 
+export const updateProperty = (propertyId: string, payload: Record<string, unknown>): Promise<PropertyOut> =>
+  api.put(`/properties/${propertyId}`, payload).then(r => r.data)
+
 export const refreshAllSignals = (): Promise<{ refreshed: number; timestamp: string }> =>
   api.post('/properties/refresh-signals').then(r => r.data)
 

@@ -87,6 +87,9 @@ export interface PropertyOut extends PropertyListOut {
   vacancy_12mo_ago: number | null
   vacant_sf: number | null
   sf_expiring_12mo: number
+  sf_expiring_24mo: number
+  last_lease_signed_date: string | null
+  estimated_loan_maturity_year: number | null
   lease_rollover_pct: number
   years_since_last_lease: number
   listed_for_sale: boolean

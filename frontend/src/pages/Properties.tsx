@@ -137,6 +137,7 @@ export default function Properties() {
   const [selected, setSelected]             = useState<PropertyOut | null>(null)
   const [selectedLogs, setSelectedLogs]     = useState<OutreachLog[]>([])
   const [showAddModal, setShowAddModal]     = useState(false)
+  const [editProperty, setEditProperty]     = useState<PropertyOut | null>(null)
   const [showBulkModal, setShowBulkModal]   = useState(false)
   const [showCoStarModal, setShowCoStarModal] = useState(false)
   const [outreachModal, setOutreachModal]   = useState<{
@@ -480,6 +481,18 @@ export default function Properties() {
           onSaved={(_saved: PropertyOut) => { setShowAddModal(false); load() }}
         />
       )}
+      {editProperty && (
+        <AddPropertyModal
+          editPropertyId={editProperty.property_id}
+          initialData={editProperty}
+          onClose={() => setEditProperty(null)}
+          onSaved={prop => {
+            setEditProperty(null)
+            setSelected(prop)
+            setProperties(ps => ps.map(p => p.property_id === prop.property_id ? prop : p))
+          }}
+        />
+      )}
       {showBulkModal && (
         <BulkUploadModal onClose={() => setShowBulkModal(false)} onDone={load} />
       )}
@@ -538,9 +551,18 @@ export default function Properties() {
                 <div className="font-bold text-ink-primary">{selected.address}</div>
                 <div className="text-xs text-ink-muted mt-0.5">{selected.submarket} · {selected.asset_class}</div>
               </div>
-              <button onClick={closePanel} className="text-ink-muted hover:text-ink-primary p-1">
-                <X size={18} />
-              </button>
+              <div className="flex items-center gap-0.5">
+                <button
+                  onClick={() => setEditProperty(selected)}
+                  title="Edit property"
+                  className="text-ink-muted hover:text-accent-blue p-1 rounded transition-colors"
+                >
+                  <Pencil size={15} />
+                </button>
+                <button onClick={closePanel} className="text-ink-muted hover:text-ink-primary p-1">
+                  <X size={18} />
+                </button>
+              </div>
             </div>
 
             <div className="space-y-3">
