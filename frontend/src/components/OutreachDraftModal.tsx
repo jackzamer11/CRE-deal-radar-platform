@@ -128,9 +128,11 @@ export default function OutreachDraftModal(props: Props) {
   const [activeTabCompanyId, setActiveTabCompanyId] = useState<string | null>(
     entity_type !== 'property'
       ? null
-      : (props.pair_company_id && tabTenants.some(t => t.company_id === props.pair_company_id))
-        ? props.pair_company_id
-        : tabTenants[0]?.company_id ?? null
+      // Always honour pair_company_id when provided (e.g. from Daily Briefing row) even
+      // if it didn't rank in the top-3 matched tenants for this property's tab list.
+      // Fall back to the #1-ranked tab tenant only when no pair_company_id is given
+      // (i.e. modal opened directly from the property detail panel).
+      : props.pair_company_id ?? tabTenants[0]?.company_id ?? null
   )
   const activeTabTenant = tabTenants.find(t => t.company_id === activeTabCompanyId) ?? tabTenants[0]
 
