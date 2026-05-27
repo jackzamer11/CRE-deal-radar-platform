@@ -41,6 +41,11 @@ _PHASE2_CONFIRMED_DISCLOSURE = (
     "Please note that the owner has confirmed openness to leasing discussions "
     "for this property — we are actively moving forward."
 )
+# Phase 1 for_sale_vacancy closing line — hardcoded, no dynamic interpolation.
+_PHASE1_FSV_CLOSING = (
+    "I have a qualified tenant in mind — happy to share more if there's interest "
+    "in a conversation."
+)
 
 
 def _inject_hardcoded_sentences(email_body: str) -> str:
@@ -419,32 +424,36 @@ def _build_for_sale_vacancy(
         if benchmark else ""
     )
 
-    # ── Phase 1: industry-only tenant reference (Fix 1) ─────────────────────
-    # When a lead tenant is known, reference their INDUSTRY ONLY.
-    # Never mention headcount, SF need, or lease timing in Phase 1 property-side
-    # outreach — those details are for Phase 2 tenant-side copy only.
-    # The Phase 1 closing line ("I have a potential tenant in mind in the X space…")
-    # is injected post-LLM in generate_property_outreach so it survives regeneration.
-    lead_industry: Optional[str] = None
+    # Phase 1 property-side: industry, NAICS code/description, and all sector
+    # fields are stripped — the LLM sees only that a qualified prospect exists,
+    # plus SF needed and lease expiry.  No industry label reaches the model.
+    # The closing line is injected post-LLM in generate_property_outreach.
     if tenant_dict is not None:
-        lead_industry = (tenant_dict.get("industry") or "professional services").strip()
+        sf  = tenant_dict.get("estimated_sf_needed")
+        exp = tenant_dict.get("lease_expiry_months")
+        sf_str  = f"{sf:,} SF" if sf else "office space in the area"
+        exp_str = f"approximately {exp} months" if exp is not None else "in the coming months"
         tenant_hint = (
-            f"\nLead tenant industry (reference this industry ONLY — "
-            f"NEVER mention headcount, SF requirements, or lease timing): {lead_industry}"
+            f"\nA qualified tenant prospect has been matched to this property. "
+            f"Do NOT reveal their name, industry, NAICS code, or any sector label. "
+            f"They are seeking {sf_str} with a lease expiring {exp_str}."
         )
         demand_clause = (
-            f"Reference a single potential tenant in the {lead_industry} space — "
-            f"use ONLY the industry label, no headcount numbers, no SF ranges, no lease timing. "
-            f"The singular, direct ask must be verbatim: "
-            f"'Would you be open to leasing a portion of the available space while "
-            f"the property is being marketed for sale?' "
-            f"Do NOT reference multiple tenants. Do NOT describe the tenant beyond their industry."
+            "Reference a single qualified prospect — do NOT mention their industry, "
+            "company name, NAICS code, or headcount. "
+            "The singular, direct ask must be verbatim: "
+            "'Would you be open to leasing a portion of the available space while "
+            "the property is being marketed for sale?' "
+            "Do NOT reference multiple tenants."
         )
     elif tenant_context:
-        # Fallback: text-based context passed in — extract first word-phrase as hint
-        tenant_hint = f"\nTenant context (reference industry only — no name, no headcount): {tenant_context}"
+        tenant_hint = (
+            f"\nA qualified tenant prospect exists (do NOT reveal name, industry, "
+            f"NAICS code, or headcount): {tenant_context}"
+        )
         demand_clause = (
-            "Reference a potential tenant by industry only — no company name, no headcount, no SF numbers. "
+            "Reference a potential qualified prospect — no company name, no industry label, "
+            "no NAICS code, no headcount, no SF numbers. "
             "The singular, direct ask must be: "
             "'Would you be open to leasing a portion of the available space while the property is "
             "being marketed for sale?' "
@@ -472,15 +481,14 @@ def _build_for_sale_vacancy(
         f"NEVER suggest specific days of the week. "
         f"Close with: 'I'd welcome a brief call at your convenience.'"
     )
-    industry_ref = f"the {lead_industry} space (industry only — no company name, no headcount, no SF)" if lead_industry else "a potential tenant"
     body_instruction = (
         "2. Email body — maximum 150 words (excluding signature block); "
-        f"  use full property address; acknowledge property is listed for sale; "
-        f"  reference one potential tenant in {industry_ref}; "
+        "   use full property address; acknowledge property is listed for sale; "
+        "   reference one qualified prospect (no industry label, no company name, no headcount); "
         "   include verbatim ask: 'Would you be open to leasing a portion of the available space "
         "   while the property is being marketed for sale?'; "
         "   cite one CBRE Q1 2026 submarket data point\n"
-        if (lead_industry or tenant_context) else
+        if (tenant_dict is not None or tenant_context) else
         "2. Email body — maximum 150 words (excluding signature block); "
         "   use full property address; acknowledge property is listed for sale; "
         "   ask if open to leasing vacant SF while on market; reference demand generally; "
@@ -901,29 +909,18 @@ def generate_property_outreach(
             email_body = _hc_pattern.sub("", email_body)
             email_body = _re.sub(r"  +", " ", email_body).strip()
 
-    # Fix 1: Phase 1 for_sale_vacancy → inject closing line with lead industry.
-    # "I have a potential tenant in mind in the [X] space — happy to share more
-    # if there's interest in a conversation."
-    # Only injected property-side (Phase 1); Phase 2 (tenant_side) gets the
-    # confirmed-leasing disclosure instead.
-    if outreach_type == "for_sale_vacancy" and not is_tenant_side:
-        lead_industry_val = ""
-        if tenant_dict:
-            lead_industry_val = (tenant_dict.get("industry") or "").strip()
-        if lead_industry_val:
-            phase1_closing = (
-                f"I have a potential tenant in mind in the {lead_industry_val} space — "
-                "happy to share more if there's interest in a conversation."
-            )
-            if phase1_closing not in email_body:
-                if "Thank you," in email_body:
-                    email_body = email_body.replace(
-                        "Thank you,",
-                        f"{phase1_closing}\n\nThank you,",
-                        1,
-                    )
-                else:
-                    email_body += f"\n\n{phase1_closing}"
+    # Phase 1 for_sale_vacancy closing line — hardcoded, no dynamic interpolation.
+    # Injected when a matched tenant dict is present; survives regeneration.
+    if outreach_type == "for_sale_vacancy" and not is_tenant_side and tenant_dict:
+        if _PHASE1_FSV_CLOSING not in email_body:
+            if "Thank you," in email_body:
+                email_body = email_body.replace(
+                    "Thank you,",
+                    f"{_PHASE1_FSV_CLOSING}\n\nThank you,",
+                    1,
+                )
+            else:
+                email_body += f"\n\n{_PHASE1_FSV_CLOSING}"
 
     # Fix 2: Phase 2 tenant-side → inject confirmed-leasing disclosure.
     # This applies whenever direction="tenant_side" (the endpoint already guards
