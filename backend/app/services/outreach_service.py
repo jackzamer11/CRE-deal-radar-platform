@@ -385,7 +385,8 @@ def generate_outreach(company: dict) -> dict:
     rules = [
         "Cite '(per CBRE Q1 2026)' on the FIRST market statistic in each message (email and call script).",
         (
-            f"Email body: MINIMUM 6 sentences. Subject line under 9 words. "
+            f"Email body: MINIMUM 6 sentences, MAXIMUM 150 words (excluding signature block). "
+            f"Subject line under 9 words. "
             f"REQUIRED in email body — both of these comparisons must appear: "
             f"(i) submarket vacancy vs NoVA average with the specific percentage-point delta; "
             f"(ii) submarket rent vs NoVA average — pattern: "
@@ -478,6 +479,7 @@ Return valid JSON only — no markdown fences, no extra text:
     )
 
     import json
+    from app.services.property_outreach_service import _inject_hardcoded_sentences
     full_user = user_prompt + intel_section
     response = client.chat.completions.create(
         model="gpt-4o",
@@ -490,4 +492,7 @@ Return valid JSON only — no markdown fences, no extra text:
     )
     result = json.loads(response.choices[0].message.content.strip())
     result["projected_sf"] = projected_sf
+    # Fix 1 & Fix 6: inject hardcoded intro and social proof post-LLM
+    if isinstance(result.get("email"), dict) and result["email"].get("body"):
+        result["email"]["body"] = _inject_hardcoded_sentences(result["email"]["body"])
     return result
