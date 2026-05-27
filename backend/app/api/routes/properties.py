@@ -1372,14 +1372,14 @@ def get_tenant_outreach(property_id: str, db: Session = Depends(get_db)):
             "years_owned":          prop.years_owned,
             "dominant_score_type":  prop.dominant_score_type,
         }
+        # Fix 4: headcount excluded — tenant-side emails must not reference
+        # headcount; SF needed and lease expiry are the permitted identifiers.
         tenant_dict = {
             "name":                 company.name,
             "industry":             company.industry or "professional services",
-            "current_headcount":    company.current_headcount,
             "estimated_sf_needed":  company.estimated_sf_needed or mt.sf_needed,
             "lease_expiry_months":  company.lease_expiry_months,
             "current_submarket":    company.current_submarket,
-            "headcount_growth_pct": company.headcount_growth_pct,
             "primary_contact_name": company.primary_contact_name,
         }
         outreach_type = (

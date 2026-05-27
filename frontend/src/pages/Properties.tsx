@@ -1,11 +1,11 @@
 import { useEffect, useState, useRef } from 'react'
 import { useSearchParams, useNavigate } from 'react-router-dom'
-import { Building2, Filter, RefreshCw, X, Plus, Upload, Pencil, Check, MessageSquarePlus, Clock, ChevronDown, ChevronRight, Copy } from 'lucide-react'
+import { Building2, Filter, RefreshCw, X, Plus, Upload, Pencil, Check, MessageSquarePlus, Clock } from 'lucide-react'
 import {
   getProperties, getProperty, updatePropertyInPlaceRent, getPropertyOutreachHistory,
-  unsnoozeProperty, getTenantOutreach,
+  unsnoozeProperty,
 } from '../api/client'
-import type { PropertyListOut, PropertyOut, OutreachLog, TenantOutreachDraft } from '../types'
+import type { PropertyListOut, PropertyOut, OutreachLog } from '../types'
 import { PriorityBadge } from '../components/PriorityBadge'
 import ScoreBadge from '../components/ScoreBadge'
 import AddPropertyModal from '../components/AddPropertyModal'
@@ -155,9 +155,6 @@ export default function Properties() {
     pairCompanyId?: string
     pairTenantName?: string
   } | null>(null)
-  const [tenantOutreachDrafts, setTenantOutreachDrafts] = useState<TenantOutreachDraft[]>([])
-  const [tenantOutreachLoading, setTenantOutreachLoading] = useState(false)
-  const [expandedDraft, setExpandedDraft] = useState<string | null>(null)
 
   const load = async () => {
     setLoading(true)
@@ -210,27 +207,12 @@ export default function Properties() {
 
   const closePanel = () => {
     setSelected(null)
-    setTenantOutreachDrafts([])
-    setExpandedDraft(null)
     if (searchParams.get('selected')) {
       const next = new URLSearchParams(searchParams)
       next.delete('selected')
       setSearchParams(next, { replace: true })
     }
   }
-
-  // Fetch tenant outreach drafts when a lease-while-listed property is selected
-  useEffect(() => {
-    if (!selected?.owner_confirmed_leasing) {
-      setTenantOutreachDrafts([])
-      return
-    }
-    setTenantOutreachLoading(true)
-    getTenantOutreach(selected.property_id)
-      .then(drafts => { setTenantOutreachDrafts(drafts); setExpandedDraft(null) })
-      .catch(() => setTenantOutreachDrafts([]))
-      .finally(() => setTenantOutreachLoading(false))
-  }, [selected?.property_id, selected?.owner_confirmed_leasing])
 
   // ── Snooze helpers ──────────────────────────────────────────────────────
   const applySnooze = (prop: PropertyOut) => {
@@ -286,7 +268,19 @@ export default function Properties() {
     const hasMatched = (p.matched_tenants?.length ?? 0) > 0
     const dom = p.dominant_score_type === 'listing_rep' ? 'tenant_match' : p.dominant_score_type
 
-    // Type 1: For Sale + Vacancy + matched tenants → for_sale_vacancy
+    // Type 0: Owner confirmed open to leasing — always use tenant_match modal (Fix 1).
+    // This gives the full Property Side / Tenant Side toggle + per-tenant tabs,
+    // identical to off-market tenant match properties.
+    if (p.owner_confirmed_leasing && sfAvail > 0 && hasMatched) {
+      const targetType = p.landlord_representative ? 'broker' : 'owner'
+      return {
+        type: 'tenant_match',
+        targetType,
+        label: '⚡ Draft Tenant Outreach (Lease While Listed)',
+      }
+    }
+
+    // Type 1: For Sale + Vacancy + matched tenants (Phase 1, not yet confirmed) → for_sale_vacancy
     if (sfAvail > 0 && p.listed_for_sale && hasMatched) {
       const targetType = p.sales_contact ? 'sales_broker' : 'owner'
       return {
@@ -920,69 +914,6 @@ export default function Properties() {
                   </div>
                 )
               })()}
-
-              {/* Tenant Outreach — Lease While Listed */}
-              {selected.owner_confirmed_leasing && selected.listed_for_sale && (
-                <div className="bg-amber-400/8 border border-amber-400/30 rounded-lg p-3">
-                  <div className="text-[10px] text-amber-300 uppercase tracking-wider mb-2 font-semibold flex items-center gap-1.5">
-                    ⚡ TENANT OUTREACH — READY TO SEND
-                  </div>
-                  {tenantOutreachLoading ? (
-                    <div className="text-xs text-ink-muted py-2">Generating tenant outreach drafts…</div>
-                  ) : tenantOutreachDrafts.length === 0 ? (
-                    <div className="text-xs text-ink-muted">No matched tenants available for outreach.</div>
-                  ) : (
-                    <div className="space-y-2">
-                      {tenantOutreachDrafts.map(draft => (
-                        <div key={draft.company_id} className="border border-amber-400/20 rounded-lg overflow-hidden">
-                          <button
-                            onClick={() => setExpandedDraft(e => e === draft.company_id ? null : draft.company_id)}
-                            className="w-full flex items-center justify-between gap-2 px-3 py-2
-                                       bg-surface-muted hover:bg-surface-card transition-colors"
-                          >
-                            <div className="text-left min-w-0">
-                              <div className="text-xs font-semibold text-ink-primary truncate">{draft.company_name}</div>
-                              <div className="text-[10px] text-ink-muted">
-                                {draft.sf_needed.toLocaleString()} SF needed
-                                {draft.lease_expiry_months != null
-                                  ? ` · lease expires ~${draft.lease_expiry_months}mo`
-                                  : ''}
-                              </div>
-                            </div>
-                            {expandedDraft === draft.company_id
-                              ? <ChevronDown size={13} className="text-amber-400 flex-shrink-0" />
-                              : <ChevronRight size={13} className="text-ink-muted flex-shrink-0" />}
-                          </button>
-                          {expandedDraft === draft.company_id && (
-                            <div className="px-3 py-2 space-y-2 bg-surface-card border-t border-amber-400/20">
-                              <div>
-                                <div className="text-[9px] text-ink-muted uppercase tracking-wider mb-1">Email Draft</div>
-                                <pre className="text-[10px] text-ink-secondary whitespace-pre-wrap font-sans leading-relaxed
-                                               max-h-48 overflow-y-auto p-2 rounded bg-surface-muted border border-surface-border">
-                                  {draft.email_draft}
-                                </pre>
-                                <button
-                                  onClick={() => navigator.clipboard.writeText(draft.email_draft)}
-                                  className="mt-1.5 flex items-center gap-1 text-[10px] text-accent-blue hover:text-accent-blueDim"
-                                >
-                                  <Copy size={10} /> Copy Email
-                                </button>
-                              </div>
-                              <div>
-                                <div className="text-[9px] text-ink-muted uppercase tracking-wider mb-1">Call Script</div>
-                                <pre className="text-[10px] text-ink-secondary whitespace-pre-wrap font-sans leading-relaxed
-                                               max-h-32 overflow-y-auto p-2 rounded bg-surface-muted border border-surface-border">
-                                  {draft.call_script}
-                                </pre>
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )}
 
               {/* Outreach history */}
               {selectedLogs.length > 0 && (

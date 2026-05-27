@@ -573,8 +573,6 @@ export default function OutreachDraftModal(props: Props) {
                 <span>·</span>
                 <span>{activeTabTenant.industry}</span>
                 <span>·</span>
-                <span>{activeTabTenant.headcount ?? '—'} HC</span>
-                <span>·</span>
                 <span>{activeTabTenant.sf_needed.toLocaleString()} SF needed</span>
               </div>
             )}
