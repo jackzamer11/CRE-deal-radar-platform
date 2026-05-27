@@ -68,6 +68,10 @@ class PropertyBase(BaseModel):
     snooze_reason:        Optional[str]   = None
     returned_from_snooze: Optional[bool]  = None
 
+    # Owner confirmed open to leasing while listed
+    owner_confirmed_leasing:      bool          = False
+    owner_confirmed_leasing_date: Optional[date] = None
+
     # CoStar enrichment fields
     star_rating: Optional[int] = None
     sf_avail: Optional[int] = None
@@ -182,6 +186,8 @@ class PropertyListOut(BaseModel):
     snoozed_until:        Optional[date] = None
     snooze_reason:        Optional[str]  = None
     returned_from_snooze: Optional[bool] = None
+    owner_confirmed_leasing:      bool          = False
+    owner_confirmed_leasing_date: Optional[date] = None
 
     @model_validator(mode="after")
     def _derive_listed_for_lease(self) -> "PropertyListOut":

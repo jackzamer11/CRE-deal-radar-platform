@@ -11,6 +11,7 @@ import type {
   OutreachDraft,
   OutreachDraftRecord,
   OutreachLog,
+  TenantOutreachDraft,
 } from '../types'
 
 const api = axios.create({
@@ -55,6 +56,9 @@ export const snoozeProperty = (
 
 export const unsnoozeProperty = (propertyId: string): Promise<PropertyOut> =>
   api.post(`/properties/${propertyId}/unsnooze`).then(r => r.data)
+
+export const getTenantOutreach = (propertyId: string): Promise<TenantOutreachDraft[]> =>
+  api.get(`/properties/${propertyId}/tenant-outreach`).then(r => r.data)
 
 export const refreshAllSignals = (): Promise<{ refreshed: number; timestamp: string }> =>
   api.post('/properties/refresh-signals').then(r => r.data)

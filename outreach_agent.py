@@ -345,6 +345,42 @@ def run_property_outreach(args):
     print(f"{'='*60}\n")
 
 
+def fetch_lease_while_listed_overlap() -> dict:
+    """
+    Returns a mapping {company_id: property_address} for any company that is
+    matched to a property where owner_confirmed_leasing=True (lease-while-listed).
+    Used to warn the agent before sending tenant-side (company) outreach, to
+    prevent double-contacting the same tenant as both a prospect AND via the
+    landlord's side.
+    """
+    try:
+        resp = requests.get(
+            _api("/properties"),
+            params={"owner_confirmed_leasing": "true"},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        confirmed_properties = resp.json()
+    except Exception:
+        return {}
+
+    overlap: dict = {}
+    for prop in confirmed_properties:
+        pid = prop.get("property_id", "")
+        address = prop.get("address", pid)
+        try:
+            full = requests.get(_api(f"/properties/{pid}"), timeout=10)
+            full.raise_for_status()
+            details = full.json()
+        except Exception:
+            continue
+        for tenant in details.get("matched_tenants", []):
+            cid = tenant.get("company_id")
+            if cid and cid not in overlap:
+                overlap[cid] = address
+    return overlap
+
+
 def run(args):
     if getattr(args, 'property', None):
         run_property_outreach(args)
@@ -361,6 +397,17 @@ def run(args):
     if not companies:
         print("No companies matched. Check your priority filter or company ID.")
         return
+
+    # Fix 7: Build lease-while-listed overlap map BEFORE the main loop.
+    # If a company is already matched to a confirmed-leasing property, outreaching
+    # them as a tenant-side prospect would be double-contact. Warn, but don't block.
+    print("  [CHECKING] Scanning for lease-while-listed property conflicts...")
+    lease_while_listed_overlap = fetch_lease_while_listed_overlap()
+    if lease_while_listed_overlap:
+        print(f"  [WARN] {len(lease_while_listed_overlap)} company/ies are already matched to "
+              f"owner-confirmed leasing properties. Will flag below.\n")
+    else:
+        print("  [OK] No lease-while-listed conflicts found.\n")
 
     if not args.dry_run:
         print("Connecting to Google... (browser may open first time)\n")
@@ -382,6 +429,16 @@ def run(args):
             print(f"  [SKIP] {name} ({cid}) — already contacted")
             skipped += 1
             continue
+
+        # Fix 7: Warn if this company is already part of a lease-while-listed
+        # tenant outreach on the property side — don't auto-skip, but flag clearly.
+        if cid in lease_while_listed_overlap:
+            matched_prop = lease_while_listed_overlap[cid]
+            print(f"  [⚠ DOUBLE-OUTREACH WARNING] {name} ({cid}) is already matched to")
+            print(f"    lease-while-listed property: {matched_prop}")
+            print(f"    Tenant-side outreach for this company will DUPLICATE a property-side")
+            print(f"    approach already in progress. Review before sending.")
+            print()
 
         print(f"  [GENERATING] {name} ({cid}) | {company['priority']} | {company['current_submarket']}")
 

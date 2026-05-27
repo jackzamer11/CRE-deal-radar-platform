@@ -365,6 +365,17 @@ class PropertyUpdate(BaseModel):
     days_on_market:               Optional[int]   = None
     estimated_loan_maturity_year: Optional[int]   = None
     notes:                        Optional[str]   = None
+    owner_confirmed_leasing:      Optional[bool]  = None  # hard trigger for tenant-match outreach
+
+
+class TenantOutreachResult(BaseModel):
+    company_id:         str
+    company_name:       str
+    contact_name:       Optional[str] = None
+    sf_needed:          int
+    lease_expiry_months: Optional[int] = None
+    email_draft:        str
+    call_script:        str
 
 
 router = APIRouter(prefix="/properties", tags=["properties"])
@@ -821,6 +832,7 @@ def list_properties(
     sort_by: str = Query("signal_score", pattern="^(signal_score|prediction_score|vacancy_pct|years_owned)$"),
     dominant_score_type: Optional[str] = None,
     needs_outreach: Optional[bool] = None,
+    owner_confirmed_leasing: Optional[bool] = None,
     db: Session = Depends(get_db),
 ):
     q = db.query(Property)
@@ -829,6 +841,8 @@ def list_properties(
     if listed_for_sale is not None: q = q.filter(Property.listed_for_sale == listed_for_sale)
     if min_score is not None: q = q.filter(Property.signal_score >= min_score)
     if dominant_score_type:   q = q.filter(Property.dominant_score_type == dominant_score_type)
+    if owner_confirmed_leasing is not None:
+        q = q.filter(Property.owner_confirmed_leasing == owner_confirmed_leasing)
     if needs_outreach:
         # Properties with no outreach logged in the last 90 days, sorted by composite score
         from sqlalchemy import func as sqlfunc
@@ -1219,6 +1233,14 @@ def update_property(property_id: str, payload: PropertyUpdate, db: Session = Dep
     if payload.estimated_loan_maturity_year is not None:
         prop.estimated_loan_maturity_year = payload.estimated_loan_maturity_year
     if payload.notes is not None:            prop.notes = payload.notes
+    # Owner confirmed leasing — auto-set date on first confirmation; clear when unchecked
+    if payload.owner_confirmed_leasing is not None:
+        prop.owner_confirmed_leasing = payload.owner_confirmed_leasing
+        if payload.owner_confirmed_leasing:
+            if not prop.owner_confirmed_leasing_date:
+                prop.owner_confirmed_leasing_date = date.today()
+        else:
+            prop.owner_confirmed_leasing_date = None
 
     # ── Submarket: also refresh market benchmarks ───────────────────────────
     if payload.submarket is not None:
@@ -1307,6 +1329,107 @@ def unsnooze_property(property_id: str, db: Session = Depends(get_db)):
     out = _enrich(prop)
     out.matched_tenants = _compute_matched_tenants(prop, db)
     return out
+
+
+@router.get("/{property_id}/tenant-outreach", response_model=List[TenantOutreachResult])
+def get_tenant_outreach(property_id: str, db: Session = Depends(get_db)):
+    """Generate tenant-side outreach drafts for all matched tenants on an
+    owner-confirmed-leasing property.  Returns [] when no tenants match.
+    Returns 400 if owner_confirmed_leasing is not set."""
+    prop = db.query(Property).filter(Property.property_id == property_id).first()
+    if not prop:
+        raise HTTPException(status_code=404, detail="Property not found")
+    if not prop.owner_confirmed_leasing:
+        raise HTTPException(
+            status_code=400,
+            detail="owner_confirmed_leasing is not set for this property",
+        )
+
+    matched = _compute_matched_tenants(prop, db)
+    if not matched:
+        return []
+
+    results: list = []
+    for mt in matched:
+        company = db.query(Company).filter(Company.company_id == mt.company_id).first()
+        if not company:
+            continue
+
+        prop_dict = {
+            "address":              prop.address,
+            "submarket":            prop.submarket,
+            "asset_class":          prop.asset_class,
+            "total_sf":             prop.total_sf,
+            "sf_avail":             prop.sf_avail,
+            "market_rent_psf":      prop.market_rent_psf,
+            "in_place_rent_psf":    prop.in_place_rent_psf,
+            "vacancy_pct":          prop.vacancy_pct,
+            "listed_for_sale":      bool(prop.listed_for_sale),
+            "days_on_market":       prop.days_on_market,
+            "owner_name":           prop.owner_name,
+            "landlord_representative": prop.landlord_representative,
+            "sales_contact":        prop.sales_contact,
+            "years_owned":          prop.years_owned,
+            "dominant_score_type":  prop.dominant_score_type,
+        }
+        tenant_dict = {
+            "name":                 company.name,
+            "industry":             company.industry or "professional services",
+            "current_headcount":    company.current_headcount,
+            "estimated_sf_needed":  company.estimated_sf_needed or mt.sf_needed,
+            "lease_expiry_months":  company.lease_expiry_months,
+            "current_submarket":    company.current_submarket,
+            "headcount_growth_pct": company.headcount_growth_pct,
+            "primary_contact_name": company.primary_contact_name,
+        }
+        outreach_type = (
+            "for_sale_vacancy"
+            if prop.listed_for_sale and (prop.sf_avail or 0) > 0
+            else "tenant_match"
+        )
+        try:
+            draft = generate_property_outreach(
+                property_dict=prop_dict,
+                outreach_type=outreach_type,
+                direction="tenant_side",
+                tenant_dict=tenant_dict,
+            )
+            email_body = draft["email_body"]
+            # Inject disclosure when the property is simultaneously listed for sale
+            if prop.listed_for_sale and prop.owner_confirmed_leasing:
+                disclosure = (
+                    "Please note: the owner has indicated openness to leasing discussions "
+                    "while the property is being marketed for sale — timing and terms would "
+                    "be subject to their discretion."
+                )
+                if "Thank you," in email_body:
+                    email_body = email_body.replace("Thank you,", f"{disclosure}\n\nThank you,", 1)
+                else:
+                    email_body += f"\n\n{disclosure}"
+
+            call_parts = [
+                f"Opening: {draft.get('call_script_opening', '')}",
+                f"Core: {draft.get('call_script_core', '')}",
+                f"Pain Probe: {draft.get('call_script_pain_probe', '')}",
+                f"Close: {draft.get('call_script_close', '')}",
+            ]
+            call_script = "\n\n".join(p for p in call_parts if p.split(": ", 1)[-1].strip())
+
+            results.append(TenantOutreachResult(
+                company_id=company.company_id,
+                company_name=company.name,
+                contact_name=company.primary_contact_name,
+                sf_needed=company.estimated_sf_needed or mt.sf_needed,
+                lease_expiry_months=company.lease_expiry_months,
+                email_draft=email_body,
+                call_script=call_script,
+            ))
+        except Exception as e:
+            # GPT unavailable / rate-limited — skip gracefully, don't 500
+            print(f"[tenant-outreach] error for {company.company_id}: {e}")
+            continue
+
+    return results
 
 
 @router.post("/{property_id}/refresh-signals", response_model=PropertyOut)

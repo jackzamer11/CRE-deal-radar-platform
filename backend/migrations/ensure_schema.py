@@ -110,6 +110,10 @@ def ensure_properties(cur: sqlite3.Cursor) -> int:
     added += _add_column(cur, "properties", "snooze_reason",        "TEXT")
     added += _add_column(cur, "properties", "returned_from_snooze", "BOOLEAN")
 
+    # ── Owner confirmed leasing ────────────────────────────────────────────
+    added += _add_column(cur, "properties", "owner_confirmed_leasing",      "BOOLEAN DEFAULT 0")
+    added += _add_column(cur, "properties", "owner_confirmed_leasing_date", "DATE")
+
     return added
 
 
