@@ -269,15 +269,13 @@ def _build_tenant_match(
     # never sees bare "N/A" tokens in the profile (which produce awkward output).
     if tenant_dict is not None:
         industry = tenant_dict.get("industry") or "professional services firm"
-        hc       = tenant_dict.get("current_headcount")
         sf       = tenant_dict.get("estimated_sf_needed")
         exp      = tenant_dict.get("lease_expiry_months")
-        hc_str   = f"{hc} employees" if hc is not None else "a team"
         sf_str   = f"{sf:,} SF" if sf else "office space in the area"
         exp_str  = f"approximately {exp} months" if exp is not None else "in the coming months"
         tenant_hint = (
             f"\nPrimary matched tenant profile (do NOT reveal tenant name): "
-            f"a {industry} firm with {hc_str} seeking {sf_str} in "
+            f"a {industry} firm seeking {sf_str} in "
             f"{p.get('submarket', 'Northern Virginia')} with a lease expiring {exp_str}"
         )
     elif tenant_context:
@@ -293,14 +291,14 @@ def _build_tenant_match(
         addressee     = f"the landlord representative ({landlord_rep})"
         framing       = (
             "Write broker-to-broker, peer to peer. Lead with the PRIMARY tenant "
-            "profile (industry, headcount, SF range, submarket, approximate lease "
+            "profile (industry, SF range, submarket, approximate lease "
             "expiry months) — but never reveal the tenant company's name."
         )
     elif target_type == "owner":
         addressee = "the property owner"
         framing   = (
             "Write broker-to-owner. Lead with the PRIMARY tenant profile (industry, "
-            "headcount, SF range, submarket, approximate lease expiry months) without "
+            "SF range, submarket, approximate lease expiry months) without "
             "revealing the tenant company's name. Position the call as bringing them a "
             "credible prospect for the vacancy."
         )
@@ -357,7 +355,7 @@ def _build_tenant_match(
         "1. Email subject line (one line)\n"
         "2. Email body — maximum 150 words (excluding signature block); "
         "   greet recipient with the salutation above; "
-        "   describe tenant as 'a [industry] firm with [headcount] employees seeking [SF range] "
+        "   describe tenant as 'a [industry] firm seeking [SF range] "
         "   in [submarket] with a lease expiring in approximately [X months]'; "
         "   reference one CBRE Q1 2026 submarket data point; "
         "   request tour availability, asking rent confirmation, OM materials (broker) or 15-min call (owner)\n"
@@ -887,6 +885,21 @@ def generate_property_outreach(
     # "agent" title used in all paths (Fix 3 — advisor → agent everywhere).
     is_tenant_side = (direction == "tenant_side")
     email_body = _inject_hardcoded_sentences(parsed["email_body"])
+
+    # Safety strip: property-side copy must never mention headcount.
+    # Scan for "employees", "employee", or a bare number followed by "HC".
+    if not is_tenant_side:
+        import re as _re
+        _hc_pattern = _re.compile(
+            r'[^.!?\n]*\b(?:employees?|\d+\s*HC)\b[^.!?\n]*[.!?]',
+            _re.IGNORECASE,
+        )
+        hc_hits = _hc_pattern.findall(email_body)
+        for hit in hc_hits:
+            print(f"[headcount-strip] WARNING: removed sentence: {hit.strip()}")
+        if hc_hits:
+            email_body = _hc_pattern.sub("", email_body)
+            email_body = _re.sub(r"  +", " ", email_body).strip()
 
     # Fix 1: Phase 1 for_sale_vacancy → inject closing line with lead industry.
     # "I have a potential tenant in mind in the [X] space — happy to share more
