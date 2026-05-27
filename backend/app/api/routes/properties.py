@@ -1395,17 +1395,11 @@ def get_tenant_outreach(property_id: str, db: Session = Depends(get_db)):
                 tenant_dict=tenant_dict,
             )
             email_body = draft["email_body"]
-            # Inject disclosure when the property is simultaneously listed for sale
-            if prop.listed_for_sale and prop.owner_confirmed_leasing:
-                disclosure = (
-                    "Please note: the owner has indicated openness to leasing discussions "
-                    "while the property is being marketed for sale — timing and terms would "
-                    "be subject to their discretion."
-                )
-                if "Thank you," in email_body:
-                    email_body = email_body.replace("Thank you,", f"{disclosure}\n\nThank you,", 1)
-                else:
-                    email_body += f"\n\n{disclosure}"
+            # Fix 2: The confirmed-leasing disclosure ("Please note that the owner has
+            # confirmed openness…") is now injected at the service layer
+            # (generate_property_outreach) for every tenant_side call, using the exact
+            # canonical wording from _PHASE2_CONFIRMED_DISCLOSURE. No duplicate injection
+            # here — the service handles it idempotently.
 
             call_parts = [
                 f"Opening: {draft.get('call_script_opening', '')}",

@@ -812,79 +812,114 @@ export default function Properties() {
                 )}
               </div>
 
-              {/* Matched Tenants section */}
-              <div className="bg-surface-muted rounded-lg p-3">
-                <div className="text-[10px] text-ink-muted uppercase tracking-wider mb-2">
-                  MATCHED TENANTS ({selected.matched_tenants?.length ?? 0})
-                </div>
-                {(!selected.matched_tenants || selected.matched_tenants.length === 0) ? (
-                  <div className="text-xs text-ink-muted">No matched tenants</div>
-                ) : (
-                  <div className="space-y-2">
-                    {selected.matched_tenants.map(t => {
-                      let outreachType = 'tenant_match'
-                      let targetType = 'owner'
-                      let label = 'Draft Owner Outreach (Tenant Match)'
-                      if (selected.listed_for_sale && (selected.sf_avail ?? 0) > 0) {
-                        outreachType = 'for_sale_vacancy'
-                        targetType = selected.sales_contact ? 'sales_broker' : 'owner'
-                        label = targetType === 'sales_broker'
-                          ? 'Draft Broker Outreach (For Sale + Vacancy)'
-                          : 'Draft Owner Outreach (For Sale + Vacancy)'
-                      } else if (selected.landlord_representative) {
-                        targetType = 'broker'
-                        label = 'Draft Broker Outreach (Tenant Match)'
-                      }
-                      const tCtx = `Industry: ${t.industry}; Headcount: ${t.headcount ?? 'N/A'}; SF Needed: ${t.sf_needed.toLocaleString()}; Submarket: ${t.submarket ?? 'N/A'}`
-                      return (
-                        <div
-                          key={t.company_id}
-                          className="border border-surface-border rounded-lg p-2 hover:bg-surface-card cursor-pointer transition-colors"
-                          onClick={() => navigate(`/companies?selected=${t.company_id}`)}
-                        >
-                          <div className="flex items-start justify-between gap-2">
-                            <div className="min-w-0 flex-1">
-                              <div className="text-xs font-semibold text-ink-primary truncate">{t.name}</div>
-                              <div className="text-[10px] text-ink-muted">
-                                {t.industry} · {t.headcount ?? '—'} HC · {t.sf_needed.toLocaleString()} SF needed
-                              </div>
-                              {t.match_reasons.length > 0 && (
-                                <div className="flex flex-wrap gap-1 mt-1">
-                                  {t.match_reasons.map((r, i) => (
-                                    <span key={i} className="text-[9px] px-1.5 py-0.5 rounded bg-surface-card text-ink-secondary border border-surface-border">
-                                      {r}
-                                    </span>
-                                  ))}
-                                </div>
-                              )}
-                            </div>
-                            <div className="flex-shrink-0 text-right">
-                              <ScoreBadge score={t.match_score} size="sm" />
-                            </div>
+              {/* Matched Tenants section — Phase 1 vs Phase 2 mode (Fix 3) */}
+              {(() => {
+                const tenants = selected.matched_tenants ?? []
+                // Phase 1: listed for sale + vacancy + NOT yet confirmed leasing.
+                // Show a single lead-tenant card (industry only, no company name).
+                const isPhase1 = selected.listed_for_sale &&
+                  (selected.sf_avail ?? 0) > 0 &&
+                  !selected.owner_confirmed_leasing
+                // Phase 2: owner_confirmed_leasing=true — show all tenants with names
+                const displayTenants = isPhase1 ? tenants.slice(0, 1) : tenants
+
+                return (
+                  <div className="bg-surface-muted rounded-lg p-3">
+                    <div className="text-[10px] text-ink-muted uppercase tracking-wider mb-2">
+                      {isPhase1
+                        ? 'LEAD TENANT — INDUSTRY REFERENCE ONLY'
+                        : `MATCHED TENANTS (${tenants.length})`}
+                    </div>
+
+                    {tenants.length === 0 ? (
+                      <div className="text-xs text-ink-muted">
+                        No matched tenants yet — add tenants to the platform to generate outreach.
+                      </div>
+                    ) : (
+                      <>
+                        {isPhase1 && (
+                          <div className="mb-2 p-2 rounded-lg bg-amber-500/10 border border-amber-500/30
+                                          text-[10px] text-amber-300 leading-relaxed">
+                            Once the owner confirms interest in leasing, this will expand to full
+                            Tenant Match mode with top 3 matches.
                           </div>
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation()
-                              setOutreachModal({
-                                prop: selected,
-                                type: outreachType,
-                                targetType,
-                                tenantContext: tCtx,
-                                pairCompanyId: t.company_id,
-                                pairTenantName: t.name,
-                              })
-                            }}
-                            className="mt-2 w-full text-[10px] py-1.5 rounded-lg border border-emerald-500/40
-                                       text-emerald-400 hover:bg-emerald-500/10 transition-colors"
-                          >
-                            {label}
-                          </button>
+                        )}
+                        <div className="space-y-2">
+                          {displayTenants.map(t => {
+                            let outreachType = 'tenant_match'
+                            let targetType = 'owner'
+                            let label = 'Draft Owner Outreach (Tenant Match)'
+                            if (selected.listed_for_sale && (selected.sf_avail ?? 0) > 0) {
+                              outreachType = 'for_sale_vacancy'
+                              targetType = selected.sales_contact ? 'sales_broker' : 'owner'
+                              label = targetType === 'sales_broker'
+                                ? 'Draft Broker Outreach (For Sale + Vacancy)'
+                                : 'Draft Owner Outreach (For Sale + Vacancy)'
+                            } else if (selected.landlord_representative) {
+                              targetType = 'broker'
+                              label = 'Draft Broker Outreach (Tenant Match)'
+                            }
+                            const tCtx = `Industry: ${t.industry}; Headcount: ${t.headcount ?? 'N/A'}; SF Needed: ${t.sf_needed.toLocaleString()}; Submarket: ${t.submarket ?? 'N/A'}`
+                            return (
+                              <div
+                                key={t.company_id}
+                                className={`border border-surface-border rounded-lg p-2 transition-colors
+                                  ${!isPhase1 ? 'hover:bg-surface-card cursor-pointer' : ''}`}
+                                onClick={!isPhase1 ? () => navigate(`/companies?selected=${t.company_id}`) : undefined}
+                              >
+                                <div className="flex items-start justify-between gap-2">
+                                  <div className="min-w-0 flex-1">
+                                    {/* Phase 1: hide company name; Phase 2: show it */}
+                                    {!isPhase1 && (
+                                      <div className="text-xs font-semibold text-ink-primary truncate">{t.name}</div>
+                                    )}
+                                    <div className="text-[10px] text-ink-muted">
+                                      {t.industry}
+                                      {isPhase1
+                                        ? ` · ${t.sf_needed.toLocaleString()} SF`
+                                        : ` · ${t.headcount ?? '—'} HC · ${t.sf_needed.toLocaleString()} SF needed`}
+                                    </div>
+                                    {/* Match reasons only shown in Phase 2 */}
+                                    {!isPhase1 && t.match_reasons.length > 0 && (
+                                      <div className="flex flex-wrap gap-1 mt-1">
+                                        {t.match_reasons.map((r, i) => (
+                                          <span key={i} className="text-[9px] px-1.5 py-0.5 rounded bg-surface-card text-ink-secondary border border-surface-border">
+                                            {r}
+                                          </span>
+                                        ))}
+                                      </div>
+                                    )}
+                                  </div>
+                                  <div className="flex-shrink-0 text-right">
+                                    <ScoreBadge score={t.match_score} size="sm" />
+                                  </div>
+                                </div>
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    setOutreachModal({
+                                      prop: selected,
+                                      type: outreachType,
+                                      targetType,
+                                      tenantContext: tCtx,
+                                      pairCompanyId: t.company_id,
+                                      pairTenantName: t.name,
+                                    })
+                                  }}
+                                  className="mt-2 w-full text-[10px] py-1.5 rounded-lg border border-emerald-500/40
+                                             text-emerald-400 hover:bg-emerald-500/10 transition-colors"
+                                >
+                                  {label}
+                                </button>
+                              </div>
+                            )
+                          })}
                         </div>
-                      )
-                    })}
+                      </>
+                    )}
                   </div>
-                )}
-              </div>
+                )
+              })()}
 
               {/* Tenant Outreach — Lease While Listed */}
               {selected.owner_confirmed_leasing && selected.listed_for_sale && (

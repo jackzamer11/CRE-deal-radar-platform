@@ -26,30 +26,48 @@ _SIGNATURE_INSTRUCTION = (
 )
 
 # ── Hardcoded sentences (injected post-LLM to survive regeneration) ────────────
+# Property-side: "advisor" — owner/broker emails
 _HARDCODED_INTRO = (
     "My name is Jack Zamer — I'm a commercial real estate advisor "
+    "focused exclusively on the Northern Virginia office market."
+)
+# Tenant-side: "agent" — Fix 2 requirement (advisor → agent for tenant-match copy)
+_HARDCODED_INTRO_TENANT = (
+    "My name is Jack Zamer — I'm a commercial real estate agent "
     "focused exclusively on the Northern Virginia office market."
 )
 _HARDCODED_SOCIAL_PROOF = (
     "I work exclusively in the Northern Virginia office market, "
     "focused on matching tenants to vacancies before they hit the open listings."
 )
+# Phase 2 confirmed-leasing disclosure (appended to every tenant-side email when
+# owner_confirmed_leasing=True).  Exact wording required by spec.
+_PHASE2_CONFIRMED_DISCLOSURE = (
+    "Please note that the owner has confirmed openness to leasing discussions "
+    "for this property — we are actively moving forward."
+)
 
 
-def _inject_hardcoded_sentences(email_body: str) -> str:
+def _inject_hardcoded_sentences(email_body: str, tenant_side: bool = False) -> str:
     """Post-LLM: ensure hardcoded intro (after greeting) and social proof
-    (before signature) survive every regeneration unchanged."""
+    (before signature) survive every regeneration unchanged.
+
+    tenant_side=True uses 'agent' instead of 'advisor' in the intro sentence
+    (Fix 2 requirement for tenant-match outreach copy).
+    """
     if not email_body:
         return email_body
 
     body = email_body.strip()
-    # Split on double newlines to get paragraphs
     paras = body.split("\n\n")
 
     # ── Intro after greeting (para[0]) ───────────────────────────────────────
-    if _HARDCODED_INTRO not in body:
+    # Use "agent" title for tenant-side emails, "advisor" for property-side.
+    intro_to_use = _HARDCODED_INTRO_TENANT if tenant_side else _HARDCODED_INTRO
+    intro_absent = _HARDCODED_INTRO not in body and _HARDCODED_INTRO_TENANT not in body
+    if intro_absent:
         insert_at = 1 if len(paras) > 1 else len(paras)
-        paras.insert(insert_at, _HARDCODED_INTRO)
+        paras.insert(insert_at, intro_to_use)
 
     # ── Social proof before signature block ──────────────────────────────────
     if _HARDCODED_SOCIAL_PROOF not in body:
@@ -405,41 +423,43 @@ def _build_for_sale_vacancy(
         if benchmark else ""
     )
 
-    # When tenant_dict is available, build a null-safe natural-language tenant context.
+    # ── Phase 1: industry-only tenant reference (Fix 1) ─────────────────────
+    # When a lead tenant is known, reference their INDUSTRY ONLY.
+    # Never mention headcount, SF need, or lease timing in Phase 1 property-side
+    # outreach — those details are for Phase 2 tenant-side copy only.
+    # The Phase 1 closing line ("I have a potential tenant in mind in the X space…")
+    # is injected post-LLM in generate_property_outreach so it survives regeneration.
+    lead_industry: Optional[str] = None
     if tenant_dict is not None:
-        industry = tenant_dict.get("industry") or "professional services firm"
-        hc       = tenant_dict.get("current_headcount")
-        sf       = tenant_dict.get("estimated_sf_needed")
-        exp      = tenant_dict.get("lease_expiry_months")
-        hc_str   = str(hc) if hc is not None else "a team"
-        sf_str   = f"{sf:,} SF" if sf else "the available space"
-        exp_str  = f"approximately {exp} months" if exp is not None else "in the coming months"
-        tenant_context = (
-            f"a {industry} firm with {hc_str} employees seeking {sf_str} "
-            f"with a lease expiring in {exp_str}"
-        )
-
-    if tenant_context:
+        lead_industry = (tenant_dict.get("industry") or "professional services").strip()
         tenant_hint = (
-            f"\nSpecific tenant profile (NEVER reveal their company name): {tenant_context}"
+            f"\nLead tenant industry (reference this industry ONLY — "
+            f"NEVER mention headcount, SF requirements, or lease timing): {lead_industry}"
         )
         demand_clause = (
-            "Lead with the specific qualified tenant profile (industry, headcount, SF range, "
-            "approximate lease expiry in months) — NEVER reveal the tenant company name. "
-            "Open with: 'I wanted to reach out regarding your property at [address] which is "
-            "currently listed for sale. We have a qualified tenant — a [industry] firm with "
-            "[headcount] employees seeking [SF range] with a lease expiring in "
-            "approximately [X months] — who may be interested in leasing the available space "
-            "while the property is on the market.' "
-            "Ask: 'Would you be open to discussing a potential lease arrangement while the sale "
-            "process continues?'"
+            f"Reference a single potential tenant in the {lead_industry} space — "
+            f"use ONLY the industry label, no headcount numbers, no SF ranges, no lease timing. "
+            f"The singular, direct ask must be verbatim: "
+            f"'Would you be open to leasing a portion of the available space while "
+            f"the property is being marketed for sale?' "
+            f"Do NOT reference multiple tenants. Do NOT describe the tenant beyond their industry."
+        )
+    elif tenant_context:
+        # Fallback: text-based context passed in — extract first word-phrase as hint
+        tenant_hint = f"\nTenant context (reference industry only — no name, no headcount): {tenant_context}"
+        demand_clause = (
+            "Reference a potential tenant by industry only — no company name, no headcount, no SF numbers. "
+            "The singular, direct ask must be: "
+            "'Would you be open to leasing a portion of the available space while the property is "
+            "being marketed for sale?' "
+            "Do NOT reference multiple tenants."
         )
     else:
         tenant_hint = ""
         demand_clause = (
-            "Reference demand generally ('multiple qualified tenants in this submarket') — "
-            "NEVER name any specific tenant. "
-            "Ask whether they are open to leasing the vacant space while the property is on the market."
+            "Reference demand generally — NEVER name any specific tenant. "
+            "Ask: 'Would you be open to leasing a portion of the available space while the property "
+            "is being marketed for sale?'"
         )
 
     system = (
@@ -456,15 +476,15 @@ def _build_for_sale_vacancy(
         f"NEVER suggest specific days of the week. "
         f"Close with: 'I'd welcome a brief call at your convenience.'"
     )
+    industry_ref = f"the {lead_industry} space (industry only — no company name, no headcount, no SF)" if lead_industry else "a potential tenant"
     body_instruction = (
         "2. Email body — maximum 150 words (excluding signature block); "
-        "   lead with the specific tenant profile "
-        "   (industry, headcount, SF range, lease expiry months) without naming the tenant; "
-        "   use full property address; acknowledge property is listed for sale; "
-        "   ask if open to leasing while on market; "
-        "   cite one CBRE Q1 2026 submarket data point; "
-        "   explain tenant-in-place value proposition\n"
-        if tenant_context else
+        f"  use full property address; acknowledge property is listed for sale; "
+        f"  reference one potential tenant in {industry_ref}; "
+        "   include verbatim ask: 'Would you be open to leasing a portion of the available space "
+        "   while the property is being marketed for sale?'; "
+        "   cite one CBRE Q1 2026 submarket data point\n"
+        if (lead_industry or tenant_context) else
         "2. Email body — maximum 150 words (excluding signature block); "
         "   use full property address; acknowledge property is listed for sale; "
         "   ask if open to leasing vacant SF while on market; reference demand generally; "
@@ -873,11 +893,54 @@ def generate_property_outreach(
     raw    = _chat(prompt["system"], prompt["user"])
     parsed = _parse_response(raw)
 
-    # Fix 1 & Fix 6: inject hardcoded intro and social proof post-LLM
-    # so they survive every regeneration unchanged
+    # ── Post-LLM sentence injection ─────────────────────────────────────────
+    # Use "agent" title for tenant-side copy; "advisor" for property-side (Fix 2).
+    is_tenant_side = (direction == "tenant_side")
+    email_body = _inject_hardcoded_sentences(parsed["email_body"], tenant_side=is_tenant_side)
+
+    # Fix 1: Phase 1 for_sale_vacancy → inject closing line with lead industry.
+    # "I have a potential tenant in mind in the [X] space — happy to share more
+    # if there's interest in a conversation."
+    # Only injected property-side (Phase 1); Phase 2 (tenant_side) gets the
+    # confirmed-leasing disclosure instead.
+    if outreach_type == "for_sale_vacancy" and not is_tenant_side:
+        lead_industry_val = ""
+        if tenant_dict:
+            lead_industry_val = (tenant_dict.get("industry") or "").strip()
+        if lead_industry_val:
+            phase1_closing = (
+                f"I have a potential tenant in mind in the {lead_industry_val} space — "
+                "happy to share more if there's interest in a conversation."
+            )
+            if phase1_closing not in email_body:
+                if "Thank you," in email_body:
+                    email_body = email_body.replace(
+                        "Thank you,",
+                        f"{phase1_closing}\n\nThank you,",
+                        1,
+                    )
+                else:
+                    email_body += f"\n\n{phase1_closing}"
+
+    # Fix 2: Phase 2 tenant-side → inject confirmed-leasing disclosure.
+    # This applies whenever direction="tenant_side" (the endpoint already guards
+    # for owner_confirmed_leasing=True, so this is always correct).
+    # The get_tenant_outreach endpoint also strips/updates any prior disclosure,
+    # but we inject the canonical wording here so it works from any call site.
+    if is_tenant_side:
+        if _PHASE2_CONFIRMED_DISCLOSURE not in email_body:
+            if "Thank you," in email_body:
+                email_body = email_body.replace(
+                    "Thank you,",
+                    f"{_PHASE2_CONFIRMED_DISCLOSURE}\n\nThank you,",
+                    1,
+                )
+            else:
+                email_body += f"\n\n{_PHASE2_CONFIRMED_DISCLOSURE}"
+
     return {
         "email_subject":          parsed["subject"],
-        "email_body":             _inject_hardcoded_sentences(parsed["email_body"]),
+        "email_body":             email_body,
         "call_script_opening":    parsed["opening"],
         "call_script_core":       parsed["core"],
         "call_script_pain_probe": parsed["pain_probe"],
