@@ -57,6 +57,8 @@ const defaultForm = {
   sf_expiring_24mo:     '',
   last_lease_signed_year: '',
   is_listed:            false,
+  owner_confirmed_leasing: false,
+  owner_confirmed_leasing_date: null as string | null,
   days_on_market:       '',
   estimated_loan_maturity_year: '',
   notes:                '',
@@ -92,6 +94,8 @@ function propertyToForm(data: PropertyOut): FormState {
     sf_expiring_24mo:     data.sf_expiring_24mo != null ? String(data.sf_expiring_24mo) : '',
     last_lease_signed_year: lastLeaseYear,
     is_listed:            data.listed_for_sale ?? false,
+    owner_confirmed_leasing: data.owner_confirmed_leasing ?? false,
+    owner_confirmed_leasing_date: data.owner_confirmed_leasing_date ?? null,
     days_on_market:       data.days_on_market != null ? String(data.days_on_market) : '',
     estimated_loan_maturity_year:
       data.estimated_loan_maturity_year != null ? String(data.estimated_loan_maturity_year) : '',
@@ -172,6 +176,7 @@ export default function AddPropertyModal({ onClose, onSaved, editPropertyId, ini
         sf_expiring_24mo:     form.sf_expiring_24mo ? parseFloat(form.sf_expiring_24mo) : 0,
         last_lease_signed_year: form.last_lease_signed_year ? parseInt(form.last_lease_signed_year) : undefined,
         is_listed:            form.is_listed,
+        owner_confirmed_leasing: form.owner_confirmed_leasing,
         asking_price:         form.asking_price ? parseFloat(form.asking_price) : undefined,
         days_on_market:       form.days_on_market ? parseInt(form.days_on_market) : undefined,
         estimated_loan_maturity_year: form.estimated_loan_maturity_year
@@ -379,6 +384,22 @@ export default function AddPropertyModal({ onClose, onSaved, editPropertyId, ini
                   <input className={inputCls} type="number" placeholder="e.g. 45"
                     value={form.days_on_market} onChange={set('days_on_market')} />
                 </Field>
+              )}
+              {form.is_listed && (
+                <div className="flex items-center gap-3 p-3 bg-surface-muted rounded-lg border border-amber-500/40">
+                  <input type="checkbox" id="owner_confirmed_leasing" checked={form.owner_confirmed_leasing}
+                    onChange={setCheck('owner_confirmed_leasing')} className="accent-amber-500 w-4 h-4" />
+                  <label htmlFor="owner_confirmed_leasing" className="text-sm text-ink-secondary cursor-pointer">
+                    Owner confirmed open to leasing while listed
+                  </label>
+                </div>
+              )}
+              {form.owner_confirmed_leasing && form.is_listed && (
+                <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs leading-relaxed">
+                  <strong className="text-amber-400">⚡ Lease-While-Listed mode active.</strong>{' '}
+                  Tenant outreach drafts will be auto-generated for this property's top matched tenants.
+                  The system will never reveal the street address to tenants and will not assume exclusivity.
+                </div>
               )}
               <Field label="Intel / Notes">
                 <textarea className={`${inputCls} resize-none`} rows={3}

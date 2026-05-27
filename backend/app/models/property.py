@@ -125,6 +125,10 @@ class Property(Base):
     snooze_reason        = Column(String,  nullable=True)   # free text (e.g. "Under contract — PSA signed")
     returned_from_snooze = Column(Boolean, nullable=True)   # set True when snooze expires on briefing load
 
+    # Owner confirmed open to leasing while listed (hard trigger for tenant-match outreach)
+    owner_confirmed_leasing      = Column(Boolean, default=False)   # switches outreach from property-side → tenant-match
+    owner_confirmed_leasing_date = Column(Date,    nullable=True)   # auto-set server-side on first confirmation
+
     # Relationships
     opportunities = relationship("Opportunity", back_populates="property", cascade="all, delete-orphan")
     activity_logs = relationship("ActivityLog", back_populates="property")

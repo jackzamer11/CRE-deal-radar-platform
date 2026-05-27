@@ -68,6 +68,19 @@ export interface PropertyListOut {
   snoozed_until: string | null
   snooze_reason: string | null
   returned_from_snooze: boolean | null
+  // Owner confirmed open to leasing while listed
+  owner_confirmed_leasing: boolean
+  owner_confirmed_leasing_date: string | null
+}
+
+export interface TenantOutreachDraft {
+  company_id: string
+  company_name: string
+  contact_name: string | null
+  sf_needed: number
+  lease_expiry_months: number | null
+  email_draft: string
+  call_script: string
 }
 
 export interface PropertyOut extends PropertyListOut {
