@@ -191,11 +191,22 @@ export default function OutreachDraftModal(props: Props) {
     target_type:   rec.target_type,
   })
 
-  const persistDraft = useCallback(async (d: OutreachDraft, checkedFindings: IntelFinding[]) => {
+  const persistDraft = useCallback(async (
+    d: OutreachDraft,
+    checkedFindings: IntelFinding[],
+    allFindings: IntelFinding[],
+  ) => {
     if (entity_type !== 'property') return
     const intelCtx = checkedFindings.length > 0
       ? JSON.stringify(checkedFindings.map(f => f.fact))
       : (props.tenant_context ?? null)
+    // Persist full findings (with source_url etc.) so reopening doesn't re-search.
+    // Empty array is also stored ("[]") to signal "search ran, no results".
+    const intelFindingsJson = JSON.stringify(
+      allFindings.map(({ fact, source_url, source_name, relevance_score }) =>
+        ({ fact, source_url, source_name, relevance_score })
+      )
+    )
     try {
       const rec = await saveOutreachDraft({
         property_id:  props.property.property_id,
@@ -212,6 +223,7 @@ export default function OutreachDraftModal(props: Props) {
         recipient_name:  recipientName  || null,
         recipient_email: recipientEmail || null,
         internal_context: intelCtx,
+        intelligence_findings: intelFindingsJson,
         score:    d.score,
         priority: d.priority,
       })
@@ -253,7 +265,7 @@ export default function OutreachDraftModal(props: Props) {
       setDraft(result)
       setIntelPhase('idle')
       if (entity_type === 'property') {
-        void persistDraft(result, checkedFindings)
+        void persistDraft(result, checkedFindings, intelFindings)
       }
     } catch (e: unknown) {
       const msg = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
@@ -267,6 +279,7 @@ export default function OutreachDraftModal(props: Props) {
       entity_type === 'property' ? props.outreach_type : null,
       entity_type === 'property' ? props.tenant_context : null,
       entity_type === 'property' ? props.target_type : null,
+      intelFindings,
       persistDraft])
 
   const runIntelAndGenerate = useCallback(async () => {
@@ -283,14 +296,12 @@ export default function OutreachDraftModal(props: Props) {
       )
       const findings = (resp.findings ?? []).map(f => ({ ...f, checked: true }))
       if (findings.length === 0) {
-        // No intel — go straight to generation
         await generateFresh([])
       } else {
         setIntelFindings(findings)
         setIntelPhase('review')
       }
     } catch {
-      // If intel search fails, fall through to generation
       await generateFresh([])
     }
   }, [entity_type,
@@ -298,6 +309,30 @@ export default function OutreachDraftModal(props: Props) {
       effectiveCompanyId,
       direction,
       generateFresh])
+
+  // Refresh-only: force a new Claude search without deleting the existing draft.
+  // Shows the review panel so the user can select findings before regenerating.
+  const handleRefreshIntelligence = useCallback(async () => {
+    if (entity_type !== 'property') return
+    setIntelPhase('loading')
+    setError(null)
+    try {
+      const resp = await searchIntelligence(
+        props.property.property_id,
+        effectiveCompanyId,
+        direction,
+        true, // force_refresh — bypass all caches, run live search
+      )
+      const findings = (resp.findings ?? []).map(f => ({ ...f, checked: true }))
+      setIntelFindings(findings)
+      setIntelPhase('review')
+    } catch {
+      setIntelPhase('idle')
+    }
+  }, [entity_type,
+      entity_type === 'property' ? props.property.property_id : null,
+      effectiveCompanyId,
+      direction])
 
   const load = useCallback(async () => {
     setError(null)
@@ -318,6 +353,13 @@ export default function OutreachDraftModal(props: Props) {
           setPersistedId(existing.id)
           if (existing.recipient_name)  setRecipientName(existing.recipient_name)
           if (existing.recipient_email) setRecipientEmail(existing.recipient_email)
+          // Hydrate cached intel findings — null = not yet searched; "[]" = searched, none found
+          if (existing.intelligence_findings != null) {
+            try {
+              const parsed: IntelFinding[] = JSON.parse(existing.intelligence_findings)
+              setIntelFindings(parsed.map(f => ({ ...f, checked: true })))
+            } catch { /* corrupted JSON — leave intelFindings empty */ }
+          }
           return
         }
       } catch {
@@ -625,12 +667,22 @@ export default function OutreachDraftModal(props: Props) {
                   >
                     Generate Email
                   </button>
-                  <button
-                    onClick={() => generateFresh([])}
-                    className="text-xs px-4 py-2 rounded-lg border border-surface-border text-ink-muted hover:text-ink-primary"
-                  >
-                    Skip Intelligence / Generate Anyway
-                  </button>
+                  {draft ? (
+                    // Refreshing intel on an existing draft — Skip goes back to the draft
+                    <button
+                      onClick={() => setIntelPhase('idle')}
+                      className="text-xs px-4 py-2 rounded-lg border border-surface-border text-ink-muted hover:text-ink-primary"
+                    >
+                      Keep Existing Draft
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => generateFresh([])}
+                      className="text-xs px-4 py-2 rounded-lg border border-surface-border text-ink-muted hover:text-ink-primary"
+                    >
+                      Skip Intelligence / Generate Anyway
+                    </button>
+                  )}
                 </div>
               </div>
             )}
@@ -684,15 +736,25 @@ export default function OutreachDraftModal(props: Props) {
                     )}
                   </div>
                   {entity_type === 'property' && (
-                    <button
-                      onClick={handleResetDraft}
-                      disabled={resetting}
-                      className="flex items-center gap-1 text-[10px] text-ink-muted hover:text-accent-blue disabled:opacity-50"
-                      title="Delete and regenerate this draft"
-                    >
-                      <RotateCcw size={10} />
-                      Reset Draft
-                    </button>
+                    <div className="flex items-center gap-3">
+                      <button
+                        onClick={handleRefreshIntelligence}
+                        className="flex items-center gap-1 text-[10px] text-ink-muted hover:text-accent-blue"
+                        title="Re-run web intelligence search for this property"
+                      >
+                        <Search size={10} />
+                        Refresh Intelligence
+                      </button>
+                      <button
+                        onClick={handleResetDraft}
+                        disabled={resetting}
+                        className="flex items-center gap-1 text-[10px] text-ink-muted hover:text-accent-blue disabled:opacity-50"
+                        title="Delete and regenerate this draft"
+                      >
+                        <RotateCcw size={10} />
+                        Reset Draft
+                      </button>
+                    </div>
                   )}
                 </div>
 
