@@ -15,6 +15,10 @@ const SUBMARKETS = [
   'McLean',
   'Vienna',
   'Fairfax City',
+  'Annandale',
+  'Crystal City',
+  'Merrifield',
+  'Springfield',
 ]
 
 interface Props {

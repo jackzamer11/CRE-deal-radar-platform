@@ -8,6 +8,21 @@ interface Props {
   onDone: (result: CoStarImportResult) => void
 }
 
+type Toast = { type: 'success' | 'error'; msg: string }
+
+/** Build the summary line:
+ *  "Import complete — X inserted, Y updated, Z errors, N filtered (unmapped submarkets: ...)" */
+function buildSummary(res: CoStarImportResult): string {
+  const errCount = res.errors?.length ?? res.skipped
+  const filtered = res.filtered_state + res.filtered_submarket + res.filtered_status
+  let s = `Import complete — ${res.inserted} inserted, ${res.updated} updated, `
+        + `${errCount} errors, ${filtered} filtered`
+  if (res.unmapped_submarkets.length > 0) {
+    s += ` (unmapped submarkets: ${res.unmapped_submarkets.join(', ')})`
+  }
+  return s
+}
+
 export default function CoStarImportModal({ onClose, onDone }: Props) {
   const inputRef = useRef<HTMLInputElement>(null)
   const [file, setFile]           = useState<File | null>(null)
@@ -16,11 +31,13 @@ export default function CoStarImportModal({ onClose, onDone }: Props) {
   const [apiError, setApiError]   = useState<string | null>(null)
   const [showErrors, setShowErrors] = useState(false)
   const [showUnmapped, setShowUnmapped] = useState(false)
+  const [toast, setToast]         = useState<Toast | null>(null)
 
   const handleFile = (f: File) => {
     setFile(f)
     setResult(null)
     setApiError(null)
+    setToast(null)
   }
 
   const handleDrop = (e: React.DragEvent) => {
@@ -29,24 +46,31 @@ export default function CoStarImportModal({ onClose, onDone }: Props) {
     if (f) handleFile(f)
   }
 
+  // Close path: if an import succeeded, hand the result up so the dashboard
+  // refreshes; otherwise just close. (silentRefresh on a no-op import is harmless.)
+  const handleClose = () => {
+    if (result) onDone(result)
+    else onClose()
+  }
+
   const handleUpload = async () => {
     if (!file) return
     setUploading(true)
     setApiError(null)
     setResult(null)
+    setToast(null)
     try {
       const res = await importCoStarExport(file)
-      if (res.inserted > 0 || res.updated > 0) {
-        onDone(res)  // Dashboard handles close + toast + silent refresh
-      } else {
-        setResult(res)  // Nothing changed — stay open and show filter breakdown
-      }
+      // Always show the structured breakdown + a success toast (incl. zero-change runs).
+      setResult(res)
+      setToast({ type: 'success', msg: buildSummary(res) })
     } catch (e: any) {
-      setApiError(
-        e?.response?.data?.detail
-          || e?.message
-          || 'Import failed — check the server log for details.'
-      )
+      // 400 (missing required columns) and any other error: surface the detail.
+      const detail = e?.response?.data?.detail
+        || e?.message
+        || 'Import failed — check the server log for details.'
+      setApiError(detail)
+      setToast({ type: 'error', msg: detail })
     } finally {
       setUploading(false)
     }
@@ -62,7 +86,7 @@ export default function CoStarImportModal({ onClose, onDone }: Props) {
             <FileSpreadsheet size={18} className="text-accent-blue" />
             <h2 className="text-sm font-bold text-ink-primary">Import CoStar Export</h2>
           </div>
-          <button onClick={onClose} className="text-ink-muted hover:text-ink-primary p-1">
+          <button onClick={handleClose} className="text-ink-muted hover:text-ink-primary p-1">
             <X size={17} />
           </button>
         </div>
@@ -241,7 +265,7 @@ export default function CoStarImportModal({ onClose, onDone }: Props) {
         {!result && (
           <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-surface-border">
             <button
-              onClick={onClose}
+              onClick={handleClose}
               className="px-4 py-2 text-xs text-ink-muted hover:text-ink-primary transition-colors"
             >
               Cancel
@@ -260,6 +284,31 @@ export default function CoStarImportModal({ onClose, onDone }: Props) {
           </div>
         )}
       </div>
+
+      {/* Result summary toast — success (200) or error (400 missing columns) */}
+      {toast && (
+        <div
+          className={`fixed bottom-6 left-1/2 -translate-x-1/2 z-[60] flex items-start gap-3
+                      max-w-2xl rounded-xl px-5 py-3 shadow-2xl border bg-surface-card
+                      ${toast.type === 'success'
+                        ? 'border-emerald-500/40'
+                        : 'border-red-500/40'}`}
+        >
+          {toast.type === 'success'
+            ? <CheckCircle size={15} className="text-emerald-400 mt-0.5 flex-shrink-0" />
+            : <AlertTriangle size={15} className="text-red-400 mt-0.5 flex-shrink-0" />}
+          <span className={`text-sm ${toast.type === 'success' ? 'text-ink-secondary' : 'text-red-300'}`}>
+            {toast.msg}
+          </span>
+          <button
+            onClick={() => setToast(null)}
+            className="text-ink-muted hover:text-ink-primary flex-shrink-0"
+            aria-label="Dismiss"
+          >
+            <X size={14} />
+          </button>
+        </div>
+      )}
     </div>
   )
 }
