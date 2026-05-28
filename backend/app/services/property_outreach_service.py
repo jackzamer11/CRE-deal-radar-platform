@@ -48,6 +48,7 @@ _PHASE1_FSV_CLOSING = (
 )
 
 
+
 def _inject_hardcoded_sentences(email_body: str) -> str:
     """Post-LLM: ensure hardcoded intro (after greeting) and social proof
     (before signature) survive every regeneration unchanged.
@@ -154,6 +155,9 @@ def search_property_intelligence(property_dict: dict) -> list:
                     ),
                 }],
             )
+            _u = resp.usage
+            _cached = getattr(_u, "cache_read_input_tokens", 0) or 0
+            print(f"[TOKEN LOG] input: {_u.input_tokens}, output: {_u.output_tokens}, cached: {_cached}")
             for block in resp.content:
                 if hasattr(block, "text") and block.text.strip():
                     raw_findings.append(block.text.strip())
@@ -195,12 +199,17 @@ def search_property_intelligence(property_dict: dict) -> list:
 
 def _chat(system: str, user: str) -> str:
     from openai import OpenAI
-    client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY environment variable is not set.")
+    client = OpenAI(api_key=api_key)
     resp = client.chat.completions.create(
         model="gpt-4o",
         messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
         temperature=0.7,
     )
+    usage = resp.usage
+    print(f"[TOKEN LOG] input: {usage.prompt_tokens}, output: {usage.completion_tokens}")
     return resp.choices[0].message.content.strip()
 
 
@@ -210,26 +219,21 @@ def _addr(p: dict) -> str:
 
 
 def _prop_context(p: dict) -> str:
+    # Minimum fields only — reduces input tokens by ~200–300 per call.
+    # Fields accessed directly from `p` in builders (owner_name, landlord_representative,
+    # days_on_market, years_owned, dominant_score_type, etc.) are NOT duplicated here.
     lines = [
-        f"Property: {p.get('name') or p.get('address', '')}",
         f"Address: {p.get('address', 'N/A')}",
         f"Submarket: {p.get('submarket', 'N/A')}",
-        f"Total SF: {p.get('total_sf', 'N/A'):,}" if p.get("total_sf") else "Total SF: N/A",
-        f"Year Built: {p.get('year_built', 'N/A')}",
-        f"Vacancy %: {p.get('vacancy_pct', 'N/A')}",
         f"SF Available: {p.get('sf_avail', 'N/A')}",
+        f"Occupancy/Vacancy %: {p.get('vacancy_pct', 'N/A')}",
         f"In-Place Rent: ${p['in_place_rent_psf']:.2f}/SF" if p.get("in_place_rent_psf") else "In-Place Rent: N/A",
-        f"Market Rent: ${p['market_rent_psf']:.2f}/SF" if p.get("market_rent_psf") else "Market Rent: N/A",
-        f"Owner: {p.get('owner_name', 'N/A')} ({p.get('owner_type', 'N/A')})",
-        f"Years Owned: {p.get('years_owned', 'N/A')}",
-        f"Cap Rate: {p.get('cap_rate', 'N/A')}",
-        f"Asking Price/SF: ${p['asking_price_psf']:.2f}" if p.get("asking_price_psf") else "",
-        f"Star Rating: {p.get('star_rating', 'N/A')}",
-        f"Tenancy: {p.get('tenancy', 'N/A')}",
-        f"Landlord Rep: {p.get('landlord_representative', 'N/A')}",
         f"Listed For Sale: {'Yes' if p.get('listed_for_sale') else 'No'}",
-        f"Dominant Score: {p.get('dominant_score_type', 'N/A')}",
     ]
+    if p.get("loan_maturity_year"):
+        lines.append(f"Loan Maturity Year: {p.get('loan_maturity_year')}")
+    if p.get("days_on_market"):
+        lines.append(f"Days on Market: {p.get('days_on_market')}")
     bm = _submarket_context(p.get("submarket"))
     if bm:
         lines.append(f"Submarket Benchmark: {bm}")
