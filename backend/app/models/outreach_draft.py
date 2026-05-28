@@ -21,7 +21,8 @@ class OutreachDraft(Base):
     target_type      = Column(String, nullable=False)  # broker | owner | sales_broker
     recipient_name   = Column(String, nullable=True)
     recipient_email  = Column(String, nullable=True)
-    internal_context = Column(Text,   nullable=True)
+    internal_context      = Column(Text, nullable=True)
+    intelligence_findings = Column(Text, nullable=True)  # JSON list of IntelFinding dicts; null = not yet searched
     score    = Column(Float,  nullable=True)
     priority = Column(String, nullable=True)
     created_at    = Column(DateTime, default=datetime.utcnow)

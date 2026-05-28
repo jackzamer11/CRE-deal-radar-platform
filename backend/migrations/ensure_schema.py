@@ -138,9 +138,12 @@ def ensure_activity_logs(cur: sqlite3.Cursor) -> int:
 
 def ensure_outreach_drafts(cur: sqlite3.Cursor) -> int:
     """Create the outreach_drafts table if it does not exist (idempotent)."""
+    added = 0
     cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='outreach_drafts'")
     if cur.fetchone():
-        return _add_column(cur, "outreach_drafts", "direction", "TEXT DEFAULT 'property_side'")
+        added += _add_column(cur, "outreach_drafts", "direction", "TEXT DEFAULT 'property_side'")
+        added += _add_column(cur, "outreach_drafts", "intelligence_findings", "TEXT")
+        return added
     cur.execute("""
         CREATE TABLE outreach_drafts (
             id               INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -158,6 +161,7 @@ def ensure_outreach_drafts(cur: sqlite3.Cursor) -> int:
             recipient_name   TEXT,
             recipient_email  TEXT,
             internal_context TEXT,
+            intelligence_findings TEXT,
             score            REAL,
             priority         TEXT,
             created_at       DATETIME,
@@ -168,6 +172,7 @@ def ensure_outreach_drafts(cur: sqlite3.Cursor) -> int:
     cur.execute("CREATE INDEX idx_outreach_drafts_pair ON outreach_drafts(property_id, company_id)")
     print("  + created table outreach_drafts")
     return 1
+
 
 
 def ensure_companies(cur: sqlite3.Cursor) -> int:

@@ -189,6 +189,8 @@ export interface OutreachDraftPayload {
   recipient_name?: string | null
   recipient_email?: string | null
   internal_context?: string | null
+  /** JSON-encoded IntelFinding[] to cache on the draft record */
+  intelligence_findings?: string | null
   score?: number | null
   priority?: string | null
 }
@@ -219,11 +221,13 @@ export const searchIntelligence = (
   propertyId: string,
   companyId: string | null | undefined,
   direction: string,
+  forceRefresh = false,
 ): Promise<{ findings: import('../types').IntelFinding[] }> =>
   api.post('/outreach-drafts/search-intelligence', {
-    property_id: propertyId,
-    company_id:  companyId ?? null,
+    property_id:   propertyId,
+    company_id:    companyId ?? null,
     direction,
+    force_refresh: forceRefresh,
   }).then(r => r.data)
 
 // ── Opportunities ──────────────────────────────────────────────────────────

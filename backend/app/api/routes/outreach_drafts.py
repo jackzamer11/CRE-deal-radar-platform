@@ -4,6 +4,7 @@ Persistent outreach draft storage.
 Each property+company pair has at most one draft per outreach_type stored here.
 Drafts are loaded instantly (no GPT call) until explicitly reset.
 """
+import json
 import time
 from datetime import datetime
 from typing import List, Optional
@@ -42,6 +43,7 @@ class DraftOut(BaseModel):
     recipient_name:   Optional[str]
     recipient_email:  Optional[str]
     internal_context: Optional[str]
+    intelligence_findings: Optional[str] = None  # JSON list; null = not yet searched
     score:    Optional[float]
     priority: Optional[str]
     created_at:    datetime
@@ -52,9 +54,10 @@ class DraftOut(BaseModel):
 
 
 class IntelPayload(BaseModel):
-    property_id: str
-    company_id:  Optional[str] = None
-    direction:   str = "property_side"
+    property_id:   str
+    company_id:    Optional[str] = None
+    direction:     str = "property_side"
+    force_refresh: bool = False
 
 
 class DraftCreate(BaseModel):
@@ -72,6 +75,7 @@ class DraftCreate(BaseModel):
     recipient_name:   Optional[str] = None
     recipient_email:  Optional[str] = None
     internal_context: Optional[str] = None
+    intelligence_findings: Optional[str] = None  # JSON list; null = not yet searched
     score:    Optional[float] = None
     priority: Optional[str]  = None
 
@@ -142,6 +146,8 @@ def save_draft(payload: DraftCreate, db: Session = Depends(get_db)):
         existing.recipient_name        = payload.recipient_name
         existing.recipient_email       = payload.recipient_email
         existing.internal_context      = payload.internal_context
+        if payload.intelligence_findings is not None:
+            existing.intelligence_findings = payload.intelligence_findings
         existing.score                 = payload.score
         existing.priority              = payload.priority
         existing.direction             = payload.direction or 'property_side'
@@ -166,6 +172,7 @@ def save_draft(payload: DraftCreate, db: Session = Depends(get_db)):
         recipient_name         = payload.recipient_name,
         recipient_email        = payload.recipient_email,
         internal_context       = payload.internal_context,
+        intelligence_findings  = payload.intelligence_findings,
         score                  = payload.score,
         priority               = payload.priority,
         created_at             = now,
@@ -179,28 +186,60 @@ def save_draft(payload: DraftCreate, db: Session = Depends(get_db)):
 
 @router.post("/search-intelligence", tags=["outreach-drafts"])
 def search_intelligence(payload: IntelPayload, db: Session = Depends(get_db)):
-    """Run web searches and return structured findings for intel review panel."""
+    """Return intelligence findings for the review panel.
+
+    Cache hierarchy (cheapest first):
+      1. In-memory cache (10-min TTL, per process)
+      2. DB column intelligence_findings on the existing draft
+      3. Live Claude web search (writes back to both caches)
+
+    Pass force_refresh=true to bypass both caches and run a fresh search.
+    """
     import os as _os
     from app.models.property import Property
     from app.models.company import Company
 
-    property_id = payload.property_id
-    company_id  = payload.company_id
-    direction   = payload.direction
+    property_id   = payload.property_id
+    company_id    = payload.company_id
+    direction     = payload.direction
+    force_refresh = payload.force_refresh
 
     print(f"[search-intelligence] ANTHROPIC_API_KEY set: {bool(_os.environ.get('ANTHROPIC_API_KEY'))}")
-    print(f"[search-intelligence] property_id={property_id} company_id={company_id} direction={direction}")
+    print(f"[search-intelligence] property_id={property_id} company_id={company_id} direction={direction} force_refresh={force_refresh}")
 
-    # ── Cache check ────────────────────────────────────────────────────────────
     cache_key = _intel_cache_key(property_id, company_id, direction)
-    now = time.time()
-    if cache_key in _intel_cache:
-        cached_ts, cached_findings = _intel_cache[cache_key]
-        if now - cached_ts < _INTEL_CACHE_TTL:
-            print(f"[search-intelligence] cache hit ({int(now - cached_ts)}s old), returning {len(cached_findings)} findings")
-            return {"findings": cached_findings}
+    now_ts = time.time()
 
-    findings = []
+    if not force_refresh:
+        # ── 1. In-memory cache ─────────────────────────────────────────────────
+        if cache_key in _intel_cache:
+            cached_ts, cached_findings = _intel_cache[cache_key]
+            if now_ts - cached_ts < _INTEL_CACHE_TTL:
+                print(f"[search-intelligence] in-memory cache hit ({int(now_ts - cached_ts)}s old), {len(cached_findings)} findings")
+                return {"findings": cached_findings}
+
+        # ── 2. DB-persisted findings on draft ─────────────────────────────────
+        # intelligence_findings is null → search not yet run.
+        # intelligence_findings is "[]" → search ran, found nothing (don't re-run).
+        draft_q = db.query(OutreachDraft).filter(
+            OutreachDraft.property_id == property_id,
+            OutreachDraft.direction   == direction,
+        )
+        if company_id:
+            draft_q = draft_q.filter(OutreachDraft.company_id == company_id)
+        cached_draft = draft_q.order_by(OutreachDraft.last_viewed_at.desc()).first()
+
+        if cached_draft is not None and cached_draft.intelligence_findings is not None:
+            try:
+                db_findings = json.loads(cached_draft.intelligence_findings)
+                print(f"[search-intelligence] DB cache hit on draft id={cached_draft.id}, {len(db_findings)} findings — skipping Claude")
+                _intel_cache[cache_key] = (now_ts, db_findings)
+                return {"findings": db_findings}
+            except (json.JSONDecodeError, TypeError):
+                pass  # corrupted JSON — fall through to fresh search
+
+    # ── 3. Live Claude web search ──────────────────────────────────────────────
+    findings: list = []
 
     if direction == "property_side":
         prop = db.query(Property).filter(Property.property_id == property_id).first()
@@ -213,17 +252,31 @@ def search_intelligence(payload: IntelPayload, db: Session = Depends(get_db)):
             }
             findings = search_property_intelligence(prop_dict)
     else:
-        # tenant_side — search company intelligence
         if company_id:
             comp = db.query(Company).filter(Company.company_id == company_id).first()
             if comp:
                 from app.services.outreach_service import search_company_intelligence
                 findings = search_company_intelligence(comp.name)
 
-    # ── Cache store ────────────────────────────────────────────────────────────
-    _intel_cache[cache_key] = (now, findings)
+    # ── Persist to in-memory cache ─────────────────────────────────────────────
+    _intel_cache[cache_key] = (time.time(), findings)
 
-    print(f"[search-intelligence] findings count: {len(findings)}")
+    # ── Persist to DB draft (if one exists for this property+company+direction) ─
+    # Empty findings ("[]") are also persisted so repeat opens don't re-search.
+    findings_json = json.dumps(findings)
+    target_q = db.query(OutreachDraft).filter(
+        OutreachDraft.property_id == property_id,
+        OutreachDraft.direction   == direction,
+    )
+    if company_id:
+        target_q = target_q.filter(OutreachDraft.company_id == company_id)
+    target_draft = target_q.order_by(OutreachDraft.last_viewed_at.desc()).first()
+    if target_draft is not None:
+        target_draft.intelligence_findings = findings_json
+        db.commit()
+        print(f"[search-intelligence] persisted {len(findings)} findings to draft id={target_draft.id}")
+
+    print(f"[search-intelligence] live search complete, {len(findings)} findings")
     return {"findings": findings}
 
 

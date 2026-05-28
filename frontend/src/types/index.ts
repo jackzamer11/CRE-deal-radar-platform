@@ -418,6 +418,8 @@ export interface OutreachDraftRecord {
   recipient_name: string | null
   recipient_email: string | null
   internal_context: string | null
+  /** JSON-encoded IntelFinding[]; null = search not yet run; "[]" = ran, no results */
+  intelligence_findings: string | null
   score: number | null
   priority: string | null
   created_at: string
