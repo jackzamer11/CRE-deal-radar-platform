@@ -83,6 +83,11 @@ class CompanyOut(CompanyBase):
     last_modified_by_user: Optional[datetime] = None
     matched_properties: list[MatchedProperty] = []
 
+    # Snooze state (null = active)
+    snoozed_until:        Optional[date] = None
+    snooze_reason:        Optional[str]  = None
+    returned_from_snooze: Optional[bool] = None
+
     class Config:
         from_attributes = True
 
@@ -127,6 +132,11 @@ class CompanyListOut(BaseModel):
     priority: str = "IGNORE"
     signals_scored_count: int = 0
     insufficient_data: bool = False
+
+    # Snooze state (null = active) — agent reads snoozed_until to skip snoozed companies
+    snoozed_until:        Optional[date] = None
+    snooze_reason:        Optional[str]  = None
+    returned_from_snooze: Optional[bool] = None
 
     # Computed from tenant_representative — not stored in DB
     rep_class: str = "BLANK"

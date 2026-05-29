@@ -152,6 +152,9 @@ export interface CompanyListOut {
   priority: Priority
   signals_scored_count: number
   insufficient_data: boolean
+  snoozed_until: string | null
+  snooze_reason: string | null
+  returned_from_snooze: boolean | null
 }
 
 export interface OutreachCallScript {

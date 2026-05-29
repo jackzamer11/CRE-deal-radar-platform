@@ -183,6 +183,10 @@ def ensure_companies(cur: sqlite3.Cursor) -> int:
         cur, "companies", "lease_trajectory", "TEXT DEFAULT 'AUTO' NOT NULL"
     )
     added += _add_column(cur, "companies", "lease_expiry_date", "DATE")
+    # ── Snooze fields (mirror of properties) ──────────────────────────────────
+    added += _add_column(cur, "companies", "snoozed_until",        "DATE")
+    added += _add_column(cur, "companies", "snooze_reason",        "TEXT")
+    added += _add_column(cur, "companies", "returned_from_snooze", "BOOLEAN")
     return added
 
 

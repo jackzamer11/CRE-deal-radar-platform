@@ -92,6 +92,36 @@ def _process_snooze_returns(db: Session) -> list:
     return prop_ids
 
 
+def _is_company_snoozed(company: Company) -> bool:
+    """Return True if the company is currently under an active snooze."""
+    return company.snoozed_until is not None and company.snoozed_until > date.today()
+
+
+def _process_company_snooze_returns(db: Session) -> list:
+    """
+    On each briefing load, find companies whose snooze has just expired.
+    - Clears snoozed_until / snooze_reason
+    - Sets returned_from_snooze = True (historical record)
+    Returns list of company_ids that returned this load.
+    Null-safe: companies with snoozed_until = NULL are never touched.
+    """
+    today = date.today()
+    expiring = (
+        db.query(Company)
+        .filter(Company.snoozed_until.isnot(None), Company.snoozed_until <= today)
+        .all()
+    )
+    company_ids = []
+    for company in expiring:
+        company.snoozed_until        = None
+        company.snooze_reason        = None
+        company.returned_from_snooze = True
+        company_ids.append(company.company_id)
+    if expiring:
+        db.commit()
+    return company_ids
+
+
 def _compute_tenant_actions(db: Session) -> list:
     """Compute Section A: property+tenant match pairs for the briefing."""
     # Properties with sf_avail > 0 and dominant_score_type == tenant_match
@@ -120,10 +150,13 @@ def _compute_tenant_actions(db: Session) -> list:
     for p in for_sale_props:
         all_props[p.id] = p
 
-    # Companies that could match
+    # Companies that could match — snoozed companies excluded.
+    # Active snooze: snoozed_until IS NULL or <= today (expired snoozes already
+    # auto-cleared to NULL on briefing load). Null-safe: NULL = active.
     companies = db.query(Company).filter(
         Company.estimated_sf_needed.isnot(None),
         Company.estimated_sf_needed > 0,
+        (Company.snoozed_until == None),
     ).all()
 
     # Build set of (property_id_int, company_id_int) contacted pairs
@@ -261,6 +294,8 @@ def _compute_expired_leases(db: Session) -> list:
         .filter(
             Company.lease_expiry_date.isnot(None),
             Company.lease_expiry_date <= today,
+            # Exclude snoozed companies (null-safe: NULL = active)
+            (Company.snoozed_until == None),
         )
         .order_by(Company.lease_expiry_date.asc())
         .all()
@@ -310,6 +345,8 @@ def generate_daily_briefing(db: Session) -> DailyBriefing:
     """
     # ── Auto-clear expired snoozes ─────────────────────────────────────────
     returned_from_snooze_ids = _process_snooze_returns(db)
+    # Companies whose snooze has expired return to the queue automatically.
+    _process_company_snooze_returns(db)
 
     # ── Immediate deals (all types, sorted by score desc) ──────────────────
     immediate = (
