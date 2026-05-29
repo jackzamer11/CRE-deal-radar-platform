@@ -126,6 +126,7 @@ COSTAR_SUBMARKET_MAP: dict = {
     "newington":                 "Springfield",
     "oakton":                    "Vienna",
     "oakton/vienna":             "Vienna",
+    "centreville":               "Centreville",
     "springfield":               "Springfield",
     "tysons corner/mclean":      "Tysons",
 }

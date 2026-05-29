@@ -44,6 +44,7 @@ class Settings(BaseSettings):
         "Crystal City": 280,    # ≈ Arlington (Ballston)
         "Merrifield": 189,      # ≈ Fairfax City
         "Springfield": 189,     # ≈ Fairfax City
+        "Centreville": 189,     # ≈ Fairfax City
     }
 
     # Submarket avg market rents ($/SF/yr NNN) — updated to CBRE Q1 2026
@@ -64,6 +65,7 @@ class Settings(BaseSettings):
         "Crystal City": 43.19,   # ≈ Arlington (Ballston)
         "Merrifield":   26.23,   # ≈ Fairfax City
         "Springfield":  26.23,   # ≈ Fairfax City
+        "Centreville":  26.23,   # ≈ Fairfax City
     }
 
     # Submarket avg cap rates
@@ -84,6 +86,7 @@ class Settings(BaseSettings):
         "Crystal City": 6.2,    # ≈ Arlington (Ballston)
         "Merrifield":   10.2,   # ≈ Fairfax City
         "Springfield":  10.2,   # ≈ Fairfax City
+        "Centreville":  10.2,   # ≈ Fairfax City
     }
 
     # Submarket avg days on market
@@ -104,6 +107,7 @@ class Settings(BaseSettings):
         "Crystal City": 100,    # ≈ Arlington (Ballston)
         "Merrifield":   252,    # ≈ Fairfax City
         "Springfield":  252,    # ≈ Fairfax City
+        "Centreville":  252,    # ≈ Fairfax City
     }
 
     class Config:
@@ -157,10 +161,11 @@ SUBMARKET_BENCHMARKS = {
     "Crystal City":               {"market_rent_psf": 43.19, "vacancy_pct": 21.1,  "source": "PROVISIONAL ≈ Arlington (Ballston)"},
     "Merrifield":                 {"market_rent_psf": 26.23, "vacancy_pct": 8.5,   "source": "PROVISIONAL ≈ Fairfax City"},
     "Springfield":                {"market_rent_psf": 26.23, "vacancy_pct": 8.5,   "source": "PROVISIONAL ≈ Fairfax City"},
+    "Centreville":                {"market_rent_psf": 26.23, "vacancy_pct": 8.5,   "source": "PROVISIONAL ≈ Fairfax City"},
 }
 
 # Submarkets whose benchmark data is provisional (nearest-comparable, not measured).
-PROVISIONAL_SUBMARKETS = ("Annandale", "Crystal City", "Merrifield", "Springfield")
+PROVISIONAL_SUBMARKETS = ("Annandale", "Crystal City", "Merrifield", "Springfield", "Centreville")
 for _sm in PROVISIONAL_SUBMARKETS:
     print(
         f"[config] WARNING: benchmark for submarket '{_sm}' is PROVISIONAL "
