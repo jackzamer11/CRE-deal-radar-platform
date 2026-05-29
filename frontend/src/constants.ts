@@ -14,4 +14,5 @@ export const SUBMARKETS = [
   'Crystal City',
   'Merrifield',
   'Springfield',
+  'Centreville',
 ]

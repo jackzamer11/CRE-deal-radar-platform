@@ -281,7 +281,7 @@ def _build_tenant_match(
         sf       = tenant_dict.get("estimated_sf_needed")
         exp      = tenant_dict.get("lease_expiry_months")
         sf_str   = f"{sf:,} SF" if sf else "office space in the area"
-        exp_str  = f"approximately {exp} months" if exp is not None else "in the coming months"
+        exp_str  = (f"approximately {exp} {'month' if exp == 1 else 'months'}" if exp is not None else "in the coming months")
         tenant_hint = (
             f"\nPrimary matched tenant profile (do NOT reveal tenant name): "
             f"a {industry} firm seeking {sf_str} in "
@@ -363,7 +363,6 @@ def _build_tenant_match(
         "Write:\n"
         "1. Email subject line (one line)\n"
         "2. Email body — maximum 150 words (excluding signature block); "
-        "   greet recipient with the salutation above; "
         "   describe tenant as 'a [industry] firm seeking [SF range] "
         "   in [submarket] with a lease expiring in approximately [X months]'; "
         "   reference one CBRE Q1 2026 submarket data point; "
@@ -436,7 +435,7 @@ def _build_for_sale_vacancy(
         sf  = tenant_dict.get("estimated_sf_needed")
         exp = tenant_dict.get("lease_expiry_months")
         sf_str  = f"{sf:,} SF" if sf else "office space in the area"
-        exp_str = f"approximately {exp} months" if exp is not None else "in the coming months"
+        exp_str = (f"approximately {exp} {'month' if exp == 1 else 'months'}" if exp is not None else "in the coming months")
         tenant_hint = (
             f"\nA qualified tenant prospect has been matched to this property. "
             f"Do NOT reveal their name, industry, NAICS code, or any sector label. "
@@ -546,7 +545,7 @@ def _build_tenant_side(p: dict, tenant_dict: dict) -> dict:
     )
 
     lease_clause = (
-        f"With your lease expiring in approximately {lease_expiry_m} months"
+        f"With your lease expiring in approximately {lease_expiry_m} {'month' if lease_expiry_m == 1 else 'months'}"
         if lease_expiry_m is not None
         else "With your upcoming lease expiry"
     )
@@ -559,7 +558,7 @@ def _build_tenant_side(p: dict, tenant_dict: dict) -> dict:
     )
 
     sf_display  = f"{sf_needed:,} SF" if sf_needed else "office space in the area"
-    exp_display = f"{lease_expiry_m} months" if lease_expiry_m is not None else "in the coming months"
+    exp_display = (f"{lease_expiry_m} {'month' if lease_expiry_m == 1 else 'months'}" if lease_expiry_m is not None else "in the coming months")
 
     # Space-fit note: reference SF match only — no headcount (Fix 4)
     space_fit_note = (
@@ -912,19 +911,6 @@ def generate_property_outreach(
         if hc_hits:
             email_body = _hc_pattern.sub("", email_body)
             email_body = _re.sub(r"  +", " ", email_body).strip()
-
-    # Phase 1 for_sale_vacancy closing line — hardcoded, no dynamic interpolation.
-    # Injected when a matched tenant dict is present; survives regeneration.
-    if outreach_type == "for_sale_vacancy" and not is_tenant_side and tenant_dict:
-        if _PHASE1_FSV_CLOSING not in email_body:
-            if "Thank you," in email_body:
-                email_body = email_body.replace(
-                    "Thank you,",
-                    f"{_PHASE1_FSV_CLOSING}\n\nThank you,",
-                    1,
-                )
-            else:
-                email_body += f"\n\n{_PHASE1_FSV_CLOSING}"
 
     # Fix 2: Phase 2 tenant-side → inject confirmed-leasing disclosure.
     # This applies whenever direction="tenant_side" (the endpoint already guards
