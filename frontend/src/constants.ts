@@ -1,0 +1,17 @@
+export const SUBMARKETS = [
+  'Arlington (Clarendon)',
+  'Arlington (Rosslyn)',
+  'Arlington (Ballston)',
+  'Arlington (Columbia Pike)',
+  'Alexandria (Old Town)',
+  'Tysons',
+  'Reston',
+  'Falls Church',
+  'McLean',
+  'Vienna',
+  'Fairfax City',
+  'Annandale',
+  'Crystal City',
+  'Merrifield',
+  'Springfield',
+]

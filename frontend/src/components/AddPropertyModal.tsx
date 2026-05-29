@@ -2,24 +2,7 @@ import { useState } from 'react'
 import { X, Building2, ChevronRight } from 'lucide-react'
 import { createProperty, updateProperty } from '../api/client'
 import type { PropertyOut } from '../types'
-
-const SUBMARKETS = [
-  'Arlington (Clarendon)',
-  'Arlington (Rosslyn)',
-  'Arlington (Ballston)',
-  'Arlington (Columbia Pike)',
-  'Alexandria (Old Town)',
-  'Tysons',
-  'Reston',
-  'Falls Church',
-  'McLean',
-  'Vienna',
-  'Fairfax City',
-  'Annandale',
-  'Crystal City',
-  'Merrifield',
-  'Springfield',
-]
+import { SUBMARKETS } from '../constants'
 
 interface Props {
   onClose: () => void

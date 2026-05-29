@@ -13,12 +13,7 @@ import BulkUploadModal from '../components/BulkUploadModal'
 import CoStarImportModal from '../components/CoStarImportModal'
 import OutreachDraftModal from '../components/OutreachDraftModal'
 import SnoozeModal from '../components/SnoozeModal'
-
-const SUBMARKETS = [
-  'Arlington (Clarendon)', 'Arlington (Rosslyn)', 'Arlington (Ballston)',
-  'Arlington (Columbia Pike)', 'Alexandria (Old Town)',
-  'Tysons', 'Reston', 'Falls Church', 'McLean', 'Vienna', 'Fairfax City',
-]
+import { SUBMARKETS } from '../constants'
 
 const PRIORITIES = ['IMMEDIATE', 'HIGH', 'WORKABLE', 'IGNORE']
 
