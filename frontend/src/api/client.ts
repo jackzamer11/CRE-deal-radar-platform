@@ -83,6 +83,15 @@ export const getCompanies = (filters?: CompanyFilters): Promise<CompanyListOut[]
 export const getCompany = (companyId: string): Promise<CompanyOut> =>
   api.get(`/companies/${companyId}`).then(r => r.data)
 
+export const snoozeCompany = (
+  companyId: string,
+  payload: { snoozed_until: string; snooze_reason?: string },
+): Promise<CompanyOut> =>
+  api.post(`/companies/${companyId}/snooze`, payload).then(r => r.data)
+
+export const unsnoozeCompany = (companyId: string): Promise<CompanyOut> =>
+  api.post(`/companies/${companyId}/unsnooze`).then(r => r.data)
+
 export const createCompany = (payload: Record<string, unknown>): Promise<CompanyOut> =>
   api.post('/companies/', payload).then(r => r.data)
 

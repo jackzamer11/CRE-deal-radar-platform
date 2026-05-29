@@ -4,13 +4,14 @@ import {
   Users, Filter, X, TrendingUp, Clock, MapPin, Plus, RefreshCw,
   Upload, Pencil, Check, AlertTriangle, Zap, Send, Building2,
 } from 'lucide-react'
-import { getCompanies, getCompany, updateCompanyLease, updateCompanyTrajectory } from '../api/client'
+import { getCompanies, getCompany, updateCompanyLease, updateCompanyTrajectory, unsnoozeCompany } from '../api/client'
 import type { CompanyListOut, CompanyOut, RepClass } from '../types'
 import { PriorityBadge } from '../components/PriorityBadge'
 import ScoreBadge from '../components/ScoreBadge'
 import AddCompanyModal from '../components/AddCompanyModal'
 import CoStarTenantImportModal from '../components/CoStarTenantImportModal'
 import OutreachDraftModal from '../components/OutreachDraftModal'
+import CompanySnoozeModal from '../components/CompanySnoozeModal'
 
 const SUBMARKETS = [
   'Arlington (Clarendon)', 'Arlington (Rosslyn)', 'Arlington (Ballston)',
@@ -106,6 +107,7 @@ export default function Companies() {
   const [showAddModal, setShowAddModal]             = useState(false)
   const [showTenantImportModal, setShowTenantImportModal] = useState(false)
   const [showOutreachModal, setShowOutreachModal]   = useState(false)
+  const [showSnoozeModal, setShowSnoozeModal]       = useState(false)
 
   // Trajectory state
   const [trajectorySaving, setTrajectorySaving] = useState(false)
@@ -206,6 +208,21 @@ export default function Companies() {
     } finally {
       setLeaseSaving(false)
     }
+  }
+
+  const handleSnoozed = (updated: CompanyOut) => {
+    setSelected(updated)
+    setShowSnoozeModal(false)
+    load()
+  }
+
+  const handleUnsnooze = async (company: typeof selected) => {
+    if (!company) return
+    try {
+      const updated = await unsnoozeCompany(company.company_id)
+      setSelected(updated)
+      load()
+    } catch { /* no-op — leave panel as-is on failure */ }
   }
 
   const handleSelectCompany = async (c: CompanyListOut) => {
@@ -455,6 +472,14 @@ export default function Companies() {
           onSaved={() => { setShowOutreachModal(false); load() }}
         />
       )}
+      {showSnoozeModal && selected && (
+        <CompanySnoozeModal
+          companyId={selected.company_id}
+          companyName={selected.name}
+          onClose={() => setShowSnoozeModal(false)}
+          onSnoozed={handleSnoozed}
+        />
+      )}
 
       {/* Detail panel */}
       {selected && !showOutreachModal && (
@@ -465,10 +490,39 @@ export default function Companies() {
                 <div className="font-bold text-ink-primary text-base">{selected.name}</div>
                 <div className="text-xs text-ink-muted mt-0.5">{selected.industry}</div>
               </div>
-              <button onClick={closePanel} className="text-ink-muted hover:text-ink-primary p-1">
-                <X size={18} />
-              </button>
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={() => setShowSnoozeModal(true)}
+                  title="Snooze company — remove from Daily Briefing / outreach queue"
+                  className="text-ink-muted hover:text-amber-400 p-1 rounded-lg hover:bg-surface-muted"
+                >
+                  <Clock size={16} />
+                </button>
+                <button onClick={closePanel} className="text-ink-muted hover:text-ink-primary p-1">
+                  <X size={18} />
+                </button>
+              </div>
             </div>
+
+            {/* Active snooze banner */}
+            {selected.snoozed_until && (
+              <div className="flex items-center justify-between gap-2 mb-4 px-3 py-2 rounded-lg
+                              bg-amber-500/10 border border-amber-500/30">
+                <div className="flex items-center gap-2 min-w-0">
+                  <Clock size={13} className="text-amber-400 flex-shrink-0" />
+                  <span className="text-[11px] text-amber-300 truncate">
+                    Snoozed until {selected.snoozed_until}
+                    {selected.snooze_reason ? ` — ${selected.snooze_reason}` : ''}
+                  </span>
+                </div>
+                <button
+                  onClick={() => handleUnsnooze(selected)}
+                  className="text-[11px] font-semibold text-amber-400 hover:text-amber-300 flex-shrink-0"
+                >
+                  Unsnooze
+                </button>
+              </div>
+            )}
 
             {/* Draft Outreach CTA */}
             <button

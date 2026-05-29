@@ -72,6 +72,11 @@ class Company(Base):
     # Values: AUTO | CONTRACTING | FLAT | GROWING
     lease_trajectory = Column(String, default="AUTO", nullable=False, server_default="AUTO")
 
+    # Snooze — temporarily hide from Daily Briefing / outreach queue (mirrors property side)
+    snoozed_until        = Column(Date,    nullable=True)   # if today < this, company is hidden from queue
+    snooze_reason        = Column(String,  nullable=True)   # free text (e.g. "Just signed renewal — revisit next cycle")
+    returned_from_snooze = Column(Boolean, nullable=True)   # set True when snooze expires on queue load
+
     # Timestamps
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

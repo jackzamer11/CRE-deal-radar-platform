@@ -93,6 +93,22 @@ def fetch_companies(priority_filter: Optional[str] = None, company_id: Optional[
     else:
         companies = [c for c in companies if c["priority"] in ("IMMEDIATE", "HIGH")]
 
+    # Skip snoozed companies — a snoozed company drafted by the agent is exactly
+    # the re-contact the snooze exists to prevent. snoozed_until is an ISO date
+    # string ("YYYY-MM-DD") or null/missing. Null-safe: missing/null = active.
+    today_iso = datetime.date.today().isoformat()
+    snoozed_skipped = [
+        c for c in companies
+        if c.get("snoozed_until") and str(c["snoozed_until"]) > today_iso
+    ]
+    if snoozed_skipped:
+        for c in snoozed_skipped:
+            print(f"  [SNOOZED] Skipping {c.get('name')} ({c['company_id']}) — snoozed until {c['snoozed_until']}")
+    companies = [
+        c for c in companies
+        if not (c.get("snoozed_until") and str(c["snoozed_until"]) > today_iso)
+    ]
+
     # Skip companies with missing critical data
     companies = [c for c in companies if not c.get("insufficient_data") and c.get("current_headcount")]
     return companies

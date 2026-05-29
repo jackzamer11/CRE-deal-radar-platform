@@ -649,6 +649,60 @@ def get_company(company_id: str, db: Session = Depends(get_db)):
     return out
 
 
+class SnoozeRequest(BaseModel):
+    snoozed_until: date                  # must be at least tomorrow (validated on frontend)
+    snooze_reason: Optional[str] = None  # free text — e.g. "Just signed renewal — revisit next cycle"
+
+
+@router.post("/{company_id}/snooze", response_model=CompanyOut)
+def snooze_company(company_id: str, payload: SnoozeRequest, db: Session = Depends(get_db)):
+    """Snooze a company — hide it from the Daily Briefing / outreach queue until snoozed_until date."""
+    from app.models.activity import ActivityLog
+    company = db.query(Company).filter(Company.company_id == company_id).first()
+    if not company:
+        raise HTTPException(status_code=404, detail="Company not found")
+    company.snoozed_until        = payload.snoozed_until
+    company.snooze_reason        = payload.snooze_reason
+    company.returned_from_snooze = None
+    reason_str = f": {payload.snooze_reason}" if payload.snooze_reason else ""
+    db.add(ActivityLog(
+        company_id=company.id,
+        action_type="NOTE",
+        action_taken=f"Snoozed until {payload.snoozed_until.isoformat()}{reason_str}",
+        created_by="user",
+    ))
+    db.commit()
+    db.refresh(company)
+    from app.schemas.company import CompanyOut as CompanyOutSchema
+    out = CompanyOutSchema.model_validate(company)
+    out.matched_properties = _compute_matched_properties(company, db)
+    return out
+
+
+@router.post("/{company_id}/unsnooze", response_model=CompanyOut)
+def unsnooze_company(company_id: str, db: Session = Depends(get_db)):
+    """Remove a snooze — company immediately returns to the Daily Briefing / outreach queue."""
+    from app.models.activity import ActivityLog
+    company = db.query(Company).filter(Company.company_id == company_id).first()
+    if not company:
+        raise HTTPException(status_code=404, detail="Company not found")
+    company.snoozed_until        = None
+    company.snooze_reason        = None
+    company.returned_from_snooze = None
+    db.add(ActivityLog(
+        company_id=company.id,
+        action_type="NOTE",
+        action_taken="Unsnoozed manually",
+        created_by="user",
+    ))
+    db.commit()
+    db.refresh(company)
+    from app.schemas.company import CompanyOut as CompanyOutSchema
+    out = CompanyOutSchema.model_validate(company)
+    out.matched_properties = _compute_matched_properties(company, db)
+    return out
+
+
 VALID_LEASE_SOURCES = {"costar", "manual", "compstak", "sec_filing", "landlord_confirmed", "public_record"}
 
 
