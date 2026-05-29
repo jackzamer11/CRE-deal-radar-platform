@@ -39,6 +39,11 @@ class Settings(BaseSettings):
         "McLean": 243,
         "Vienna": 218,
         "Fairfax City": 189,
+        # Provisional (nearest-comparable) — see PROVISIONAL_SUBMARKETS warning below
+        "Annandale": 190,       # ≈ Falls Church
+        "Crystal City": 280,    # ≈ Arlington (Ballston)
+        "Merrifield": 189,      # ≈ Fairfax City
+        "Springfield": 189,     # ≈ Fairfax City
     }
 
     # Submarket avg market rents ($/SF/yr NNN) — updated to CBRE Q1 2026
@@ -54,6 +59,11 @@ class Settings(BaseSettings):
         "McLean":                    39.21,
         "Vienna":                    24.16,
         "Fairfax City":              26.23,
+        # Provisional (nearest-comparable)
+        "Annandale":    27.87,   # ≈ Falls Church
+        "Crystal City": 43.19,   # ≈ Arlington (Ballston)
+        "Merrifield":   26.23,   # ≈ Fairfax City
+        "Springfield":  26.23,   # ≈ Fairfax City
     }
 
     # Submarket avg cap rates
@@ -69,6 +79,11 @@ class Settings(BaseSettings):
         "McLean": 9.7,
         "Vienna": 9.5,
         "Fairfax City": 10.2,
+        # Provisional (nearest-comparable)
+        "Annandale":    7.0,    # ≈ Falls Church
+        "Crystal City": 6.2,    # ≈ Arlington (Ballston)
+        "Merrifield":   10.2,   # ≈ Fairfax City
+        "Springfield":  10.2,   # ≈ Fairfax City
     }
 
     # Submarket avg days on market
@@ -84,6 +99,11 @@ class Settings(BaseSettings):
         "McLean": 560,
         "Vienna": 290,
         "Fairfax City": 252,
+        # Provisional (nearest-comparable)
+        "Annandale":    150,    # ≈ Falls Church
+        "Crystal City": 100,    # ≈ Arlington (Ballston)
+        "Merrifield":   252,    # ≈ Fairfax City
+        "Springfield":  252,    # ≈ Fairfax City
     }
 
     class Config:
@@ -129,4 +149,20 @@ SUBMARKET_BENCHMARKS = {
     "McLean":                     {"market_rent_psf": 39.21, "vacancy_pct": 7.4,   "source": "CBRE Q1 2026 (small sample 0.78 MSF)"},
     "Vienna":                     {"market_rent_psf": 24.16, "vacancy_pct": 5.2,   "source": "CBRE Q1 2026 (small sample 0.49 MSF)"},
     "Fairfax City":               {"market_rent_psf": 26.23, "vacancy_pct": 8.5,   "source": "CBRE Q1 2026"},
+    # ── Provisional benchmarks (nearest-comparable submarket) ────────────────
+    # Added so newly-mapped CoStar submarkets render with sensible market
+    # context instead of falling through to the generic NoVA default. These are
+    # NOT measured CBRE figures — replace when submarket-specific data is available.
+    "Annandale":                  {"market_rent_psf": 27.87, "vacancy_pct": 10.4,  "source": "PROVISIONAL ≈ Falls Church"},
+    "Crystal City":               {"market_rent_psf": 43.19, "vacancy_pct": 21.1,  "source": "PROVISIONAL ≈ Arlington (Ballston)"},
+    "Merrifield":                 {"market_rent_psf": 26.23, "vacancy_pct": 8.5,   "source": "PROVISIONAL ≈ Fairfax City"},
+    "Springfield":                {"market_rent_psf": 26.23, "vacancy_pct": 8.5,   "source": "PROVISIONAL ≈ Fairfax City"},
 }
+
+# Submarkets whose benchmark data is provisional (nearest-comparable, not measured).
+PROVISIONAL_SUBMARKETS = ("Annandale", "Crystal City", "Merrifield", "Springfield")
+for _sm in PROVISIONAL_SUBMARKETS:
+    print(
+        f"[config] WARNING: benchmark for submarket '{_sm}' is PROVISIONAL "
+        f"({SUBMARKET_BENCHMARKS[_sm]['source']}) — replace with measured data when available."
+    )

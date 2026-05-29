@@ -115,6 +115,19 @@ COSTAR_SUBMARKET_MAP: dict = {
     "springfield/burke":         "Springfield",
     "route 28 corridor north":   "Dulles Corridor",
     "route 28 corridor south":   "Dulles Corridor",
+    # ── Additional CoStar submarkets (12) — case-insensitive lookup ──────────
+    "annandale":                 "Annandale",
+    "clarendon/courthouse":      "Arlington (Clarendon)",
+    "crystal city":              "Crystal City",
+    "del ray":                   "Alexandria (Old Town)",
+    "i-395 corridor":            "Springfield",
+    "merrifield":                "Merrifield",
+    "n arlington/e fallschurch": "Falls Church",
+    "newington":                 "Springfield",
+    "oakton":                    "Vienna",
+    "oakton/vienna":             "Vienna",
+    "springfield":               "Springfield",
+    "tysons corner/mclean":      "Tysons",
 }
 
 COSTAR_CLASS_MAP: dict = {
@@ -1042,6 +1055,10 @@ async def costar_import(
     print(f"[CoStar import] Existing properties in DB: {len(existing)}")
 
     for idx, row in enumerate(rows, start=2):
+      # Wrap the full per-row pipeline so ANY unexpected failure (null parse,
+      # type cast, missing field, DB error) is captured with its reason string
+      # and logged, instead of being swallowed or crashing the whole import.
+      try:
         # Filter 1: State must be VA
         state_val = _costar_str(row, "State") or ""
         if state_val.strip().upper() != "VA":
@@ -1049,6 +1066,8 @@ async def costar_import(
             continue
 
         # Filter 2: Submarket must map to a platform submarket
+        # Null-safe + case-insensitive: a blank submarket cell becomes "" and
+        # is treated as unmapped rather than raising.
         cs_sub = (_costar_str(row, "Submarket Name") or "").strip()
         sub_key = cs_sub.lower()
         if sub_key not in COSTAR_SUBMARKET_MAP:
@@ -1070,6 +1089,10 @@ async def costar_import(
         # Parse row
         payload, err = _parse_costar_row(row, row_num=idx)
         if err:
+            print(
+                f"[CoStar import] ROW ERROR row={err.get('row', idx)} "
+                f"address={err.get('address', '—')} reason={err.get('reason', 'unknown')}"
+            )
             errors.append(err)
             continue
 
@@ -1157,6 +1180,14 @@ async def costar_import(
             _run_signals(prop)
             existing[dedupe_key] = prop
             inserted += 1
+      except Exception as exc:
+        # Self-reporting diagnostic — capture whatever the failure is so it can
+        # be surfaced and followed up on, without crashing the import loop.
+        reason = str(exc).strip() or repr(exc)
+        addr = _costar_str(row, "Property Address") or "—"
+        print(f"[CoStar import] ROW ERROR row={idx} address={addr} reason={reason}")
+        errors.append({"row": idx, "address": addr, "reason": reason})
+        continue
 
     db.commit()
 
