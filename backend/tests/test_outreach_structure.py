@@ -73,10 +73,9 @@ def _import_svc():
 def _make_mock_chat(svc, *, include_leasing_question=False):
     """Build a mock _chat that produces a realistic property-side body.
 
-    Echoes back the salutation + address from the system prompt and the
-    hardcoded social-proof line, so the post-LLM pipeline runs end to end.
+    Echoes back the salutation + address from the system prompt.
+    Social-proof is intentionally absent — property-side no longer injects it.
     """
-    social = svc._HARDCODED_SOCIAL_PROOF
     extra_q = f"{LEASING_QUESTION} " if include_leasing_question else ""
 
     def _mock_chat(system, user, **kw):
@@ -93,8 +92,7 @@ def _make_mock_chat(svc, *, include_leasing_question=False):
             "With their lease expiring in approximately 12 months and your current "
             "vacancy, the timing lines up well. "
             "CBRE Q1 2026 pegs Tysons vacancy near 27%. "
-            "Could we set up a short call this week to walk through fit and next steps?\n\n"
-            f"{social}\n\n"
+            "I'd welcome a brief call at your convenience.\n\n"
             "Thank you,\n\n"
             "Jack Zamer\nVice President, The Commercial Real Estate Group\n571-205-6228\n"
             "OPENING:\nHello, opening.\n"
@@ -113,14 +111,14 @@ def _word_count(body: str) -> int:
     return len(main.split())
 
 
-# ── (a) intro + social-proof present, exactly once (both property-side types) ──
+# ── (a) intro present; social-proof absent on both property-side types ─────────
 
 
 @pytest.mark.parametrize("outreach_type,listed_for_sale,leasing_q", [
     ("tenant_match",     False, False),
     ("for_sale_vacancy", True,  True),
 ])
-def test_intro_and_single_social_proof(outreach_type, listed_for_sale, leasing_q):
+def test_intro_present_social_proof_absent(outreach_type, listed_for_sale, leasing_q):
     svc = _import_svc()
     with patch.object(svc, "_chat", side_effect=_make_mock_chat(svc, include_leasing_question=leasing_q)):
         result = svc.generate_property_outreach(
@@ -131,8 +129,8 @@ def test_intro_and_single_social_proof(outreach_type, listed_for_sale, leasing_q
         )
     body = result["email_body"]
     assert svc._HARDCODED_INTRO in body, f"{outreach_type}: intro sentence missing"
-    assert body.count(svc._HARDCODED_SOCIAL_PROOF) == 1, (
-        f"{outreach_type}: social-proof line must appear EXACTLY once (no duplicate pitch)"
+    assert svc._HARDCODED_SOCIAL_PROOF not in body, (
+        f"{outreach_type}: social-proof line must be ABSENT from property-side emails"
     )
 
 

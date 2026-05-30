@@ -53,9 +53,9 @@ _PHASE1_FSV_CLOSING = (
 
 
 
-def _inject_hardcoded_sentences(email_body: str) -> str:
-    """Post-LLM: ensure hardcoded intro (after greeting) and social proof
-    (before signature) survive every regeneration unchanged.
+def _inject_hardcoded_sentences(email_body: str, inject_social_proof: bool = True) -> str:
+    """Post-LLM: ensure hardcoded intro (after greeting) survives every regeneration.
+    Social proof is injected only when inject_social_proof=True (tenant-side only).
     Uses 'agent' title in all paths (Fix 3 — advisor → agent everywhere).
     """
     if not email_body:
@@ -77,8 +77,8 @@ def _inject_hardcoded_sentences(email_body: str) -> str:
         insert_at = 1 if len(paras) > 1 else len(paras)
         paras.insert(insert_at, _HARDCODED_INTRO)
 
-    # ── Social proof before signature block ──────────────────────────────────
-    if _HARDCODED_SOCIAL_PROOF not in body:
+    # ── Social proof before signature block (tenant-side only) ───────────────
+    if inject_social_proof and _HARDCODED_SOCIAL_PROOF not in body:
         sig_idx = next(
             (i for i, para in enumerate(paras) if para.strip().startswith("Thank you")),
             None,
@@ -436,13 +436,14 @@ def _build_tenant_match(
         f"(2) WHY-NOW — one sentence pairing the tenant's lease-expiry timeline with this property's "
         f"{urgency_signal}, so the fit and the timing are both clear. "
         f"{proof_step}"
-        f"(4) ASK — close with ONE low-friction ask: a short call this week to walk through fit and "
-        f"next steps; do NOT stack multiple asks (no separate rent / tour / OM requests — fold them "
-        f"into the call's purpose if relevant). "
+        f"(4) ASK — close with EXACTLY this sentence and no other call-to-action: "
+        f"'I'd welcome a brief call at your convenience.' "
+        f"Do NOT write 'I propose a short call' or any other phrasing before it. "
+        f"Do NOT stack multiple asks (no separate rent / tour / OM requests — fold them "
+        f"into the call's purpose). "
         f"Anchor any numerical claim to the CBRE Q1 2026 NoVA benchmark provided. "
         f"NEVER reveal the tenant company name — describe by industry, size, and timing only. "
         f"NEVER suggest specific days of the week. "
-        f"End the call-script close with: 'I'd welcome a brief call at your convenience.' "
         f"{sale_clause}{secondary_clause}"
     )
     user = (
@@ -582,9 +583,9 @@ def _build_for_sale_vacancy(
         f"is worth considering, and note in ONE sentence that a tenant in place can enhance the property's "
         f"appeal and shorten the marketing window. "
         f"{proof_step}"
-        f"(4) ASK — close with ONE low-friction ask: a short call. "
-        f"NEVER suggest specific days of the week. "
-        f"End the call-script close with: 'I'd welcome a brief call at your convenience.'"
+        f"(4) ASK — close with EXACTLY this sentence: 'I'd welcome a brief call at your convenience.' "
+        f"Do NOT add 'I propose a short call' or any other call-to-action before it. "
+        f"NEVER suggest specific days of the week."
     )
     body_instruction = (
         "2. Email body — maximum 150 words (excluding signature block); follow the 4-step sequence "
@@ -998,7 +999,7 @@ def generate_property_outreach(
     # ── Post-LLM sentence injection ─────────────────────────────────────────
     # "agent" title used in all paths (Fix 3 — advisor → agent everywhere).
     is_tenant_side = (direction == "tenant_side")
-    email_body = _inject_hardcoded_sentences(parsed["email_body"])
+    email_body = _inject_hardcoded_sentences(parsed["email_body"], inject_social_proof=is_tenant_side)
 
     # Sanitize bracket placeholders (all paths): "Dear [Owner's Name]," etc.
     email_body = _sanitize_bracket_placeholders(email_body, property_dict)
@@ -1007,10 +1008,11 @@ def generate_property_outreach(
     if is_tenant_side and tenant_dict:
         email_body = _dedup_lease_clause(email_body, tenant_dict.get("lease_expiry_months"))
 
-    # Safety strip: property-side copy must never mention headcount.
-    # Scan for "employees", "employee", or a bare number followed by "HC".
+    # Safety strip: property-side copy must never mention headcount,
+    # and must never contain a redundant "I propose a short call" sentence.
     if not is_tenant_side:
         import re as _re
+        email_body = _re.sub(r'I propose a short call[^.!?]*[.!?]\s*', '', email_body)
         _hc_pattern = _re.compile(
             r'[^.!?\n]*\b(?:employees?|\d+\s*HC)\b[^.!?\n]*[.!?]',
             _re.IGNORECASE,
