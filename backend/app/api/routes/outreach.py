@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models.outreach_log import OutreachLog
 from app.schemas.outreach import OutreachLogUpdate, OutreachLogOut
+from app.services.opportunity_stage_service import advance_opportunity_to_contacted
 
 router = APIRouter(prefix="/outreach-log", tags=["outreach"])
 
@@ -32,6 +33,16 @@ def update_outreach_log(
         log.marked_contacted = payload.marked_contacted
         if payload.marked_contacted and log.contacted_at is None:
             log.contacted_at = datetime.utcnow()
+        # Save-and-advance is one logical operation: when this outreach is marked
+        # contacted, advance the matching Opportunity IDENTIFIED -> CONTACTED in the
+        # SAME transaction. Errors are surfaced (not swallowed) so we never report
+        # success while leaving the stage stale.
+        if payload.marked_contacted:
+            advance_opportunity_to_contacted(
+                db,
+                property_id=log.property_id,
+                company_id=log.company_id,
+            )
 
     db.commit()
     db.refresh(log)
