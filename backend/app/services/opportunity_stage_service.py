@@ -48,10 +48,16 @@ def advance_opportunity_to_contacted(
 
     Does not commit — the caller's transaction persists the change atomically.
     """
+    # ── DIAG: entry ──────────────────────────────────────────────────────────
+    logger.info(
+        "[DIAG][advance_opportunity_to_contacted] ENTRY property_id=%r company_id=%r",
+        property_id, company_id,
+    )
+
     if property_id is None and company_id is None:
         # Nothing to key on; defensively no-op rather than scanning the table.
         logger.warning(
-            "advance_opportunity_to_contacted called with no property_id/company_id"
+            "[DIAG][advance_opportunity_to_contacted] called with no property_id/company_id — no-op"
         )
         return None
 
@@ -60,27 +66,57 @@ def advance_opportunity_to_contacted(
         query = query.filter(Opportunity.property_id == property_id)
     if company_id is not None:
         query = query.filter(Opportunity.company_id == company_id)
-    opp = query.first()
+
+    # ── DIAG: count all matching rows before picking one ─────────────────────
+    all_matches = query.all()
+    logger.info(
+        "[DIAG][advance_opportunity_to_contacted] query (property_id=%r, company_id=%r) "
+        "→ %d row(s): %s",
+        property_id, company_id, len(all_matches),
+        [(o.opportunity_id, o.stage, o.company_id) for o in all_matches],
+    )
+    opp = all_matches[0] if all_matches else None
 
     if opp is None:
         # Defensive create — normal path is that the row exists, but a missing
         # row must not 500. Populate NOT NULL columns with neutral placeholders.
+        logger.info(
+            "[DIAG][advance_opportunity_to_contacted] no match found — creating at CONTACTED "
+            "(property_id=%r, company_id=%r)",
+            property_id, company_id,
+        )
         opp = _create_contacted_opportunity(
             db, property_id=property_id, company_id=company_id
         )
         logger.info(
-            "Auto-created Opportunity %s at CONTACTED (property_id=%s, company_id=%s)",
-            opp.opportunity_id, property_id, company_id,
+            "[DIAG][advance_opportunity_to_contacted] auto-created %s at CONTACTED",
+            opp.opportunity_id,
         )
         return opp
 
     current = (opp.stage or "").strip().upper()
+    logger.info(
+        "[DIAG][advance_opportunity_to_contacted] selected opp=%s current_stage=%r (raw=%r)",
+        opp.opportunity_id, current, opp.stage,
+    )
     if current in _NON_REGRESS_STAGES:
         # Already CONTACTED or further along — leave it (idempotent / no regress).
+        logger.info(
+            "[DIAG][advance_opportunity_to_contacted] stage %r is in NON_REGRESS_STAGES — no-op",
+            current,
+        )
         return opp
 
     # IDENTIFIED, null, empty, or any unrecognized/malformed value -> CONTACTED.
+    logger.info(
+        "[DIAG][advance_opportunity_to_contacted] advancing %s %r -> CONTACTED",
+        opp.opportunity_id, current,
+    )
     opp.stage = STAGE_CONTACTED
+    logger.info(
+        "[DIAG][advance_opportunity_to_contacted] opp.stage now=%r (in-session, pre-commit)",
+        opp.stage,
+    )
     return opp
 
 
