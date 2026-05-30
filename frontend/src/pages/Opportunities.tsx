@@ -362,7 +362,7 @@ export default function Opportunities() {
           outreach_type={outreachModal.type}
           target_type={outreachModal.targetType}
           onClose={() => setOutreachModal(null)}
-          onSaved={() => setOutreachModal(null)}
+          onSaved={() => { setOutreachModal(null); load() }}
         />
       )}
     </div>
