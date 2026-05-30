@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime
 from typing import Optional
 
@@ -9,6 +10,8 @@ from app.models.company import Company
 from app.models.outreach_log import OutreachLog
 from app.schemas.outreach import OutreachLogUpdate, OutreachLogOut
 from app.services.opportunity_stage_service import advance_opportunity_to_contacted
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/outreach-log", tags=["outreach"])
 
@@ -52,8 +55,7 @@ def update_outreach_log(
                 if co:
                     resolved_company_id = co.id
                 else:
-                    import logging as _logging
-                    _logging.getLogger(__name__).warning(
+                    logger.warning(
                         "advance_opportunity: pair_company_id=%r not found; "
                         "falling back to log.company_id=%r",
                         payload.pair_company_id, log.company_id,

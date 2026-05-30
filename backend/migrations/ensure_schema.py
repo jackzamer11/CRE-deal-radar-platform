@@ -175,6 +175,91 @@ def ensure_outreach_drafts(cur: sqlite3.Cursor) -> int:
 
 
 
+def fix_outreach_log_company_id_nullable(cur: sqlite3.Cursor) -> int:
+    """Drop the NOT NULL constraint on outreach_log.company_id if it is present.
+
+    Background
+    ----------
+    The original outreach_log table was created when outreach was tenant-only.
+    company_id was NOT NULL because every log row belonged to a company.
+    When property-side outreach (tenant_match, listing_rep, etc.) was added,
+    the ORM model changed company_id to nullable=True — but SQLAlchemy's
+    create_all() never alters *existing* tables.  The Docker-volume database
+    therefore retained the NOT NULL constraint, causing every property-side
+    outreach save to 500 with IntegrityError.
+
+    Fix
+    ---
+    SQLite cannot DROP a NOT NULL constraint via ALTER TABLE.  This function
+    uses the standard SQLite pattern: rename → recreate (without NOT NULL on
+    company_id) → copy all rows → drop the old table.
+
+    Idempotent: if company_id is already nullable (or missing), returns 0.
+    No data loss: all rows are copied before the backup table is dropped.
+    """
+    cur.execute("PRAGMA table_info(outreach_log)")
+    col_rows = cur.fetchall()  # (cid, name, type, notnull, dflt_value, pk)
+    if not col_rows:
+        return 0  # Table doesn't exist yet — nothing to fix
+
+    company_col = next((r for r in col_rows if r[1] == "company_id"), None)
+    if company_col is None or company_col[3] == 0:
+        return 0  # Already nullable or column absent — no-op
+
+    # Rebuild CREATE TABLE with company_id made nullable; all other columns
+    # preserve their original type/NOT NULL/DEFAULT as reported by PRAGMA.
+    col_defs = []
+    col_names = []
+    for cid, name, col_type, notnull, dflt, pk in col_rows:
+        col_names.append(name)
+        if pk:
+            col_defs.append(f"{name} {col_type} PRIMARY KEY")
+        elif name == "company_id":
+            col_defs.append(f"{name} {col_type}")   # drop NOT NULL — the fix
+        elif notnull and dflt is not None:
+            col_defs.append(f"{name} {col_type} NOT NULL DEFAULT {dflt}")
+        elif notnull:
+            col_defs.append(f"{name} {col_type} NOT NULL")
+        elif dflt is not None:
+            col_defs.append(f"{name} {col_type} DEFAULT {dflt}")
+        else:
+            col_defs.append(f"{name} {col_type}")
+
+    cur.execute("PRAGMA foreign_keys = OFF")
+    cur.execute("ALTER TABLE outreach_log RENAME TO _outreach_log_pre_fix")
+
+    create_sql = "CREATE TABLE outreach_log (\n    {}\n)".format(
+        ",\n    ".join(col_defs)
+    )
+    cur.execute(create_sql)
+
+    cols_csv = ", ".join(col_names)
+    cur.execute(
+        f"INSERT INTO outreach_log ({cols_csv}) "
+        f"SELECT {cols_csv} FROM _outreach_log_pre_fix"
+    )
+    cur.execute("DROP TABLE _outreach_log_pre_fix")
+
+    # Recreate the indexes SQLAlchemy originally built on this table.
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS ix_outreach_log_id "
+        "ON outreach_log (id)"
+    )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS ix_outreach_log_company_id "
+        "ON outreach_log (company_id)"
+    )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS ix_outreach_log_property_id "
+        "ON outreach_log (property_id)"
+    )
+
+    cur.execute("PRAGMA foreign_keys = ON")
+
+    print("  ~ outreach_log.company_id: removed NOT NULL constraint")
+    return 1
+
+
 def ensure_companies(cur: sqlite3.Cursor) -> int:
     """Add any columns the Company ORM model expects that may be missing."""
     added = 0
@@ -226,6 +311,7 @@ def run() -> None:
     prop_added   = ensure_properties(cur)
     comp_added   = ensure_companies(cur)
     olog_added   = ensure_outreach_log(cur)
+    olog_fixed   = fix_outreach_log_company_id_nullable(cur)
     act_added    = ensure_activity_logs(cur)
     draft_added  = ensure_outreach_drafts(cur)
     bf_added     = backfill_lease_expiry_dates(cur)
@@ -233,7 +319,7 @@ def run() -> None:
     conn.commit()
     conn.close()
 
-    total = prop_added + comp_added + olog_added + act_added + draft_added + bf_added
+    total = prop_added + comp_added + olog_added + olog_fixed + act_added + draft_added + bf_added
     if total:
         print(f"ensure_schema: applied {total} column addition(s)/backfill(s).")
     else:

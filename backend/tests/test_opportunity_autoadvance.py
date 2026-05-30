@@ -16,7 +16,12 @@ Guards:
       error, no duplicate Opportunity created.
   (d) if no Opportunity exists, one is created at CONTACTED rather than raising.
   (e) a null/malformed stage value is treated as advanceable to CONTACTED.
+  (f) tenant-match pair: only the correct (tenant-match) Opportunity advances.
+  (g) full save path: POST log-outreach (company_id=None) + PATCH mark-contacted.
+  (h) migration unit test: fix_outreach_log_company_id_nullable removes NOT NULL.
 """
+import sqlite3
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -287,3 +292,158 @@ def test_live_path_tenant_match_advances_correct_opportunity(client, db_session)
     # No duplicate Opportunity created.
     total = db_session.query(Opportunity).filter(Opportunity.property_id == prop.id).count()
     assert total == 2, f"Must remain exactly 2 opportunities, got {total} (no duplicate create)"
+
+
+# ── (g) ROOT-CAUSE REGRESSION: full frontend save path (null company_id) ──────────
+#
+# Production 500:
+#   POST /api/properties/{id}/log-outreach with outreach_type=tenant_match
+#   → INSERT into outreach_log with company_id=None
+#   → IntegrityError: NOT NULL constraint failed: outreach_log.company_id
+#   → stage-advance never ran → Opportunity stayed IDENTIFIED
+#
+# Root cause: the Docker-volume outreach_log table was created before
+# property-side outreach existed (company_id was NOT NULL then). The ORM model
+# was updated to nullable=True but SQLAlchemy create_all() never alters existing
+# tables — the constraint persisted in the live DB.
+#
+# This test exercises the EXACT frontend save path via the real endpoints so
+# a future regression (e.g. accidentally reverting nullable=False) breaks here.
+# Steps mirror what OutreachDraftModal.handleSave does:
+#   1. POST  /api/properties/{id}/log-outreach   → creates log with company_id=None
+#   2. PATCH /api/outreach-log/{log_id}          → marks contacted + advances Opportunity
+def test_property_log_outreach_null_company_id_succeeds_and_advances(client, db_session):
+    prop   = _make_property(db_session, property_id="NVA-507")
+    tenant = Company(company_id="CO-507", name="Tenant Corp 507", industry="Health Care")
+    db_session.add(tenant)
+    db_session.flush()
+    opp = Opportunity(
+        opportunity_id="OPP-507",
+        deal_type="TENANT_DRIVEN",
+        opportunity_category="TENANT_REP",
+        property_id=prop.id,
+        company_id=tenant.id,
+        score=78.0,
+        confidence_level="HIGH",
+        priority="HIGH",
+        thesis="507 tenant thesis.",
+        next_action="Follow up.",
+        stage="IDENTIFIED",
+    )
+    db_session.add(opp)
+    db_session.commit()
+
+    # Step 1 — the INSERT that was 500-ing: company_id=None on a NOT NULL column
+    log_resp = client.post(
+        f"/api/properties/{prop.property_id}/log-outreach",
+        json={
+            "email_subject":         "Tenant match outreach",
+            "email_body":            "Body text.",
+            "call_script_opening":   "Opening.",
+            "call_script_core":      "Core.",
+            "call_script_pain_probe": "Probe?",
+            "call_script_close":     "Close.",
+            "score_at_generation":   78.0,
+            "priority_at_generation": "HIGH",
+            "outreach_type":         "tenant_match",
+        },
+    )
+    assert log_resp.status_code == 200, (
+        f"POST log-outreach must not 500 when company_id is null (IntegrityError check): "
+        f"{log_resp.text}"
+    )
+    log_id = log_resp.json()["id"]
+
+    # Step 2 — PATCH mark-contacted with pair_company_id resolves and advances the right row
+    patch_resp = client.patch(
+        f"/api/outreach-log/{log_id}",
+        json={"marked_contacted": True, "pair_company_id": "CO-507"},
+    )
+    assert patch_resp.status_code == 200, patch_resp.text
+
+    db_session.refresh(opp)
+    assert opp.stage == "CONTACTED", (
+        "Tenant-match Opportunity must advance to CONTACTED via the pair_company_id path"
+    )
+
+
+# ── (h) MIGRATION UNIT TEST: fix_outreach_log_company_id_nullable ─────────────────
+#
+# Verifies the ensure_schema migration that fixes the live Docker-volume DB.
+# Creates an in-memory SQLite table with the OLD schema (company_id NOT NULL),
+# demonstrates the constraint failure, runs the migration, and confirms:
+#   - The constraint is removed (NULL inserts succeed)
+#   - Existing rows are preserved (no data loss)
+#   - A second run is a no-op (idempotent)
+#
+# This test is the one that FAILS against code without the migration function and
+# PASSES after it is added — satisfying the "fail before fix, pass after" contract.
+def test_fix_outreach_log_company_id_nullable_migration():
+    from migrations.ensure_schema import fix_outreach_log_company_id_nullable
+
+    conn = sqlite3.connect(":memory:")
+    cur  = conn.cursor()
+
+    # Recreate the OLD schema (company_id NOT NULL, mirroring the Docker volume)
+    cur.execute("""
+        CREATE TABLE outreach_log (
+            id                     INTEGER PRIMARY KEY,
+            company_id             INTEGER NOT NULL,
+            property_id            INTEGER,
+            outreach_type          VARCHAR NOT NULL,
+            generated_at           DATETIME,
+            email_subject          TEXT,
+            email_body             TEXT,
+            call_script_opening    TEXT,
+            call_script_core       TEXT,
+            call_script_pain_probe TEXT,
+            call_script_close      TEXT,
+            projected_sf           INTEGER,
+            score_at_generation    FLOAT,
+            priority_at_generation VARCHAR,
+            marked_contacted       BOOLEAN,
+            email_sent             BOOLEAN,
+            call_made              BOOLEAN,
+            outcome_notes          TEXT,
+            contacted_at           DATETIME
+        )
+    """)
+    cur.execute(
+        "INSERT INTO outreach_log (company_id, outreach_type) VALUES (42, 'tenant')"
+    )
+    conn.commit()
+
+    # Pre-fix: inserting with NULL company_id must fail
+    with pytest.raises(sqlite3.IntegrityError, match="NOT NULL constraint failed"):
+        cur.execute(
+            "INSERT INTO outreach_log (company_id, outreach_type) VALUES (NULL, 'tenant_match')"
+        )
+    conn.rollback()
+
+    # Run the migration
+    changed = fix_outreach_log_company_id_nullable(cur)
+    conn.commit()
+    assert changed == 1, "Migration must report 1 change on first run"
+
+    # Post-fix: NULL company_id insert must now succeed
+    cur.execute(
+        "INSERT INTO outreach_log (company_id, outreach_type) VALUES (NULL, 'tenant_match')"
+    )
+    conn.commit()
+
+    # Existing rows preserved (no data loss)
+    cur.execute("SELECT COUNT(*) FROM outreach_log WHERE company_id = 42")
+    assert cur.fetchone()[0] == 1, "Original rows must survive the migration"
+
+    # company_id is now nullable; outreach_type (was NOT NULL) still NOT NULL
+    cur.execute("PRAGMA table_info(outreach_log)")
+    cols = {r[1]: r for r in cur.fetchall()}
+    assert cols["company_id"][3] == 0,     "company_id must be nullable after migration"
+    assert cols["outreach_type"][3] == 1,  "outreach_type NOT NULL must be preserved"
+
+    # Idempotent: second run is a no-op
+    changed2 = fix_outreach_log_company_id_nullable(cur)
+    conn.commit()
+    assert changed2 == 0, "Second run must be a no-op (idempotent)"
+
+    conn.close()
