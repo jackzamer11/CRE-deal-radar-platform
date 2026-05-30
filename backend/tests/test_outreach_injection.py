@@ -69,10 +69,10 @@ def _minimal_tenant(lease_expiry_months=12):
     }
 
 
-# ── (a) tenant-match property-side contains BOTH hardcoded sentences ──────────
+# ── (a) tenant-match property-side contains intro but NOT social-proof ────────
 
 
-def test_tenant_match_property_side_contains_intro_and_social_proof():
+def test_tenant_match_property_side_intro_present_social_proof_absent():
     import app.services.property_outreach_service as svc
 
     with patch.object(svc, "_chat", side_effect=lambda s, u, **kw: _structured_llm_response()):
@@ -87,32 +87,51 @@ def test_tenant_match_property_side_contains_intro_and_social_proof():
     assert svc._HARDCODED_INTRO in body, (
         "tenant-match property-side must contain the hardcoded intro sentence"
     )
-    assert svc._HARDCODED_SOCIAL_PROOF in body, (
-        "tenant-match property-side must contain the hardcoded social-proof sentence"
+    assert svc._HARDCODED_SOCIAL_PROOF not in body, (
+        "tenant-match property-side must NOT contain the social-proof sentence (property-side only)"
     )
 
 
-# ── (b) social-proof present in all three email types ─────────────────────────
+# ── (b) social-proof absent on property-side; present on tenant-side ──────────
 
 
-@pytest.mark.parametrize("outreach_type,direction", [
-    ("tenant_match",     "property_side"),
-    ("for_sale_vacancy", "property_side"),
-    ("tenant_match",     "tenant_side"),
+@pytest.mark.parametrize("outreach_type", [
+    "tenant_match",
+    "for_sale_vacancy",
 ])
-def test_social_proof_present_in_all_email_types(outreach_type, direction):
+def test_social_proof_absent_on_property_side(outreach_type):
+    import app.services.property_outreach_service as svc
+
+    prop = _minimal_property()
+    if outreach_type == "for_sale_vacancy":
+        prop["listed_for_sale"] = True
+
+    with patch.object(svc, "_chat", side_effect=lambda s, u, **kw: _structured_llm_response()):
+        result = svc.generate_property_outreach(
+            property_dict=prop,
+            outreach_type=outreach_type,
+            direction="property_side",
+            tenant_dict=_minimal_tenant(),
+        )
+
+    assert svc._HARDCODED_SOCIAL_PROOF not in result["email_body"], (
+        f"{outreach_type}/property_side must NOT contain the social-proof sentence"
+    )
+
+
+def test_social_proof_present_on_tenant_side():
     import app.services.property_outreach_service as svc
 
     with patch.object(svc, "_chat", side_effect=lambda s, u, **kw: _structured_llm_response()):
         result = svc.generate_property_outreach(
             property_dict=_minimal_property(),
-            outreach_type=outreach_type,
-            direction=direction,
+            outreach_type="tenant_match",
+            direction="tenant_side",
             tenant_dict=_minimal_tenant(),
         )
 
     assert svc._HARDCODED_SOCIAL_PROOF in result["email_body"], (
-        f"{outreach_type}/{direction} must contain the social-proof sentence"
+        "tenant_match/tenant_side must contain the social-proof sentence"
     )
 
 
@@ -196,6 +215,32 @@ def test_no_bracket_placeholder_in_output(outreach_type, direction):
     assert not leftovers, (
         f"{outreach_type}/{direction} must not contain bracket placeholders; "
         f"found: {leftovers}"
+    )
+
+
+# ── (e) null / Unknown owner_name → "Dear Property Owner," ───────────────────
+
+
+# ── (f) call-ask contract: single "I'd welcome" ask; no "I propose a short call" ─
+
+
+def test_tenant_match_property_side_call_ask_contract():
+    import app.services.property_outreach_service as svc
+
+    with patch.object(svc, "_chat", side_effect=lambda s, u, **kw: _structured_llm_response()):
+        result = svc.generate_property_outreach(
+            property_dict=_minimal_property(),
+            outreach_type="tenant_match",
+            direction="property_side",
+            tenant_dict=_minimal_tenant(),
+        )
+
+    body = result["email_body"]
+    assert "I'd welcome a brief call" in body, (
+        "tenant-match property-side must contain 'I'd welcome a brief call at your convenience.'"
+    )
+    assert "I propose a short call" not in body, (
+        "tenant-match property-side must NOT contain the redundant 'I propose a short call' sentence"
     )
 
 
