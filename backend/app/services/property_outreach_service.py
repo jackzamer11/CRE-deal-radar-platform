@@ -41,7 +41,11 @@ _PHASE2_CONFIRMED_DISCLOSURE = (
     "Please note that the owner has confirmed openness to leasing discussions "
     "for this property — we are actively moving forward."
 )
-# Phase 1 for_sale_vacancy closing line — hardcoded, no dynamic interpolation.
+# LEGACY / FORBIDDEN: this closing line was previously injected into FSV emails and
+# duplicated the hardcoded social-proof sentence. It is NO LONGER injected anywhere —
+# the social-proof line from _inject_hardcoded_sentences is the single canonical pitch.
+# Kept only as the reference string for the regression test that asserts its ABSENCE
+# (test_outreach_fixes.py). Do not re-wire this into generation.
 _PHASE1_FSV_CLOSING = (
     "I have a qualified tenant in mind — happy to share more if there's interest "
     "in a conversation."
@@ -409,17 +413,36 @@ def _build_tenant_match(
         if benchmark else ""
     )
 
+    # Restructured body sequence (hook → why-now → one proof point → single ask).
+    # Proof step is null-safe: when no benchmark exists, instruct the model to omit
+    # the statistic sentence entirely rather than invent a number.
+    proof_step = (
+        f"(3) PROOF — cite exactly ONE CBRE Q1 2026 {p.get('submarket', 'submarket')} data point "
+        f"(a single number — vacancy rate or avg asking rent); no filler like 'underscores the opportunity'. "
+        if benchmark else
+        "(3) PROOF — omit any market-statistic sentence; do NOT invent or cite a number you were not given. "
+    )
+
     system = (
         f"You are {AGENT_NAME} at {FIRM_NAME}, a commercial real estate broker "
         f"specialising in Northern Virginia office. You are addressing {addressee}. "
-        f"{framing} Be concise, specific, and relationship-oriented. "
+        f"{framing} Write like a sharp, concise professional — every sentence earns its place. "
         f"Open the email with exactly '{salutation}' on its own line. "
-        f"Use the full property address in the email body: 'your property at {address_display}'. "
-        f"The second body sentence must reference the urgency signal: {urgency_signal}. "
-        f"Anchor numerical claims to the CBRE Q1 2026 NoVA submarket benchmarks provided.{benchmark_clause} "
+        f"Use the full property address once in the body: 'your property at {address_display}'. "
+        f"Structure the body in this EXACT sequence, one tight sentence each: "
+        f"(1) HOOK — lead with the qualified prospect: a credible tenant is interested, described "
+        f"ONLY by industry and approximate target SF (e.g. 'a qualified Health Care firm seeking "
+        f"~3,500 SF'); NEVER reveal the tenant company name. "
+        f"(2) WHY-NOW — one sentence pairing the tenant's lease-expiry timeline with this property's "
+        f"{urgency_signal}, so the fit and the timing are both clear. "
+        f"{proof_step}"
+        f"(4) ASK — close with ONE low-friction ask: a short call this week to walk through fit and "
+        f"next steps; do NOT stack multiple asks (no separate rent / tour / OM requests — fold them "
+        f"into the call's purpose if relevant). "
+        f"Anchor any numerical claim to the CBRE Q1 2026 NoVA benchmark provided. "
         f"NEVER reveal the tenant company name — describe by industry, size, and timing only. "
         f"NEVER suggest specific days of the week. "
-        f"Close every email and call script close with: 'I'd welcome a brief call at your convenience.' "
+        f"End the call-script close with: 'I'd welcome a brief call at your convenience.' "
         f"{sale_clause}{secondary_clause}"
     )
     user = (
@@ -427,12 +450,12 @@ def _build_tenant_match(
         f"\nMarket benchmark: {benchmark or 'N/A'}\n\n"
         "Write:\n"
         "1. Email subject line (one line)\n"
-        "2. Email body — maximum 150 words (excluding signature block); "
+        "2. Email body — maximum 150 words (excluding signature block); follow the 4-step sequence "
+        "   from the system prompt exactly (hook → why-now → one proof point → single call ask); "
         "   use the salutation from the system prompt exactly as written — do NOT use bracket placeholders; "
-        "   describe the matched tenant by industry type, space requirement, submarket, and approximate "
-        "   lease expiry using the profile above — write the actual values, not placeholders; "
-        "   reference one CBRE Q1 2026 submarket data point; "
-        "   request tour availability, asking rent confirmation, OM materials (broker) or 15-min call (owner)\n"
+        "   describe the matched tenant ONLY by industry type and approximate SF using the profile above — "
+        "   write the actual values, not placeholders, and never the company name; "
+        "   ONE submarket data point only; ONE closing ask — a short call (do NOT stack rent / tour / OM)\n"
         "3. Call script: Opening (2 sentences)\n"
         "4. Call script: Core message (3 sentences)\n"
         "5. Call script: Pain probe question (1 sentence)\n"
@@ -536,33 +559,47 @@ def _build_for_sale_vacancy(
             "is being marketed for sale?'"
         )
 
+    # Restructured body sequence. Proof step is null-safe (omit when no benchmark).
+    proof_step = (
+        f"(3) PROOF — cite exactly ONE CBRE Q1 2026 {submarket} data point (a single number — "
+        f"vacancy rate or avg asking rent); cut filler like 'indicating strong demand'. "
+        if benchmark else
+        "(3) PROOF — omit any market-statistic sentence; do NOT invent or cite a number you were not given. "
+    )
+
     system = (
         f"You are {AGENT_NAME} at {FIRM_NAME}, a commercial real estate broker "
         f"specialising in Northern Virginia office. You are addressing {addressee} ({framing}). "
         f"This property is currently listed for sale AND has vacant space. "
+        f"Write like a sharp, concise professional — every sentence earns its place. "
         f"Open the email with exactly '{salutation}' on its own line. "
-        f"Use the full property address in the email body: 'your property at {address_display}'. "
-        f"The second sentence must reference the urgency signal: {urgency_signal}. "
-        f"{demand_clause} "
-        f"Explain the value: securing a tenant can enhance the property's appeal and shorten "
-        f"the marketing window. "
-        f"Anchor to CBRE Q1 2026 NoVA submarket benchmarks provided.{benchmark_clause} "
+        f"Use the full property address once in the body: 'your property at {address_display}'. "
+        f"Structure the body in this EXACT sequence: "
+        f"(1) HOOK — lead with the qualified prospect: a credible tenant is interested in leasing space "
+        f"in this building, described ONLY by approximate target SF and timing. "
+        f"(2) WHY-NOW + LEASING QUESTION — because the property is listed for sale, NEVER assume the owner "
+        f"wants to lease. {demand_clause} Pair the ask with the current {urgency_signal} as the reason it "
+        f"is worth considering, and note in ONE sentence that a tenant in place can enhance the property's "
+        f"appeal and shorten the marketing window. "
+        f"{proof_step}"
+        f"(4) ASK — close with ONE low-friction ask: a short call. "
         f"NEVER suggest specific days of the week. "
-        f"Close with: 'I'd welcome a brief call at your convenience.'"
+        f"End the call-script close with: 'I'd welcome a brief call at your convenience.'"
     )
     body_instruction = (
-        "2. Email body — maximum 150 words (excluding signature block); "
-        "   use full property address; acknowledge property is listed for sale; "
-        "   reference one qualified prospect (no industry label, no company name, no headcount); "
-        "   include verbatim ask: 'Would you be open to leasing a portion of the available space "
-        "   while the property is being marketed for sale?'; "
-        "   cite one CBRE Q1 2026 submarket data point\n"
+        "2. Email body — maximum 150 words (excluding signature block); follow the 4-step sequence "
+        "   from the system prompt exactly (hook → why-now + leasing question → one proof point → single ask); "
+        "   use full property address once; reference one qualified prospect (no industry label, no company "
+        "   name, no headcount); include the leasing question verbatim: 'Would you be open to leasing a "
+        "   portion of the available space while the property is being marketed for sale?'; "
+        "   ONE submarket data point only; ONE closing ask — a short call\n"
         if (tenant_dict is not None or tenant_context) else
-        "2. Email body — maximum 150 words (excluding signature block); "
-        "   use full property address; acknowledge property is listed for sale; "
-        "   ask if open to leasing vacant SF while on market; reference demand generally; "
-        "   cite one CBRE Q1 2026 submarket data point; "
-        "   explain tenant-in-place value proposition\n"
+        "2. Email body — maximum 150 words (excluding signature block); follow the 4-step sequence "
+        "   from the system prompt exactly (hook → why-now + leasing question → one proof point → single ask); "
+        "   use full property address once; reference demand generally (never name a tenant); "
+        "   include the leasing question verbatim: 'Would you be open to leasing a portion of the available "
+        "   space while the property is being marketed for sale?'; "
+        "   ONE submarket data point only; ONE closing ask — a short call\n"
     )
     user = (
         f"Property details:\n{ctx}{tenant_hint}\n"
