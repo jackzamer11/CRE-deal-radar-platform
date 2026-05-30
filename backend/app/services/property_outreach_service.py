@@ -87,6 +87,71 @@ def _inject_hardcoded_sentences(email_body: str) -> str:
     return "\n\n".join(paras)
 
 
+# Owner-name values that should fall back to the generic salutation.
+_UNKNOWN_OWNER_VALUES = frozenset(("unknown", "n/a", "tbd", "none", ""))
+
+
+def _clean_owner_name(raw: str) -> str:
+    """Return empty string for generic/unknown owner names so the salutation falls back."""
+    return "" if (raw or "").strip().lower() in _UNKNOWN_OWNER_VALUES else (raw or "").strip()
+
+
+def _sanitize_bracket_placeholders(body: str, property_dict: dict) -> str:
+    """Replace LLM-echoed bracket placeholders with correct values or remove them.
+
+    Handles:
+    - Salutation: 'Dear [Owner's Name],' or 'Dear [Name],' → correct salutation
+    - 'Dear Unknown,' → correct salutation
+    - Remaining [placeholder] tokens → removed
+    """
+    import re as _re
+    owner_raw = _clean_owner_name(property_dict.get("owner_name") or "")
+    fallback_sal = f"Dear {owner_raw}," if owner_raw else "Dear Property Owner,"
+    # Fix bracket salutation at start of a line: "Dear [...],"
+    body = _re.sub(r'^Dear \[[^\]\n]*\],', fallback_sal, body, flags=_re.MULTILINE)
+    # Fix "Dear Unknown," (case-insensitive)
+    body = _re.sub(r'^Dear Unknown,', fallback_sal, body, flags=_re.MULTILINE | _re.IGNORECASE)
+    # Remove any remaining [Placeholder] tokens (starts with letter, no line-breaks)
+    body = _re.sub(r'\[[A-Za-z][^\]\n]*\]', '', body)
+    return body
+
+
+def _dedup_lease_clause(body: str, lease_expiry_m) -> str:
+    """Ensure the lease-expiry phrase appears exactly once in tenant-side copy.
+
+    If the LLM echoes it a second time (near the close), the duplicate sentence
+    is removed. The first occurrence (opening urgency hook) is always kept.
+    """
+    if lease_expiry_m is None:
+        return body
+    import re as _re
+    mo = "month" if int(lease_expiry_m) == 1 else "months"
+    frag_l = f"approximately {lease_expiry_m} {mo}".lower()
+    lower = body.lower()
+    p1 = lower.find(frag_l)
+    if p1 < 0:
+        return body
+    p2 = lower.find(frag_l, p1 + len(frag_l))
+    if p2 < 0:
+        return body  # only one occurrence — nothing to do
+    # Sentence start: find the last sentence-ending punctuation + whitespace before p2
+    last_sent_end = -1
+    for m in _re.finditer(r'[.!?]\s+', body[:p2]):
+        last_sent_end = m.end()
+    sent_start = last_sent_end if last_sent_end >= 0 else 0
+    # Sentence end: first punctuation after p2
+    m_end = _re.search(r'[.!?]', body[p2:])
+    sent_end = p2 + m_end.end() if m_end else len(body)
+    # Consume trailing whitespace so the join is clean
+    while sent_end < len(body) and body[sent_end] in (' ', '\n'):
+        sent_end += 1
+    before = body[:sent_start].rstrip()
+    after  = body[sent_end:].lstrip()
+    if before and after:
+        return before + '\n\n' + after
+    return (before + after).strip()
+
+
 VALID_TYPES = {"tenant_match", "for_sale_vacancy", "listing_rep", "acquisition"}
 
 # CBRE Q1 2026 NoVA office benchmarks (avg full-service rent / vacancy %).
@@ -254,7 +319,7 @@ def _build_tenant_match(
 
     # Fix 3: property-side always uses full street address
     address_display = p.get("address") or p.get("submarket") or "Northern Virginia"
-    owner_raw  = p.get("owner_name") or ""
+    owner_raw  = _clean_owner_name(p.get("owner_name") or "")
     salutation = f"Dear {owner_raw}," if owner_raw else "Dear Property Owner,"
 
     # Fix 4: build urgency signal from vacancy / DOM / years_owned
@@ -363,8 +428,9 @@ def _build_tenant_match(
         "Write:\n"
         "1. Email subject line (one line)\n"
         "2. Email body — maximum 150 words (excluding signature block); "
-        "   describe tenant as 'a [industry] firm seeking [SF range] "
-        "   in [submarket] with a lease expiring in approximately [X months]'; "
+        "   use the salutation from the system prompt exactly as written — do NOT use bracket placeholders; "
+        "   describe the matched tenant by industry type, space requirement, submarket, and approximate "
+        "   lease expiry using the profile above — write the actual values, not placeholders; "
         "   reference one CBRE Q1 2026 submarket data point; "
         "   request tour availability, asking rent confirmation, OM materials (broker) or 15-min call (owner)\n"
         "3. Call script: Opening (2 sentences)\n"
@@ -403,7 +469,7 @@ def _build_for_sale_vacancy(
 
     # Fix 3: property-side uses full street address
     address_display = p.get("address") or submarket
-    owner_raw  = p.get("owner_name") or ""
+    owner_raw  = _clean_owner_name(p.get("owner_name") or "")
     salutation = f"Dear {owner_raw}," if owner_raw else "Dear Property Owner,"
 
     # Fix 4: urgency signal
@@ -651,7 +717,7 @@ def _build_listing_rep(p: dict) -> dict:
 
     # Fix: safe address, owner_name, and salutation
     address_display = p.get("address") or p.get("submarket") or "Northern Virginia"
-    owner_raw  = p.get("owner_name") or ""
+    owner_raw  = _clean_owner_name(p.get("owner_name") or "")
     salutation = f"Dear {owner_raw}," if owner_raw else "Dear Property Owner,"
 
     # Fix 4: urgency signal
@@ -720,7 +786,7 @@ def _build_acquisition(p: dict, target_type: str) -> dict:
     # Fix 3: property-side uses full street address
     address_display = p.get("address") or submarket
     sales_contact   = p.get("sales_contact") or ""
-    recipient_raw   = sales_contact or p.get("owner_name") or ""
+    recipient_raw   = _clean_owner_name(sales_contact or p.get("owner_name") or "")
     salutation      = f"Dear {recipient_raw}," if recipient_raw else "Dear Property Owner,"
     addressee       = f"the sales broker ({sales_contact})" if sales_contact else "the property owner"
 
@@ -896,6 +962,13 @@ def generate_property_outreach(
     # "agent" title used in all paths (Fix 3 — advisor → agent everywhere).
     is_tenant_side = (direction == "tenant_side")
     email_body = _inject_hardcoded_sentences(parsed["email_body"])
+
+    # Sanitize bracket placeholders (all paths): "Dear [Owner's Name]," etc.
+    email_body = _sanitize_bracket_placeholders(email_body, property_dict)
+
+    # Remove duplicate lease-expiry phrase on tenant-side copy.
+    if is_tenant_side and tenant_dict:
+        email_body = _dedup_lease_clause(email_body, tenant_dict.get("lease_expiry_months"))
 
     # Safety strip: property-side copy must never mention headcount.
     # Scan for "employees", "employee", or a bare number followed by "HC".
