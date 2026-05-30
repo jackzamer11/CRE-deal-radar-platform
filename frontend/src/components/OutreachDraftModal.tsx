@@ -426,15 +426,6 @@ export default function OutreachDraftModal(props: Props) {
     if (!draft) return
     setSaving(true)
 
-    // ── DIAG: entry ──────────────────────────────────────────────────────────
-    console.log('[DIAG][handleSave] START', {
-      entity_type,
-      'props.pair_company_id': entity_type === 'property' ? props.pair_company_id : '(company modal)',
-      effectiveCompanyId,
-      property_db_id: entity_type === 'property' ? props.property.id : undefined,
-      property_str_id: entity_type === 'property' ? props.property.property_id : undefined,
-    })
-
     const base = {
       email_subject:          draft.email_subject,
       email_body:             draft.email_body,
@@ -465,39 +456,22 @@ export default function OutreachDraftModal(props: Props) {
         })
         logId = log.id
       }
-    } catch (e) {
+    } catch {
       // outreach_log failure shouldn't block activity logging or status update
-      console.error('[DIAG][handleSave] step-1 log-outreach FAILED', e)
     }
-
-    // ── DIAG: after step 1 ───────────────────────────────────────────────────
-    console.log('[DIAG][handleSave] step-1 done', {
-      logId,
-      logId_is_null: logId == null,
-      will_patch: logId != null,
-    })
 
     // 2) Mark contacted — always send on "Save & Mark Contacted"; do NOT gate on
     // tracking checkboxes (emailSent/callMade). The button's intent IS "mark contacted".
     // pair_company_id lets the backend advance the exact tenant-match Opportunity row
     // rather than just the first Opportunity for this property.
     if (logId != null) {
-      const patchPayload = {
-        outcome_notes:    notes.trim() || undefined,
-        marked_contacted: true as const,
-        pair_company_id:  entity_type === 'property' ? (props.pair_company_id ?? undefined) : undefined,
-      }
-      // ── DIAG: step 2 ──────────────────────────────────────────────────────
-      console.log('[DIAG][handleSave] step-2 PATCH about to fire', {
-        url: `/api/outreach-log/${logId}`,
-        payload: patchPayload,
-      })
       try {
-        const patchResp = await updateOutreachLog(logId, patchPayload)
-        console.log('[DIAG][handleSave] step-2 PATCH success', patchResp)
-      } catch (e) {
-        console.error('[DIAG][handleSave] step-2 PATCH error', e)
-      }
+        await updateOutreachLog(logId, {
+          outcome_notes:    notes.trim() || undefined,
+          marked_contacted: true,
+          pair_company_id:  entity_type === 'property' ? (props.pair_company_id ?? undefined) : undefined,
+        })
+      } catch { /* ignore */ }
     }
 
     // 3) ALWAYS fire activity log on Save & Mark Contacted — independent
