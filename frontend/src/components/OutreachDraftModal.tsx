@@ -460,12 +460,16 @@ export default function OutreachDraftModal(props: Props) {
       // outreach_log failure shouldn't block activity logging or status update
     }
 
-    // 2) Update outreach_log with notes/contacted flag — independent
-    if (logId != null && (notes.trim() || emailSent || callMade)) {
+    // 2) Mark contacted — always send on "Save & Mark Contacted"; do NOT gate on
+    // tracking checkboxes (emailSent/callMade). The button's intent IS "mark contacted".
+    // pair_company_id lets the backend advance the exact tenant-match Opportunity row
+    // rather than just the first Opportunity for this property.
+    if (logId != null) {
       try {
         await updateOutreachLog(logId, {
           outcome_notes:    notes.trim() || undefined,
-          marked_contacted: emailSent || callMade,
+          marked_contacted: true,
+          pair_company_id:  entity_type === 'property' ? (props.pair_company_id ?? undefined) : undefined,
         })
       } catch { /* ignore */ }
     }

@@ -130,7 +130,7 @@ export const logOutreach = (
 
 export const updateOutreachLog = (
   logId: number,
-  payload: { outcome_notes?: string; marked_contacted?: boolean; email_sent?: boolean; call_made?: boolean },
+  payload: { outcome_notes?: string; marked_contacted?: boolean; email_sent?: boolean; call_made?: boolean; pair_company_id?: string },
 ): Promise<OutreachLog> =>
   api.patch(`/outreach-log/${logId}`, payload).then(r => r.data)
 
