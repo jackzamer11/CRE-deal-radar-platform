@@ -27,6 +27,7 @@ import app.models  # noqa: F401 — registers core tables on Base.metadata
 import app.models.outreach_log  # noqa: F401
 from app.database import Base, get_db
 from app.main import app
+from app.models.company import Company
 from app.models.opportunity import Opportunity
 from app.models.outreach_log import OutreachLog
 from app.models.property import Property
@@ -195,3 +196,94 @@ def test_null_or_malformed_stage_advances(client, db_session, bad_stage):
 
     db_session.refresh(opp)
     assert opp.stage == "CONTACTED"
+
+
+# ── (f) LIVE-PATH regression: tenant-match pair with pair_company_id ────────────
+#
+# This test reproduces the exact scenario that broke in production:
+#   - A property has TWO Opportunity rows: a standalone (company_id=None, inserted
+#     first so query.first() would historically return it) and a tenant-match
+#     (company_id=company.id, the row the user acted on).
+#   - The outreach log has only property_id set (company_id=None), mirroring what
+#     log-property-outreach creates.
+#   - The PATCH carries pair_company_id="CO-LIVE-T" so the backend can resolve the
+#     precise tenant company and advance ONLY the tenant-match Opportunity.
+#
+# Without the fix:
+#   - query.first() returns the STANDALONE Opportunity (inserted first) → advances it
+#   - The TENANT-MATCH Opportunity stays IDENTIFIED → test FAILS
+# After the fix:
+#   - pair_company_id resolves to the company's integer FK
+#   - Both property_id AND company_id filters applied → advances the TENANT-MATCH row
+#   - No duplicate created → test PASSES
+def test_live_path_tenant_match_advances_correct_opportunity(client, db_session):
+    # Arrange: property + company
+    prop = _make_property(db_session, property_id="NVA-LIVE-1")
+
+    tenant = Company(
+        company_id="CO-LIVE-T",
+        name="The Royal Care Test",
+        industry="Health Care",
+    )
+    db_session.add(tenant)
+    db_session.flush()
+
+    # Insert STANDALONE opportunity FIRST (property only, no company).
+    # query.first() on property_id alone would return this one with the old code.
+    standalone_opp = Opportunity(
+        opportunity_id="OPP-STANDALONE",
+        deal_type="PRE_MARKET",
+        opportunity_category="LANDLORD_REP",
+        property_id=prop.id,
+        company_id=None,
+        score=45.0,
+        confidence_level="MEDIUM",
+        priority="WORKABLE",
+        thesis="Standalone acquisition thesis.",
+        next_action="Reach out to owner.",
+        stage="IDENTIFIED",
+    )
+    db_session.add(standalone_opp)
+    db_session.flush()
+
+    # Insert TENANT-MATCH opportunity SECOND (the one the user acted on).
+    tenant_match_opp = Opportunity(
+        opportunity_id="OPP-TENANT-MATCH",
+        deal_type="TENANT_DRIVEN",
+        opportunity_category="TENANT_REP",
+        property_id=prop.id,
+        company_id=tenant.id,
+        score=82.0,
+        confidence_level="HIGH",
+        priority="HIGH",
+        thesis="The Royal Care is a strong fit.",
+        next_action="Pitch property to owner.",
+        stage="IDENTIFIED",
+    )
+    db_session.add(tenant_match_opp)
+
+    # Outreach log mirrors log-property-outreach: property_id set, company_id=None.
+    log = _make_outreach_log(db_session, property_id=prop.id)
+    db_session.commit()
+
+    # Act: PATCH with pair_company_id (the real "Save & Mark Contacted" path)
+    resp = client.patch(
+        f"/api/outreach-log/{log.id}",
+        json={"marked_contacted": True, "pair_company_id": "CO-LIVE-T"},
+    )
+    assert resp.status_code == 200, resp.text
+
+    db_session.refresh(standalone_opp)
+    db_session.refresh(tenant_match_opp)
+
+    # The TENANT-MATCH Opportunity must advance; the standalone must NOT.
+    assert tenant_match_opp.stage == "CONTACTED", (
+        "The tenant-match Opportunity must advance to CONTACTED when pair_company_id is provided"
+    )
+    assert standalone_opp.stage == "IDENTIFIED", (
+        "The standalone Opportunity must NOT be advanced (wrong row)"
+    )
+
+    # No duplicate Opportunity created.
+    total = db_session.query(Opportunity).filter(Opportunity.property_id == prop.id).count()
+    assert total == 2, f"Must remain exactly 2 opportunities, got {total} (no duplicate create)"

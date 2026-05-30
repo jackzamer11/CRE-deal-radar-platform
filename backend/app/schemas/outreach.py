@@ -44,10 +44,15 @@ class OutreachLogCreate(BaseModel):
 
 class OutreachLogUpdate(BaseModel):
     """Body for PATCH /outreach-log/{log_id}."""
-    outcome_notes:    Optional[str] = None
-    marked_contacted: Optional[bool] = None
-    email_sent:       Optional[bool] = None
-    call_made:        Optional[bool] = None
+    outcome_notes:      Optional[str] = None
+    marked_contacted:   Optional[bool] = None
+    email_sent:         Optional[bool] = None
+    call_made:          Optional[bool] = None
+    # String company-id (e.g. "CO-021") of the MATCHED TENANT for a property-side
+    # tenant-match outreach. The PATCH handler resolves this to the integer FK so
+    # advance_opportunity_to_contacted can do a precise property+company lookup
+    # instead of a property-only lookup that may hit the wrong row.
+    pair_company_id:    Optional[str] = None
 
 
 class OutreachLogOut(BaseModel):
