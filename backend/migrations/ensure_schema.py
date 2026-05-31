@@ -194,8 +194,15 @@ def fix_outreach_log_company_id_nullable(cur: sqlite3.Cursor) -> int:
     uses the standard SQLite pattern: rename → recreate (without NOT NULL on
     company_id) → copy all rows → drop the old table.
 
+    The new CREATE TABLE uses a hardcoded DDL that matches the current ORM model
+    exactly (matching the SQLAlchemy-generated style with table-level PRIMARY KEY
+    and FOREIGN KEY constraints).  Dynamic reconstruction from PRAGMA is avoided
+    because column-type strings returned by PRAGMA can vary across SQLite
+    versions and schema histories, producing malformed SQL.
+
     Idempotent: if company_id is already nullable (or missing), returns 0.
-    No data loss: all rows are copied before the backup table is dropped.
+    No data loss: rows are copied column-by-column using only columns that exist
+    in the old table, so older schema versions without every column are safe.
     """
     cur.execute("PRAGMA table_info(outreach_log)")
     col_rows = cur.fetchall()  # (cid, name, type, notnull, dflt_value, pk)
@@ -206,34 +213,54 @@ def fix_outreach_log_company_id_nullable(cur: sqlite3.Cursor) -> int:
     if company_col is None or company_col[3] == 0:
         return 0  # Already nullable or column absent — no-op
 
-    # Rebuild CREATE TABLE with company_id made nullable; all other columns
-    # preserve their original type/NOT NULL/DEFAULT as reported by PRAGMA.
-    col_defs = []
-    col_names = []
-    for cid, name, col_type, notnull, dflt, pk in col_rows:
-        col_names.append(name)
-        if pk:
-            col_defs.append(f"{name} {col_type} PRIMARY KEY")
-        elif name == "company_id":
-            col_defs.append(f"{name} {col_type}")   # drop NOT NULL — the fix
-        elif notnull and dflt is not None:
-            col_defs.append(f"{name} {col_type} NOT NULL DEFAULT {dflt}")
-        elif notnull:
-            col_defs.append(f"{name} {col_type} NOT NULL")
-        elif dflt is not None:
-            col_defs.append(f"{name} {col_type} DEFAULT {dflt}")
-        else:
-            col_defs.append(f"{name} {col_type}")
+    # Columns defined in the current ORM model (canonical order).
+    # INSERT/SELECT uses only the intersection with what actually exists in the
+    # old table so that older Docker volumes missing some columns still copy cleanly.
+    canonical_cols = [
+        "id", "company_id", "property_id", "outreach_type", "generated_at",
+        "email_subject", "email_body",
+        "call_script_opening", "call_script_core",
+        "call_script_pain_probe", "call_script_close",
+        "projected_sf", "score_at_generation", "priority_at_generation",
+        "marked_contacted", "email_sent", "call_made",
+        "outcome_notes", "contacted_at",
+    ]
+    existing = {r[1] for r in col_rows}
+    copy_cols = [c for c in canonical_cols if c in existing]
+    cols_csv = ", ".join(copy_cols)
 
     cur.execute("PRAGMA foreign_keys = OFF")
     cur.execute("ALTER TABLE outreach_log RENAME TO _outreach_log_pre_fix")
 
-    create_sql = "CREATE TABLE outreach_log (\n    {}\n)".format(
-        ",\n    ".join(col_defs)
-    )
-    cur.execute(create_sql)
+    # Hardcoded DDL — matches the SQLAlchemy-generated schema exactly.
+    # company_id has no NOT NULL (the fix); all other constraints are preserved.
+    cur.execute("""
+        CREATE TABLE outreach_log (
+            id                     INTEGER NOT NULL,
+            company_id             INTEGER,
+            property_id            INTEGER,
+            outreach_type          VARCHAR NOT NULL,
+            generated_at           DATETIME,
+            email_subject          TEXT,
+            email_body             TEXT,
+            call_script_opening    TEXT,
+            call_script_core       TEXT,
+            call_script_pain_probe TEXT,
+            call_script_close      TEXT,
+            projected_sf           INTEGER,
+            score_at_generation    FLOAT,
+            priority_at_generation VARCHAR,
+            marked_contacted       BOOLEAN,
+            email_sent             BOOLEAN,
+            call_made              BOOLEAN,
+            outcome_notes          TEXT,
+            contacted_at           DATETIME,
+            PRIMARY KEY (id),
+            FOREIGN KEY(company_id) REFERENCES companies (id),
+            FOREIGN KEY(property_id) REFERENCES properties (id)
+        )
+    """)
 
-    cols_csv = ", ".join(col_names)
     cur.execute(
         f"INSERT INTO outreach_log ({cols_csv}) "
         f"SELECT {cols_csv} FROM _outreach_log_pre_fix"
@@ -311,7 +338,24 @@ def run() -> None:
     prop_added   = ensure_properties(cur)
     comp_added   = ensure_companies(cur)
     olog_added   = ensure_outreach_log(cur)
-    olog_fixed   = fix_outreach_log_company_id_nullable(cur)
+    try:
+        olog_fixed = fix_outreach_log_company_id_nullable(cur)
+    except Exception as _exc:
+        import logging as _log
+        _log.getLogger(__name__).error(
+            "ensure_schema: fix_outreach_log_company_id_nullable failed (%s) — "
+            "startup will continue; re-run after investigating the error",
+            _exc,
+        )
+        # Roll back any partial work from the failed migration so subsequent
+        # migrations run against a clean transaction state.
+        try:
+            conn.rollback()
+            # Re-open the cursor on the same connection so the rest of run() works.
+            cur = conn.cursor()
+        except Exception:
+            pass
+        olog_fixed = 0
     act_added    = ensure_activity_logs(cur)
     draft_added  = ensure_outreach_drafts(cur)
     bf_added     = backfill_lease_expiry_dates(cur)
