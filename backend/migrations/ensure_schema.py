@@ -118,7 +118,61 @@ def ensure_properties(cur: sqlite3.Cursor) -> int:
 
 
 def ensure_outreach_log(cur: sqlite3.Cursor) -> int:
-    """Add property_id and outreach_type columns to outreach_log if missing."""
+    """Create the outreach_log table if absent, or add any missing columns.
+
+    On a fresh local DB (or any instance that pre-dates the outreach_log model)
+    the table may not exist yet.  Attempting ALTER TABLE on a non-existent table
+    raises OperationalError: no such table.  Check first and CREATE when needed.
+    """
+    cur.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='outreach_log'"
+    )
+    if not cur.fetchone():
+        # Table does not exist — create it with the full current schema so that
+        # both the _add_column guards below and fix_outreach_log_company_id_nullable
+        # find a well-formed table to work with.
+        cur.execute("""
+            CREATE TABLE outreach_log (
+                id                     INTEGER NOT NULL,
+                company_id             INTEGER,
+                property_id            INTEGER,
+                outreach_type          VARCHAR NOT NULL,
+                generated_at           DATETIME,
+                email_subject          TEXT,
+                email_body             TEXT,
+                call_script_opening    TEXT,
+                call_script_core       TEXT,
+                call_script_pain_probe TEXT,
+                call_script_close      TEXT,
+                projected_sf           INTEGER,
+                score_at_generation    FLOAT,
+                priority_at_generation VARCHAR,
+                marked_contacted       BOOLEAN,
+                email_sent             BOOLEAN,
+                call_made              BOOLEAN,
+                outcome_notes          TEXT,
+                contacted_at           DATETIME,
+                PRIMARY KEY (id),
+                FOREIGN KEY(company_id)  REFERENCES companies (id),
+                FOREIGN KEY(property_id) REFERENCES properties (id)
+            )
+        """)
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS ix_outreach_log_id "
+            "ON outreach_log (id)"
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS ix_outreach_log_company_id "
+            "ON outreach_log (company_id)"
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS ix_outreach_log_property_id "
+            "ON outreach_log (property_id)"
+        )
+        print("  + created table outreach_log")
+        return 1
+
+    # Table exists — add any columns that may be missing from older schemas.
     added = 0
     added += _add_column(cur, "outreach_log", "property_id",   "INTEGER REFERENCES properties(id)")
     added += _add_column(cur, "outreach_log", "outreach_type", "TEXT DEFAULT 'tenant'")
@@ -337,7 +391,21 @@ def run() -> None:
 
     prop_added   = ensure_properties(cur)
     comp_added   = ensure_companies(cur)
-    olog_added   = ensure_outreach_log(cur)
+    try:
+        olog_added = ensure_outreach_log(cur)
+    except Exception as _exc:
+        import logging as _log
+        _log.getLogger(__name__).error(
+            "ensure_schema: ensure_outreach_log failed (%s) — "
+            "startup will continue",
+            _exc,
+        )
+        try:
+            conn.rollback()
+            cur = conn.cursor()
+        except Exception:
+            pass
+        olog_added = 0
     try:
         olog_fixed = fix_outreach_log_company_id_nullable(cur)
     except Exception as _exc:
