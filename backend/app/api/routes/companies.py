@@ -47,9 +47,21 @@ COSTAR_SUBMARKET_MAP: dict = {
     # When new "unmapped submarket" warnings appear in import results, append new entries here.
     # I-395 Corridor: heuristic mapping to Arlington (Columbia Pike); CoStar's I-395 Corridor
     # without borough qualifier is ambiguous — verify per-row addresses if accuracy matters.
-    "clarendon/courthouse":   "Arlington (Clarendon)",
-    "i-395 corridor":         "Arlington (Columbia Pike)",
-    "tysons corner/mclean":   "Tysons",
+    "clarendon/courthouse":      "Arlington (Clarendon)",
+    "i-395 corridor":            "Arlington (Columbia Pike)",
+    "tysons corner/mclean":      "Tysons",
+    "annandale":                 "Annandale",
+    "arlington":                 "Arlington (Rosslyn)",
+    "ballston/virginia square":  "Arlington (Ballston)",
+    "douglas park":              "Arlington (Columbia Pike)",
+    "falls church/bailey's":     "Falls Church",
+    "landmark/van dorn":         "Alexandria (Old Town)",
+    "merrifield":                "Merrifield",
+    "n arlington/e fallschurch": "Arlington (Rosslyn)",
+    "oakton":                    "Fairfax City",
+    "old town":                  "Alexandria (Old Town)",
+    "potomac yard":              "Crystal City",
+    "tysons central":            "Tysons",
 }
 
 # Sources that represent user-verified data — never overwritten by automated imports.
