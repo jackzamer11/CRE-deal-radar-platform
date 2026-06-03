@@ -9,7 +9,7 @@ import type { PropertyListOut, PropertyOut, OutreachLog } from '../types'
 import { PriorityBadge } from '../components/PriorityBadge'
 import ScoreBadge from '../components/ScoreBadge'
 import AddPropertyModal from '../components/AddPropertyModal'
-import BulkUploadModal from '../components/BulkUploadModal'
+import LeaseCompsModal from '../components/LeaseCompsModal'
 import CoStarImportModal from '../components/CoStarImportModal'
 import OutreachDraftModal from '../components/OutreachDraftModal'
 import SnoozeModal from '../components/SnoozeModal'
@@ -140,7 +140,7 @@ export default function Properties() {
   const [undoToast, setUndoToast]           = useState<{
     propertyId: string; address: string; timer: ReturnType<typeof setTimeout>
   } | null>(null)
-  const [showBulkModal, setShowBulkModal]   = useState(false)
+  const [showLeaseCompsModal, setShowLeaseCompsModal] = useState(false)
   const [showCoStarModal, setShowCoStarModal] = useState(false)
   const [outreachModal, setOutreachModal]   = useState<{
     prop: PropertyOut
@@ -354,11 +354,12 @@ export default function Properties() {
             <Plus size={13} /> Add Property
           </button>
           <button
-            onClick={() => setShowBulkModal(true)}
+            onClick={() => setShowLeaseCompsModal(true)}
             className="flex items-center gap-2 px-4 py-2 rounded-lg bg-surface-card border border-surface-border
                        text-ink-secondary hover:text-ink-primary text-xs font-semibold transition-colors"
+            title="Import a CoStar Lease Activity PDF to set tenant lease expirations"
           >
-            <Upload size={13} /> Bulk Upload
+            <Upload size={13} /> Import Lease Comps
           </button>
           <button
             onClick={() => setShowCoStarModal(true)}
@@ -606,8 +607,8 @@ export default function Properties() {
           </button>
         </div>
       )}
-      {showBulkModal && (
-        <BulkUploadModal onClose={() => setShowBulkModal(false)} onDone={load} />
+      {showLeaseCompsModal && (
+        <LeaseCompsModal onClose={() => setShowLeaseCompsModal(false)} onDone={load} />
       )}
       {showCoStarModal && (
         <CoStarImportModal onClose={() => setShowCoStarModal(false)} onDone={load} />

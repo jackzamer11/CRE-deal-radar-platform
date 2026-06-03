@@ -387,3 +387,53 @@ export const importLeaseActivity = (file: File): Promise<LeaseActivityImportResu
     headers: { 'Content-Type': 'multipart/form-data' },
   }).then(r => r.data)
 }
+
+// ── Import Lease Comps (PDF → tenant company lease expirations) ───────────────
+
+export interface LeaseCompMatch {
+  tenant_name: string
+  company_id: string
+  company_name: string
+  proposed_expiry: string   // ISO YYYY-MM-DD
+  confidence: number
+}
+
+export interface LeaseCompSkippedNoMatch {
+  tenant_name: string
+  proposed_expiry: string
+}
+
+export interface LeaseCompSkippedAlreadySet {
+  tenant_name: string
+  company_id: string
+  company_name: string
+  existing_expiry: string | null
+}
+
+export interface LeaseCompsPreviewResult {
+  parsed_count: number
+  auto_applied: LeaseCompMatch[]
+  needs_review: LeaseCompMatch[]
+  skipped_no_match: LeaseCompSkippedNoMatch[]
+  skipped_already_set: LeaseCompSkippedAlreadySet[]
+}
+
+export interface LeaseCompsConfirmResult {
+  applied: { company_id: string; company_name: string; expiration_date: string }[]
+  skipped: { company_id: string; company_name?: string; reason: string }[]
+}
+
+// Parse the PDF, auto-apply exact matches, and return the four result lists.
+export const previewLeaseComps = (file: File): Promise<LeaseCompsPreviewResult> => {
+  const form = new FormData()
+  form.append('file', file)
+  return api.post('/lease-comps/preview', form, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  }).then(r => r.data)
+}
+
+// Write the user-confirmed fuzzy ("needs review") matches.
+export const confirmLeaseComps = (
+  matches: { company_id: string; expiration_date: string }[],
+): Promise<LeaseCompsConfirmResult> =>
+  api.post('/lease-comps/confirm', { matches }).then(r => r.data)

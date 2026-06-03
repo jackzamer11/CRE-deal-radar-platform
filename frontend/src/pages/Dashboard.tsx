@@ -13,7 +13,7 @@ import type {
 import SnoozeModal from '../components/SnoozeModal'
 import ScoreBadge from '../components/ScoreBadge'
 import AddPropertyModal from '../components/AddPropertyModal'
-import BulkUploadModal from '../components/BulkUploadModal'
+import LeaseCompsModal from '../components/LeaseCompsModal'
 import CoStarImportModal from '../components/CoStarImportModal'
 import OutreachDraftModal from '../components/OutreachDraftModal'
 
@@ -236,7 +236,7 @@ export default function Dashboard() {
   const [loading, setLoading]             = useState(true)
   const [error, setError]                 = useState<string | null>(null)
   const [showAddModal, setShowAddModal]   = useState(false)
-  const [showBulkModal, setShowBulkModal] = useState(false)
+  const [showLeaseCompsModal, setShowLeaseCompsModal] = useState(false)
   const [showCoStarModal, setShowCoStarModal] = useState(false)
   const [pipelineRunning, setPipelineRunning] = useState(false)
   const [pipelineStatus, setPipelineStatus]   = useState<string | null>(null)
@@ -421,11 +421,12 @@ export default function Dashboard() {
             <Plus size={13} /> Add Property
           </button>
           <button
-            onClick={() => setShowBulkModal(true)}
+            onClick={() => setShowLeaseCompsModal(true)}
             className="flex items-center gap-2 px-4 py-2 rounded-lg bg-surface-card border border-surface-border
                        text-ink-secondary hover:text-ink-primary text-xs font-semibold transition-colors"
+            title="Import a CoStar Lease Activity PDF to set tenant lease expirations"
           >
-            <Upload size={13} /> Bulk Upload
+            <Upload size={13} /> Import Lease Comps
           </button>
           <button
             onClick={() => setShowCoStarModal(true)}
@@ -437,9 +438,9 @@ export default function Dashboard() {
           <label
             className="flex items-center gap-2 px-4 py-2 rounded-lg bg-surface-card border border-surface-border
                        text-ink-secondary hover:text-ink-primary text-xs font-semibold transition-colors cursor-pointer"
-            title="Upload CoStar Lease Activity export (.xlsx)"
+            title="Upload CoStar Lease Activity export (.xlsx) to update property rents"
           >
-            <Upload size={13} /> Import Lease Comps
+            <Upload size={13} /> Import Rent Comps
             <input
               type="file"
               accept=".xlsx,.xls,.csv"
@@ -452,11 +453,11 @@ export default function Dashboard() {
                 try {
                   const result = await importLeaseActivity(file)
                   setLeaseImportStatus(
-                    `Lease comps imported — ${result.updated} properties updated` +
+                    `Rent comps imported — ${result.updated} properties updated` +
                     (result.skipped_no_match > 0 ? `, ${result.skipped_no_match} unmatched` : '')
                   )
                 } catch {
-                  setLeaseImportStatus('Lease comps import failed — check file format')
+                  setLeaseImportStatus('Rent comps import failed — check file format')
                 }
               }}
             />
@@ -540,7 +541,7 @@ export default function Dashboard() {
           onSaved={(_saved: PropertyOut) => { setShowAddModal(false); load() }}
         />
       )}
-      {showBulkModal && <BulkUploadModal onClose={() => setShowBulkModal(false)} onDone={load} />}
+      {showLeaseCompsModal && <LeaseCompsModal onClose={() => setShowLeaseCompsModal(false)} onDone={load} />}
       {snoozeTarget && (
         <SnoozeModal
           propertyId={snoozeTarget.propertyId}
