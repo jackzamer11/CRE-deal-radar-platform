@@ -167,6 +167,19 @@ export default function Properties() {
     }
   }
 
+  const silentRefresh = async () => {
+    try {
+      const data = await getProperties({
+        submarket: submarket || undefined,
+        priority:  priority  || undefined,
+        listed_for_sale: listedOnly,
+        dominant_score_type: scoreTypeFilter || undefined,
+        needs_outreach: needsOutreach || undefined,
+      })
+      setProperties(data)
+    } catch { /* stale data is fine while modal is open */ }
+  }
+
   useEffect(() => { load() }, [submarket, priority, listedOnly, scoreTypeFilter, needsOutreach])
 
   const handleSelect = async (p: PropertyListOut | PropertyOut) => {
@@ -608,7 +621,7 @@ export default function Properties() {
         </div>
       )}
       {showLeaseCompsModal && (
-        <LeaseCompsModal onClose={() => setShowLeaseCompsModal(false)} onDone={load} />
+        <LeaseCompsModal onClose={() => setShowLeaseCompsModal(false)} onDone={silentRefresh} />
       )}
       {showCoStarModal && (
         <CoStarImportModal onClose={() => setShowCoStarModal(false)} onDone={load} />

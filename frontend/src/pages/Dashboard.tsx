@@ -541,7 +541,7 @@ export default function Dashboard() {
           onSaved={(_saved: PropertyOut) => { setShowAddModal(false); load() }}
         />
       )}
-      {showLeaseCompsModal && <LeaseCompsModal onClose={() => setShowLeaseCompsModal(false)} onDone={load} />}
+      {showLeaseCompsModal && <LeaseCompsModal onClose={() => setShowLeaseCompsModal(false)} onDone={silentRefresh} />}
       {snoozeTarget && (
         <SnoozeModal
           propertyId={snoozeTarget.propertyId}
