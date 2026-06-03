@@ -12,12 +12,7 @@ import AddCompanyModal from '../components/AddCompanyModal'
 import CoStarTenantImportModal from '../components/CoStarTenantImportModal'
 import OutreachDraftModal from '../components/OutreachDraftModal'
 import CompanySnoozeModal from '../components/CompanySnoozeModal'
-
-const SUBMARKETS = [
-  'Arlington (Clarendon)', 'Arlington (Rosslyn)', 'Arlington (Ballston)',
-  'Arlington (Columbia Pike)', 'Alexandria (Old Town)', 'Tysons', 'Reston', 'Falls Church',
-  'McLean', 'Vienna', 'Fairfax City',
-]
+import { SUBMARKETS } from '../constants'
 
 const LEASE_SOURCES = [
   { value: 'manual',              label: 'Manual entry' },
