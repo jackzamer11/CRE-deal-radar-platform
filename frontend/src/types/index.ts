@@ -153,6 +153,7 @@ export interface CompanyListOut {
   signals_scored_count: number
   insufficient_data: boolean
   late_stage: boolean
+  expiry_priority_override: boolean
   snoozed_until: string | null
   snooze_reason: string | null
   returned_from_snooze: boolean | null

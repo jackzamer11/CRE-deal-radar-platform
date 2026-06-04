@@ -21,6 +21,8 @@ class CompanyBase(BaseModel):
     lease_expiry_last_verified: Optional[date] = None
     # Derived (not stored): tenant is within the final 1-3 months of its lease.
     late_stage: bool = False
+    # Derived: thin-data company with near-term expiry (3-12 months) — qualifies for outreach override.
+    expiry_priority_override: bool = False
 
     @model_validator(mode="after")
     def _decay_lease_months(self) -> "CompanyBase":
@@ -140,6 +142,8 @@ class CompanyListOut(BaseModel):
 
     # Derived (not stored): tenant is within the final 1-3 months of its lease.
     late_stage: bool = False
+    # Derived: thin-data company with near-term expiry (3-12 months) — qualifies for outreach override.
+    expiry_priority_override: bool = False
 
     # Snooze state (null = active) — agent reads snoozed_until to skip snoozed companies
     snoozed_until:        Optional[date] = None
