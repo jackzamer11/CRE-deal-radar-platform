@@ -353,6 +353,7 @@ def ensure_companies(cur: sqlite3.Cursor) -> int:
     added += _add_column(cur, "companies", "snoozed_until",        "DATE")
     added += _add_column(cur, "companies", "snooze_reason",        "TEXT")
     added += _add_column(cur, "companies", "returned_from_snooze", "BOOLEAN")
+    added += _add_column(cur, "companies", "expiry_priority_override", "BOOLEAN DEFAULT 0")
     return added
 
 
