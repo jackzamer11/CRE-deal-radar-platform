@@ -502,17 +502,23 @@ def sig_lease_expiry_proximity(lease_expiry_months: Optional[int]) -> Optional[f
 
     Returns None when lease expiry is unknown (abstain).
 
-    Window of max impact: 6-18 months out (decision window).
+    Peak window: 6-9 months out. Tenants engage brokers ~6-9 months before
+    expiry. Sub-3-month tenants are usually already in negotiations and
+    convert poorly, so they are scored lower (not removed). Already-expired
+    leases score lowest of the non-zero tiers — the tenant has typically
+    already committed elsewhere.
     """
     if lease_expiry_months is None:
         return None
     m = lease_expiry_months
-    if m <= 0:   return 100.0   # Already expired
-    if m <= 6:   return 100.0
-    if m <= 12:  return 85.0
-    if m <= 18:  return 65.0
-    if m <= 24:  return 40.0
-    if m <= 36:  return 18.0
+    if m <= 0:   return 25.0    # Already expired — usually already committed
+    if m <= 3:   return 35.0    # 1-3 mo: typically mid-negotiation, low conversion
+    if m <= 5:   return 70.0    # 4-5 mo: ramping toward the decision window
+    if m <= 9:   return 100.0   # 6-9 mo: peak broker-engagement window
+    if m <= 12:  return 80.0
+    if m <= 18:  return 55.0
+    if m <= 24:  return 32.0
+    if m <= 36:  return 15.0
     return 0.0
 
 
