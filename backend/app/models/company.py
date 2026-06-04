@@ -53,6 +53,7 @@ class Company(Base):
     priority = Column(String, default="IGNORE")
     signals_scored_count = Column(Integer, default=0)
     insufficient_data = Column(Boolean, default=False)
+    expiry_priority_override = Column(Boolean, default=False)
 
     # Contact
     primary_contact_name = Column(String, nullable=True)

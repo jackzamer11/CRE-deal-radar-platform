@@ -109,8 +109,8 @@ def fetch_companies(priority_filter: Optional[str] = None, company_id: Optional[
         if not (c.get("snoozed_until") and str(c["snoozed_until"]) > today_iso)
     ]
 
-    # Skip companies with missing critical data
-    companies = [c for c in companies if not c.get("insufficient_data") and c.get("current_headcount")]
+    # Skip companies with insufficient data unless a near-term expiry qualifies them for override.
+    companies = [c for c in companies if not c.get("insufficient_data") or c.get("expiry_priority_override")]
     return companies
 
 
@@ -249,6 +249,10 @@ def save_to_google_doc(docs_svc, drive_svc, company: dict, draft: dict) -> str:
     script = draft["call_script"]
 
     projected_sf_str = f"{draft['projected_sf']:,} SF" if draft.get("projected_sf") else "N/A"
+    headcount_line = (
+        f"Headcount: {company['current_headcount']} | Growth: {company.get('headcount_growth_pct', 'N/A')}%\n"
+        if company.get("current_headcount") else ""
+    )
 
     content = f"""OUTREACH PACKAGE — {company['name']}
 Generated: {datetime.date.today()} | Agent: {AGENT_NAME} | {FIRM_NAME}
@@ -256,8 +260,7 @@ Generated: {datetime.date.today()} | Agent: {AGENT_NAME} | {FIRM_NAME}
 
 COMPANY SNAPSHOT
 Priority: {company['priority']} | Score: {company['opportunity_score']:.0f}/100
-Headcount: {company['current_headcount']} | Growth: {company.get('headcount_growth_pct', 'N/A')}%
-Submarket: {company['current_submarket']} | Lease Expiry: {company.get('lease_expiry_months', 'N/A')} months
+{headcount_line}Submarket: {company.get('current_submarket', 'N/A')} | Lease Expiry: {company.get('lease_expiry_months', 'N/A')} months
 Projected SF needed: {projected_sf_str}
 
 {'='*60}

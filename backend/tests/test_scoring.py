@@ -23,7 +23,7 @@ import app.models.outreach_log  # noqa: F401
 from app.database import Base, get_db
 from app.main import app
 from app.models.company import Company
-from app.services.signal_engine import sig_lease_expiry_proximity
+from app.services.signal_engine import sig_lease_expiry_proximity, compute_expiry_priority_override
 
 
 # ── In-memory DB fixtures ──────────────────────────────────────────────────────
@@ -155,3 +155,82 @@ def test_companies_list_contract_includes_late_stage(client, db_session):
     # New additive field must appear and reflect the 2-month tenant.
     assert "late_stage" in row
     assert row["late_stage"] is True
+
+    # expiry_priority_override must also appear (False — 2-month tenant is not in 3-12 window).
+    assert "expiry_priority_override" in row
+    assert row["expiry_priority_override"] is False
+
+
+# ── compute_expiry_priority_override boundary pins ─────────────────────────────
+@pytest.mark.parametrize("insufficient_data,months,expected", [
+    # Override requires insufficient_data=True AND 3 <= months <= 12.
+    (True,  3,    True),    # lower boundary of peak window
+    (True,  6,    True),    # mid window
+    (True,  12,   True),    # upper boundary
+    (True,  2,    False),   # below floor — tenant already in late-stage negotiations
+    (True,  13,   False),   # above ceiling — too far out, missing signals matter
+    (True,  None, False),   # null-safe: no expiry data → no override
+    (False, 6,    False),   # sufficient data — override is inapplicable
+    (False, None, False),   # sufficient data + null expiry → False
+])
+def test_expiry_priority_override_boundaries(insufficient_data, months, expected):
+    assert compute_expiry_priority_override(insufficient_data, months) is expected
+
+
+def test_expiry_priority_override_null_safe():
+    # Explicit: None months with insufficient_data=True must never raise.
+    result = compute_expiry_priority_override(True, None)
+    assert result is False
+
+
+# ── Agent skip contract ────────────────────────────────────────────────────────
+def test_agent_skip_passes_expiry_override(client, db_session):
+    """A thin-data company with expiry_priority_override=True must survive the skip filter."""
+    db_session.add(Company(
+        company_id="CO-OVERRIDE",
+        name="Override Co",
+        industry="Technology",
+        current_submarket="Tysons",
+        lease_expiry_months=6,
+        opportunity_score=0.0,
+        priority="IGNORE",
+        insufficient_data=True,
+        expiry_priority_override=True,
+    ))
+    db_session.commit()
+
+    resp = client.get("/api/companies/")
+    assert resp.status_code == 200
+    rows = resp.json()
+    ids = [r["company_id"] for r in rows]
+    assert "CO-OVERRIDE" in ids, "Override company must appear in /api/companies/ response"
+    override_row = next(r for r in rows if r["company_id"] == "CO-OVERRIDE")
+    assert override_row["expiry_priority_override"] is True
+
+
+def test_agent_skip_blocks_thin_data_no_override(client, db_session):
+    """A thin-data company without override must still be suppressed at the API level.
+
+    Note: /api/companies/ is a listing endpoint, not the agent filter — the agent
+    filter lives in outreach_agent.py.  This test asserts the field is correctly
+    False so the agent can apply the skip logic correctly.
+    """
+    db_session.add(Company(
+        company_id="CO-NOOVERRIDE",
+        name="No Override Co",
+        industry="Technology",
+        current_submarket="Tysons",
+        lease_expiry_months=24,     # beyond the 12-month ceiling
+        opportunity_score=0.0,
+        priority="IGNORE",
+        insufficient_data=True,
+        expiry_priority_override=False,
+    ))
+    db_session.commit()
+
+    resp = client.get("/api/companies/")
+    assert resp.status_code == 200
+    rows = resp.json()
+    target = next((r for r in rows if r["company_id"] == "CO-NOOVERRIDE"), None)
+    assert target is not None, "Company must appear in listing regardless of override"
+    assert target["expiry_priority_override"] is False

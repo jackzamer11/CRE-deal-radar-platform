@@ -253,6 +253,9 @@ def _run_signals(company: Company) -> None:
     company.opportunity_score     = composite
     company.signals_scored_count  = result["signals_scored"]
     company.insufficient_data     = result["insufficient_data"]
+    company.expiry_priority_override = se.compute_expiry_priority_override(
+        company.insufficient_data, company.lease_expiry_months
+    )
 
     if composite >= 75:
         company.priority = "IMMEDIATE"

@@ -522,6 +522,24 @@ def sig_lease_expiry_proximity(lease_expiry_months: Optional[int]) -> Optional[f
     return 0.0
 
 
+def compute_expiry_priority_override(
+    insufficient_data: bool,
+    lease_expiry_months: Optional[int],
+) -> bool:
+    """True when a thin-data company has a near-term expiry that warrants outreach.
+
+    Qualified when: insufficient_data=True AND 3 <= lease_expiry_months <= 12.
+    The 3-month floor excludes tenants already past negotiation; the 12-month
+    ceiling excludes tenants far enough out that missing signals matter more.
+    Null-safe: None months always returns False.
+    """
+    if not insufficient_data:
+        return False
+    if lease_expiry_months is None:
+        return False
+    return 3 <= lease_expiry_months <= 12
+
+
 def sig_space_utilization(current_sf: Optional[int], current_headcount: Optional[int]) -> Optional[float]:
     """
     Space utilization: SF per employee vs. modern standard (175 SF/head).

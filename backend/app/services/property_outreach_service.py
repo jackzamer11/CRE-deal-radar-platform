@@ -349,12 +349,14 @@ def _build_tenant_match(
         industry = tenant_dict.get("industry") or "professional services firm"
         sf       = tenant_dict.get("estimated_sf_needed")
         exp      = tenant_dict.get("lease_expiry_months")
-        sf_str   = f"{sf:,} SF" if sf else "office space in the area"
-        exp_str  = (f"approximately {exp} {'month' if exp == 1 else 'months'}" if exp is not None else "in the coming months")
+        sf_str   = f"{sf:,} SF" if sf else None
+        exp_str  = (f"approximately {exp} {'month' if exp == 1 else 'months'}" if exp is not None else None)
+        sf_part  = f" seeking {sf_str}" if sf_str else ""
+        exp_part = f" with a lease expiring {exp_str}" if exp_str else ""
         tenant_hint = (
             f"\nPrimary matched tenant profile (do NOT reveal tenant name): "
-            f"a {industry} firm seeking {sf_str} in "
-            f"{p.get('submarket', 'Northern Virginia')} with a lease expiring {exp_str}"
+            f"a {industry} firm{sf_part} in "
+            f"{p.get('submarket', 'Northern Virginia')}{exp_part}"
         )
     elif tenant_context:
         tenant_hint = f"\nPrimary matched tenant profile (do NOT reveal tenant name): {tenant_context}"
@@ -524,12 +526,15 @@ def _build_for_sale_vacancy(
     if tenant_dict is not None:
         sf  = tenant_dict.get("estimated_sf_needed")
         exp = tenant_dict.get("lease_expiry_months")
-        sf_str  = f"{sf:,} SF" if sf else "office space in the area"
-        exp_str = (f"approximately {exp} {'month' if exp == 1 else 'months'}" if exp is not None else "in the coming months")
+        sf_str  = f"{sf:,} SF" if sf else None
+        exp_str = (f"approximately {exp} {'month' if exp == 1 else 'months'}" if exp is not None else None)
+        seeking_part = f" They are seeking {sf_str}." if sf_str else ""
+        expiry_part  = f" Their lease expires {exp_str}." if exp_str else ""
         tenant_hint = (
             f"\nA qualified tenant prospect has been matched to this property. "
-            f"Do NOT reveal their name, industry, NAICS code, or any sector label. "
-            f"They are seeking {sf_str} with a lease expiring {exp_str}."
+            f"Do NOT reveal their name, industry, NAICS code, or any sector label."
+            + seeking_part
+            + expiry_part
         )
         demand_clause = (
             "Reference a single qualified prospect — do NOT mention their industry, "
@@ -661,8 +666,8 @@ def _build_tenant_side(p: dict, tenant_dict: dict) -> dict:
         f" with {sf_avail:,} square feet available" if sf_avail else ""
     )
 
-    sf_display  = f"{sf_needed:,} SF" if sf_needed else "office space in the area"
-    exp_display = (f"{lease_expiry_m} {'month' if lease_expiry_m == 1 else 'months'}" if lease_expiry_m is not None else "in the coming months")
+    sf_display  = f"{sf_needed:,} SF" if sf_needed else None
+    exp_display = (f"{lease_expiry_m} {'month' if lease_expiry_m == 1 else 'months'}" if lease_expiry_m is not None else None)
 
     # Space-fit note: reference SF match only — no headcount (Fix 4)
     space_fit_note = (
@@ -674,8 +679,8 @@ def _build_tenant_side(p: dict, tenant_dict: dict) -> dict:
     tenant_profile_lines = [
         f"Tenant: {tenant_name}",
         f"Industry: {industry}",
-        f"SF Needed: {sf_display}",
-        f"Lease Expiry: {exp_display}",
+        *([ f"SF Needed: {sf_display}" ] if sf_display else []),
+        *([ f"Lease Expiry: {exp_display}" ] if exp_display else []),
         f"Submarket Preference: {submarket_pref}",
     ]
     tenant_profile = "\n".join(tenant_profile_lines)
