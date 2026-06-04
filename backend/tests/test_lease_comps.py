@@ -32,6 +32,8 @@ from app.models.company import Company
 from app.services.lease_comps_service import (
     compute_lease_matches,
     normalize_company_name,
+    parse_expiration,
+    parse_lease_text,
 )
 import app.api.routes.lease_comps as lease_comps_route
 
@@ -168,6 +170,73 @@ def test_fuzzy_match_goes_to_review():
     review = result["needs_review"][0]
     assert review["company_id"] == "CO-6"
     assert 0.0 < review["confidence"] < 1.0
+
+
+# ── local PDF text parser (replaces the old Claude extraction) ─────────────────
+# Feeds a representative raw text block (as pdfplumber would emit it) through
+# the pure parser — no real PDF file, no network, no Claude.
+_MOCK_PDF_TEXT = """CoStar Lease Activity Report — Northern Virginia
+Generated 6/4/2026  Page 1 of 1
+
+2,593 SF Sublet Lease - $31.50/SF FS Asking Rent
+1750 Tysons Blvd, McLean, VA 22102
+Lease Details
+Move In 6/1/2021
+Expiration 5/1/2027
+Space Use Office
+Tenant Overview
+Tenant Name Acme Corporation
+Tenant Industry Technology
+
+10,000 SF New Lease - $40.00/SF FS Asking Rent
+2000 Corporate Ridge, McLean, VA 22102
+Lease Details
+Move In 1/1/2023
+Expiration 12/31/2028
+Space Use Office
+
+4,200 SF Renewal - $35.00/SF FS Asking Rent
+900 Reston Pkwy, Reston, VA 20190
+Lease Details
+Move In 3/1/2022
+Space Use Office
+Tenant Overview
+Tenant Name Globex LLC
+"""
+
+
+def test_parse_lease_text_extracts_fields_and_skips_cards():
+    leases = parse_lease_text(_MOCK_PDF_TEXT)
+
+    # Two leases parsed: the middle card has no Tenant Overview -> skipped.
+    assert len(leases) == 2
+    by_name = {l["tenant_name"]: l for l in leases}
+    assert set(by_name) == {"Acme Corporation", "Globex LLC"}
+
+    # (1) tenant name + expiration + move-in + sf extracted correctly.
+    acme = by_name["Acme Corporation"]
+    assert acme["sf"] == 2593
+    assert parse_expiration(acme["expiration_date"]) == date(2027, 5, 1)
+    assert parse_expiration(acme["move_in_date"]) == date(2021, 6, 1)
+
+    # (2) the card with no Tenant Overview (the 10,000 SF / 12-31-2028 lease) is
+    #     skipped entirely — none of its fields surface in the output.
+    assert all(l["sf"] != 10000 for l in leases)
+    assert all(parse_expiration(l["expiration_date"]) != date(2028, 12, 31)
+               for l in leases)
+
+    # (3) a card with no Expiration is handled without error -> None expiry.
+    globex = by_name["Globex LLC"]
+    assert globex["sf"] == 4200
+    assert globex["expiration_date"] is None
+    assert parse_expiration(globex["expiration_date"]) is None
+
+
+def test_parse_lease_text_empty_and_headerless_are_safe():
+    # Null-safe: empty / whitespace / no SF-header text yields [] (no crash).
+    assert parse_lease_text("") == []
+    assert parse_lease_text("   \n  \n") == []
+    assert parse_lease_text("Just some prose with no lease cards at all.") == []
 
 
 # ── (c-route) /api/companies/ still returns the agent's required fields ────────
