@@ -19,6 +19,8 @@ class CompanyBase(BaseModel):
     lease_expiry_months: Optional[int] = None
     lease_expiry_source: Optional[str] = None
     lease_expiry_last_verified: Optional[date] = None
+    # Derived (not stored): tenant is within the final 1-3 months of its lease.
+    late_stage: bool = False
 
     @model_validator(mode="after")
     def _decay_lease_months(self) -> "CompanyBase":
@@ -26,6 +28,9 @@ class CompanyBase(BaseModel):
             today = date.today()
             ld = self.lease_expiry_date
             self.lease_expiry_months = max(0, (ld.year - today.year) * 12 + (ld.month - today.month))
+        # Null-safe: None months → late_stage stays False.
+        m = self.lease_expiry_months
+        self.late_stage = m is not None and 0 < m <= 3
         return self
     expansion_signal: bool = False
     contraction_signal: bool = False
@@ -133,6 +138,9 @@ class CompanyListOut(BaseModel):
     signals_scored_count: int = 0
     insufficient_data: bool = False
 
+    # Derived (not stored): tenant is within the final 1-3 months of its lease.
+    late_stage: bool = False
+
     # Snooze state (null = active) — agent reads snoozed_until to skip snoozed companies
     snoozed_until:        Optional[date] = None
     snooze_reason:        Optional[str]  = None
@@ -149,6 +157,9 @@ class CompanyListOut(BaseModel):
             today = date.today()
             ld = self.lease_expiry_date
             self.lease_expiry_months = max(0, (ld.year - today.year) * 12 + (ld.month - today.month))
+        # Null-safe: None months → late_stage stays False.
+        m = self.lease_expiry_months
+        self.late_stage = m is not None and 0 < m <= 3
         return self
 
     class Config:

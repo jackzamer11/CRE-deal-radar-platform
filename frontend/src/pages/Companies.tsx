@@ -400,6 +400,15 @@ export default function Companies() {
                   </span>
                 )}
                 <RepBadge repClass={c.rep_class} repName={c.tenant_representative} />
+                {c.late_stage && (
+                  <span
+                    title="Lease expires within 1-3 months — likely already in negotiations"
+                    className="px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider
+                               bg-amber-500/15 text-amber-400 border border-amber-500/30"
+                  >
+                    Late Stage
+                  </span>
+                )}
                 {isLeaseExpired(c) && <ExpiredBadge />}
                 <PriorityBadge priority={c.priority} />
               </div>
