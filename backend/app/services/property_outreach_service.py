@@ -636,7 +636,8 @@ def _build_tenant_side(p: dict, tenant_dict: dict) -> dict:
     benchmark = _submarket_context(p.get("submarket"))
     asset_class = p.get("asset_class") or "office"
     sf_avail = p.get("sf_avail") or 0
-    asking_rent = p.get("market_rent_psf") or p.get("asking_price_psf")
+    in_place_rent = p.get("in_place_rent_psf")
+    asking_rent = in_place_rent if in_place_rent and in_place_rent > 0 else None
 
     tenant_name    = tenant_dict.get("name") or "the tenant"
     contact_name   = tenant_dict.get("primary_contact_name") or ""
@@ -689,7 +690,7 @@ def _build_tenant_side(p: dict, tenant_dict: dict) -> dict:
         f"Asset Class: {asset_class}",
         f"Submarket: {submarket}",
         f"SF Available: {sf_avail or 'N/A'}",
-        f"Asking Rent: {f'${asking_rent:.2f}/SF' if asking_rent else 'N/A'}",
+        *([ f"Asking Rent: ${asking_rent:.2f}/SF" ] if asking_rent else []),
     ]
     property_profile = "\n".join(property_profile_lines)
 
@@ -735,7 +736,8 @@ def _build_tenant_side(p: dict, tenant_dict: dict) -> dict:
         "1. Email subject line (one line — reference the submarket and the lease timing implicitly, no street address)\n"
         "2. Email body — maximum 150 words (excluding signature block); start with the greeting, "
         "   then the lease-urgency lead-in verbatim, "
-        "   describe the property generally (asset class, submarket, SF available, asking rent), "
+        + (f"   describe the property generally (asset class, submarket, SF available, asking rent ${asking_rent:.2f}/SF), " if asking_rent else
+           "   describe the property generally (asset class, submarket, SF available — do NOT include a specific rent figure), ")
         + (f"   mention that the available {sf_avail:,} SF is well-suited for a company seeking {sf_display}, " if sf_avail and sf_needed else "")
         + "   weave in one CBRE Q1 2026 submarket data point as market context, end with "
         "'I'd welcome a brief call at your convenience.'\n"
