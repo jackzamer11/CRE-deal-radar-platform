@@ -233,11 +233,8 @@ def _compute_tenant_actions(db: Session) -> list:
             best_per_prop[pid] = action
     actions = list(best_per_prop.values())
 
-    # Sort: lease_expiry_months ASC (nulls last), then match_score DESC
-    actions.sort(key=lambda a: (
-        a.lease_expiry_months if a.lease_expiry_months is not None else 9999,
-        -a.match_score,
-    ))
+    # Sort: match_score DESC — the scoring curve already encodes expiry weight
+    actions.sort(key=lambda a: -a.match_score)
     return actions
 
 
