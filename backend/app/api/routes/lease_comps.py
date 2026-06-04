@@ -5,9 +5,9 @@ expiration dates onto existing tenant companies, matched by company NAME.
 Two endpoints:
 
   POST /api/lease-comps/preview   (multipart PDF)
-      Parse the PDF via Claude, match each tenant to a company by name, and
-      IMMEDIATELY auto-apply EXACT matches. Returns four lists:
-      auto_applied, needs_review, skipped_no_match, skipped_already_set.
+      Parse the PDF locally (pdfplumber — no API call), match each tenant to a
+      company by name, and IMMEDIATELY auto-apply EXACT matches. Returns four
+      lists: auto_applied, needs_review, skipped_no_match, skipped_already_set.
 
   POST /api/lease-comps/confirm   (JSON)
       Write the user-confirmed fuzzy ("needs review") matches.
@@ -49,8 +49,8 @@ async def preview_lease_comps(
     raw = await file.read()
     if not raw:
         raise HTTPException(status_code=400, detail="Uploaded file is empty.")
-    # Light sniff — CoStar exports are real PDFs. Keeps non-PDF uploads out of
-    # the (paid) Claude call with a clear message.
+    # Light sniff — CoStar exports are real PDFs. Reject non-PDF uploads early
+    # with a clear message rather than letting pdfplumber raise.
     if not raw.lstrip()[:5].startswith(b"%PDF"):
         raise HTTPException(
             status_code=400,

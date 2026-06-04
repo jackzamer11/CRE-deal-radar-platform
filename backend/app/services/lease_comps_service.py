@@ -12,9 +12,10 @@ live database, network, or Claude call:
   - normalize_company_name / _compact_key : name canonicalization
   - compute_lease_matches                 : tiered name match (pure, no writes)
   - apply_expiry_to_company               : mutate a Company with a new expiry
-  - parse_lease_pdf                        : the ONLY side-effecting piece — sends
-                                            the PDF to Claude and returns parsed
-                                            lease dicts. Isolated so tests mock it.
+  - parse_lease_text                       : pure text→leases parser (unit-testable)
+  - parse_lease_pdf                        : extract text from the PDF locally
+                                            (pdfplumber) then parse_lease_text it.
+                                            No network, no Claude, zero API credits.
 
 Tiered matching contract:
   (a) EXACT match after normalization (case, punctuation, legal suffixes,
@@ -26,7 +27,6 @@ Protection: a Company that already has ANY lease expiry value is NEVER
 overwritten — it is reported as skipped-already-set. When one tenant appears on
 multiple leases, the SOONEST expiration wins.
 """
-import os
 import re
 from datetime import date, datetime
 from difflib import SequenceMatcher
@@ -238,110 +238,147 @@ def apply_expiry_to_company(company, expiry_date: date, source: str = LEASE_SOUR
     company.lease_expiry_last_verified = today
 
 
-# ── PDF parsing via Claude (the only side-effecting piece) ─────────────────────
+# ── Local PDF parsing (no network, no Claude, zero API credits) ────────────────
+#
+# A CoStar Lease Activity export is a sequence of lease "cards". Each card opens
+# with a header line carrying the square footage, e.g.:
+#
+#     2,593 SF Sublet Lease - $31.50/SF FS Asking Rent
+#     1750 Tysons Blvd, McLean, VA 22102
+#     Lease Details
+#     Move In       6/1/2021
+#     Expiration    5/1/2027
+#     Space Use     Office
+#     Tenant Overview
+#     Tenant Name   Acme Corporation
+#
+# We split the extracted text on each "X,XXX SF" header line, then read the
+# labelled fields out of each card. A card with no "Tenant Name" (i.e. no
+# Tenant Overview section) is skipped — without a tenant name no match is
+# possible. Everything here is pure string logic and unit-testable via
+# parse_lease_text(); only _extract_pdf_text() touches the file.
 
-_PDF_PROMPT = (
-    "This is a CoStar Lease Activity export. Each lease is a card with a header "
-    "line (e.g. '2,593 SF Sublet Lease - $31.50/SF FS Asking Rent'), an address "
-    "line, then label/value pairs for 'Move In', 'Expiration', and 'Space Use'. "
-    "The tenant company name appears in the header/address area of each card.\n\n"
-    "Extract EVERY lease. Return ONLY a JSON array (no prose, no code fences) of "
-    "objects with exactly these keys:\n"
-    '  "tenant_name"     : string  (the tenant company name)\n'
-    '  "sf"              : integer or null (square footage)\n'
-    '  "expiration_date" : string "YYYY-MM-DD" or null if no Expiration is shown\n'
-    '  "move_in_date"    : string "YYYY-MM-DD" or null\n\n'
-    "If a field is absent, use null — never invent a value. If a card has no "
-    "Expiration, set expiration_date to null."
+# Header line that opens a lease card: leading "X,XXX SF" (the rent's "$/SF"
+# never appears at line start, so anchoring to ^ keeps the two apart).
+_SF_HEADER_RE = re.compile(r"^\s*([\d,]+)\s+SF\b", re.IGNORECASE)
+
+# A date token in either CoStar slash form or an ISO-ish form. Used to pull the
+# value cleanly out of a label line that may carry trailing words.
+_DATE_TOKEN_RE = re.compile(
+    r"\d{1,4}[/-]\d{1,2}[/-]\d{1,4}|[A-Za-z]{3,9}\s+\d{4}"
 )
 
 
-def parse_lease_pdf(pdf_bytes: bytes) -> list:
-    """Send a PDF to Claude and return a list of parsed lease dicts.
+def _find_label_value(lines: list, label: str) -> Optional[str]:
+    """Return the text following `label` on the line it appears on.
 
-    Each dict: {tenant_name, sf, expiration_date, move_in_date}.
-    Raises LeaseParseError on any failure (missing key, API error, bad JSON) so
-    the route can surface a clean 400 instead of a 500.
+    If the label line has nothing after the label, fall back to the next
+    non-empty line (handles layouts where label and value wrap separately).
+    Case-insensitive. Returns None when the label is absent.
     """
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if not api_key:
-        raise LeaseParseError("ANTHROPIC_API_KEY is not set on the server.")
-    if not pdf_bytes:
-        raise LeaseParseError("Empty file.")
-
-    import base64
-    import anthropic
-
-    client = anthropic.Anthropic(api_key=api_key)
-    b64 = base64.standard_b64encode(pdf_bytes).decode("ascii")
-
-    try:
-        resp = client.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=4096,
-            messages=[{
-                "role": "user",
-                "content": [
-                    {
-                        "type": "document",
-                        "source": {
-                            "type": "base64",
-                            "media_type": "application/pdf",
-                            "data": b64,
-                        },
-                    },
-                    {"type": "text", "text": _PDF_PROMPT},
-                ],
-            }],
-        )
-    except Exception as e:  # anthropic.APIError and friends
-        raise LeaseParseError(f"Claude request failed: {e}")
-
-    text = "".join(
-        getattr(b, "text", "") for b in resp.content if hasattr(b, "text")
-    ).strip()
-    return _parse_json_leases(text)
+    pat = re.compile(rf"{re.escape(label)}\s*[:\-]?\s*(.*)", re.IGNORECASE)
+    for i, line in enumerate(lines):
+        m = pat.search(line)
+        if m:
+            val = m.group(1).strip()
+            if val:
+                return val
+            for nxt in lines[i + 1:]:
+                if nxt.strip():
+                    return nxt.strip()
+            return None
+    return None
 
 
-def _parse_json_leases(text: str) -> list:
-    """Tolerantly pull a JSON array of lease objects out of Claude's response."""
-    import json
+def _date_str_from(raw_value: Optional[str]) -> Optional[str]:
+    """Extract the first date token from a label value, or None.
 
-    if not text:
-        raise LeaseParseError("Claude returned an empty response.")
+    parse_expiration() does the actual date coercion downstream; this just
+    isolates the date so trailing words on the line don't trip it up.
+    """
+    if not raw_value:
+        return None
+    m = _DATE_TOKEN_RE.search(raw_value)
+    return m.group(0) if m else raw_value.strip() or None
 
-    # Strip ```json fences if present.
-    cleaned = text.strip()
-    if cleaned.startswith("```"):
-        cleaned = re.sub(r"^```[a-zA-Z]*\s*", "", cleaned)
-        cleaned = re.sub(r"\s*```$", "", cleaned).strip()
 
-    # Fall back to slicing the outermost [ ... ] if there's surrounding prose.
-    if not cleaned.startswith("["):
-        start, end = cleaned.find("["), cleaned.rfind("]")
-        if start == -1 or end == -1 or end <= start:
-            raise LeaseParseError("No JSON array found in Claude's response.")
-        cleaned = cleaned[start:end + 1]
+def parse_lease_text(text: str) -> list:
+    """Parse raw extracted CoStar text into lease dicts. Pure — no I/O.
 
-    try:
-        data = json.loads(cleaned)
-    except json.JSONDecodeError as e:
-        raise LeaseParseError(f"Could not decode lease JSON: {e}")
+    Each returned dict: {tenant_name, sf, expiration_date, move_in_date}.
+      - Splits into cards on each 'X,XXX SF' header line.
+      - tenant_name comes from the 'Tenant Name' label (Tenant Overview section).
+      - Cards with no Tenant Name are skipped (no match possible).
+      - A card with no Expiration yields expiration_date=None (no error).
+    """
+    if not text or not text.strip():
+        return []
+    lines = text.splitlines()
 
-    if not isinstance(data, list):
-        raise LeaseParseError("Expected a JSON array of leases.")
+    header_idxs = [i for i, ln in enumerate(lines) if _SF_HEADER_RE.match(ln)]
+    if not header_idxs:
+        return []
 
     leases = []
-    for item in data:
-        if not isinstance(item, dict):
+    for n, start in enumerate(header_idxs):
+        end = header_idxs[n + 1] if n + 1 < len(header_idxs) else len(lines)
+        card = lines[start:end]
+
+        sf = None
+        m = _SF_HEADER_RE.match(card[0])
+        if m:
+            try:
+                sf = int(m.group(1).replace(",", ""))
+            except ValueError:
+                sf = None
+
+        tenant_name = _find_label_value(card, "Tenant Name")
+        if not tenant_name:
+            # No Tenant Overview / Tenant Name -> cannot match. Skip the card.
             continue
-        name = item.get("tenant_name")
-        if not name or not str(name).strip():
-            continue
+
         leases.append({
-            "tenant_name": str(name).strip(),
-            "sf": item.get("sf"),
-            "expiration_date": item.get("expiration_date"),
-            "move_in_date": item.get("move_in_date"),
+            "tenant_name": tenant_name.strip(),
+            "sf": sf,
+            "expiration_date": _date_str_from(_find_label_value(card, "Expiration")),
+            "move_in_date": _date_str_from(_find_label_value(card, "Move In")),
         })
     return leases
+
+
+def _extract_pdf_text(pdf_bytes: bytes) -> str:
+    """Extract text from a PDF page-by-page using pdfplumber (pure-Python).
+
+    Raises LeaseParseError on any read failure so the route returns a clean 400.
+    """
+    import io
+
+    try:
+        import pdfplumber
+    except ImportError as e:  # pragma: no cover - dependency is in requirements
+        raise LeaseParseError(f"PDF parsing library unavailable: {e}")
+
+    try:
+        parts = []
+        with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+            for page in pdf.pages:
+                parts.append(page.extract_text() or "")
+        return "\n".join(parts)
+    except Exception as e:
+        raise LeaseParseError(f"Could not read PDF: {e}")
+
+
+def parse_lease_pdf(pdf_bytes: bytes) -> list:
+    """Extract lease records from a CoStar Lease Activity PDF locally.
+
+    Pulls text with pdfplumber, then parses the card structure via
+    parse_lease_text. No API call, no key, zero credits. Raises LeaseParseError
+    on an unreadable/empty PDF so the route surfaces a clean 400 not a 500.
+    Each dict: {tenant_name, sf, expiration_date, move_in_date}.
+    """
+    if not pdf_bytes:
+        raise LeaseParseError("Empty file.")
+    text = _extract_pdf_text(pdf_bytes)
+    if not text.strip():
+        raise LeaseParseError("No extractable text found in the PDF.")
+    return parse_lease_text(text)
