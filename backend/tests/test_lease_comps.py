@@ -173,53 +173,45 @@ def test_fuzzy_match_goes_to_review():
 
 
 # ── local PDF text parser (replaces the old Claude extraction) ─────────────────
-# Feeds a representative raw text block (as pdfplumber would emit it) through
-# the pure parser — no real PDF file, no network, no Claude.
+# Feeds the REAL pdfplumber layout (verified against an actual CoStar export)
+# through the pure parser — no real PDF file, no network, no Claude.
+#   - Move In + Expiration share ONE line with "Month D, YYYY" dates.
+#   - Tenant Name line trails with " Size Occupied X,XXX SF".
 _MOCK_PDF_TEXT = """CoStar Lease Activity Report — Northern Virginia
-Generated 6/4/2026  Page 1 of 1
+Generated June 4, 2026  Page 1 of 1
 
-2,593 SF Sublet Lease - $31.50/SF FS Asking Rent
+3,019 SF Sublet Lease - $31.50/SF FS Asking Rent
 1750 Tysons Blvd, McLean, VA 22102
-Lease Details
-Move In 6/1/2021
-Expiration 5/1/2027
-Space Use Office
-Tenant Overview
-Tenant Name Acme Corporation
-Tenant Industry Technology
+Move In May 11, 2026 Expiration September 1, 2027
+Tenant Name Polysonics Size Occupied 3,019 SF
 
 10,000 SF New Lease - $40.00/SF FS Asking Rent
 2000 Corporate Ridge, McLean, VA 22102
-Lease Details
-Move In 1/1/2023
-Expiration 12/31/2028
-Space Use Office
+Move In January 1, 2023 Expiration December 31, 2028
 
 4,200 SF Renewal - $35.00/SF FS Asking Rent
 900 Reston Pkwy, Reston, VA 20190
-Lease Details
-Move In 3/1/2022
-Space Use Office
-Tenant Overview
-Tenant Name Globex LLC
+Move In March 1, 2022
+Tenant Name Globex LLC Size Occupied 4,200 SF
 """
 
 
 def test_parse_lease_text_extracts_fields_and_skips_cards():
     leases = parse_lease_text(_MOCK_PDF_TEXT)
 
-    # Two leases parsed: the middle card has no Tenant Overview -> skipped.
+    # Two leases parsed: the middle card has no Tenant Name -> skipped.
     assert len(leases) == 2
     by_name = {l["tenant_name"]: l for l in leases}
-    assert set(by_name) == {"Acme Corporation", "Globex LLC"}
+    assert set(by_name) == {"Polysonics", "Globex LLC"}
 
-    # (1) tenant name + expiration + move-in + sf extracted correctly.
-    acme = by_name["Acme Corporation"]
-    assert acme["sf"] == 2593
-    assert parse_expiration(acme["expiration_date"]) == date(2027, 5, 1)
-    assert parse_expiration(acme["move_in_date"]) == date(2021, 6, 1)
+    # (1) tenant name (cut at " Size Occupied"), expiration + move-in
+    #     ("Month D, YYYY"), and SF extracted correctly from the real layout.
+    poly = by_name["Polysonics"]
+    assert poly["sf"] == 3019
+    assert parse_expiration(poly["expiration_date"]) == date(2027, 9, 1)
+    assert parse_expiration(poly["move_in_date"]) == date(2026, 5, 11)
 
-    # (2) the card with no Tenant Overview (the 10,000 SF / 12-31-2028 lease) is
+    # (2) the card with no Tenant Name (the 10,000 SF / Dec 31 2028 lease) is
     #     skipped entirely — none of its fields surface in the output.
     assert all(l["sf"] != 10000 for l in leases)
     assert all(parse_expiration(l["expiration_date"]) != date(2028, 12, 31)
@@ -230,6 +222,8 @@ def test_parse_lease_text_extracts_fields_and_skips_cards():
     assert globex["sf"] == 4200
     assert globex["expiration_date"] is None
     assert parse_expiration(globex["expiration_date"]) is None
+    # move-in still parsed even though Expiration is absent on its line.
+    assert parse_expiration(globex["move_in_date"]) == date(2022, 3, 1)
 
 
 def test_parse_lease_text_empty_and_headerless_are_safe():
