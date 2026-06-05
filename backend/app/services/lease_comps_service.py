@@ -302,19 +302,27 @@ def _find_label_value(lines: list, label: str) -> Optional[str]:
     return None
 
 
-def _cut_before(value: Optional[str], marker: str) -> Optional[str]:
-    """Trim `value` at the first case-insensitive occurrence of `marker`.
+def _cut_before(value: Optional[str], *markers: str) -> Optional[str]:
+    """Trim `value` at the EARLIEST case-insensitive occurrence of any marker.
 
-    Used to drop trailing same-line fields, e.g. cut "Polysonics Size Occupied
-    3,019 SF" at " Size Occupied" -> "Polysonics", or "May 11, 2026 Expiration
-    September 1, 2027" at " Expiration" -> "May 11, 2026". If the marker is
-    absent, the value is returned unchanged (handles single-field-per-line
-    layouts too).
+    Used to drop trailing same-line fields. The Tenant Name line's next field
+    varies across CoStar exports — " Size Occupied", " Established",
+    " Locations", " HQ City" — so pass them all and we cut at whichever appears
+    first, e.g.:
+      "Polysonics Size Occupied 3,019 SF"        -> "Polysonics"
+      "Mosaic Spine and Knee Established 1996 ..." -> "Mosaic Spine and Knee"
+      "May 11, 2026 Expiration September 1, 2027" -> "May 11, 2026"
+    If no marker is present, the value is returned unchanged (handles
+    single-field-per-line layouts too).
     """
     if not value:
         return value
-    idx = value.lower().find(marker.lower())
-    return value[:idx].strip() if idx != -1 else value.strip()
+    low = value.lower()
+    positions = [low.find(m.lower()) for m in markers]
+    positions = [p for p in positions if p != -1]
+    if not positions:
+        return value.strip()
+    return value[:min(positions)].strip()
 
 
 def _date_str_from(raw_value: Optional[str]) -> Optional[str]:
@@ -334,7 +342,8 @@ def parse_lease_text(text: str) -> list:
 
     Each returned dict: {tenant_name, sf, expiration_date, move_in_date}.
       - Splits into cards on each 'X,XXX SF' header line.
-      - tenant_name: between "Tenant Name " and " Size Occupied".
+      - tenant_name: after "Tenant Name ", cut at the first trailing field
+                     (" Size Occupied" / " Established" / " Locations" / " HQ City").
       - move_in    : between "Move In " and " Expiration".
       - expiration : after "Expiration " to end of line.
       - Cards with no Tenant Name are skipped (no match possible).
@@ -361,8 +370,12 @@ def parse_lease_text(text: str) -> list:
             except ValueError:
                 sf = None
 
-        # Tenant Name: drop the trailing " Size Occupied 3,019 SF" if present.
-        tenant_name = _cut_before(_find_label_value(card, "Tenant Name"), " Size Occupied")
+        # Tenant Name: drop the trailing field that follows it. Which field that
+        # is varies by export, so cut at whichever delimiter appears first.
+        tenant_name = _cut_before(
+            _find_label_value(card, "Tenant Name"),
+            " Size Occupied", " Established", " Locations", " HQ City",
+        )
         if not tenant_name:
             # No Tenant Name -> cannot match. Skip the card.
             continue

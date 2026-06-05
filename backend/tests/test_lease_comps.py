@@ -226,6 +226,38 @@ def test_parse_lease_text_extracts_fields_and_skips_cards():
     assert parse_expiration(globex["move_in_date"]) == date(2022, 3, 1)
 
 
+@pytest.mark.parametrize("tenant_line,expected", [
+    # The field after the tenant name varies across real CoStar exports; the
+    # name must be cut at whichever delimiter appears first.
+    ("Tenant Name Polysonics Size Occupied 3,019 SF", "Polysonics"),
+    ("Tenant Name Mosaic Spine and Knee Established 1996 ...", "Mosaic Spine and Knee"),
+    ("Tenant Name Booz Allen Locations 42 ...", "Booz Allen"),
+    ("Tenant Name Deloitte HQ City London ...", "Deloitte"),
+    ("Tenant Name Standalone Name", "Standalone Name"),  # no trailing field
+])
+def test_tenant_name_cut_at_first_delimiter(tenant_line, expected):
+    text = (
+        "5,000 SF New Lease - $30.00/SF FS Asking Rent\n"
+        "100 Main St, Reston, VA 20190\n"
+        "Move In May 11, 2026 Expiration September 1, 2027\n"
+        f"{tenant_line}\n"
+    )
+    leases = parse_lease_text(text)
+    assert len(leases) == 1
+    assert leases[0]["tenant_name"] == expected
+
+
+def test_tenant_name_cut_at_earliest_of_multiple_delimiters():
+    # Both " Established" and " Size Occupied" present -> cut at the earlier one.
+    text = (
+        "5,000 SF New Lease\n"
+        "Move In May 11, 2026 Expiration September 1, 2027\n"
+        "Tenant Name Acme Labs Established 1996 Size Occupied 5,000 SF\n"
+    )
+    leases = parse_lease_text(text)
+    assert leases[0]["tenant_name"] == "Acme Labs"
+
+
 def test_parse_lease_text_empty_and_headerless_are_safe():
     # Null-safe: empty / whitespace / no SF-header text yields [] (no crash).
     assert parse_lease_text("") == []
