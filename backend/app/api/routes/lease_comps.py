@@ -12,10 +12,6 @@ Two endpoints:
   POST /api/lease-comps/confirm   (JSON)
       Write the user-confirmed fuzzy ("needs review") matches.
 
-  GET|POST /api/lease-comps/debug-text   (multipart PDF)  [TEMPORARY]
-      Return pdfplumber's raw extracted text page-by-page (no matching). Used to
-      diagnose why the parser produced 0 results. Remove once patterns are fixed.
-
 Hard rules (see lease_comps_service):
   - Never overwrite a company that already has a lease expiry.
   - Soonest expiration wins when a tenant has multiple leases.
@@ -84,57 +80,6 @@ async def preview_lease_comps(
     result["auto_applied"] = applied
     result["parsed_count"] = len(parsed)
     return result
-
-
-@router.api_route("/debug-text", methods=["GET", "POST"])
-async def debug_lease_comps_text(file: UploadFile = File(...)):
-    """TEMPORARY diagnostic — return pdfplumber's raw extracted text, page by page.
-
-    No matching, no parsing of fields — just what pdfplumber sees, so we can
-    compare the real CoStar layout against the parser's label/header patterns.
-    Remove once the parser is dialed in.
-
-    Registered for GET (as requested) and POST. A multipart file upload needs a
-    request body, and many clients drop bodies on GET — if your tool refuses to
-    send the file over GET, use POST: curl -F file=@export.pdf .../debug-text
-    """
-    import io
-
-    raw = await file.read()
-    if not raw:
-        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
-    if not raw.lstrip()[:5].startswith(b"%PDF"):
-        raise HTTPException(
-            status_code=400,
-            detail="Please upload a PDF (CoStar Lease Activity export).",
-        )
-
-    try:
-        import pdfplumber
-    except ImportError as e:
-        raise HTTPException(status_code=500, detail=f"pdfplumber unavailable: {e}")
-
-    pages = []
-    try:
-        with pdfplumber.open(io.BytesIO(raw)) as pdf:
-            for i, page in enumerate(pdf.pages, start=1):
-                text = page.extract_text() or ""
-                pages.append({
-                    "page": i,
-                    "char_count": len(text),
-                    "line_count": len(text.splitlines()),
-                    "lines": text.splitlines(),
-                    "text": text,
-                })
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Could not read PDF: {e}")
-
-    return {
-        "filename": file.filename,
-        "page_count": len(pages),
-        "total_chars": sum(p["char_count"] for p in pages),
-        "pages": pages,
-    }
 
 
 class LeaseCompMatch(BaseModel):
