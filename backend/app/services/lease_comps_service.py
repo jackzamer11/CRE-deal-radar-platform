@@ -90,8 +90,14 @@ def parse_expiration(value) -> Optional[date]:
     s = str(value).strip()
     if not s or s.lower() in ("none", "null", "n/a", "na", "tbd", "-"):
         return None
-    # Try ISO first, then a couple of common CoStar formats.
-    for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%m/%d/%y", "%b %Y", "%B %Y", "%m/%Y"):
+    # Try ISO first, then the CoStar formats. "%B %d, %Y" / "%b %d, %Y" cover the
+    # real export form ("September 1, 2027"); the slash + "Month YYYY" forms cover
+    # older/alternate exports.
+    for fmt in (
+        "%Y-%m-%d", "%m/%d/%Y", "%m/%d/%y",
+        "%B %d, %Y", "%b %d, %Y",
+        "%b %Y", "%B %Y", "%m/%Y",
+    ):
         try:
             return datetime.strptime(s, fmt).date()
         except ValueError:
@@ -240,32 +246,38 @@ def apply_expiry_to_company(company, expiry_date: date, source: str = LEASE_SOUR
 
 # ── Local PDF parsing (no network, no Claude, zero API credits) ────────────────
 #
-# A CoStar Lease Activity export is a sequence of lease "cards". Each card opens
-# with a header line carrying the square footage, e.g.:
+# A CoStar Lease Activity export is a sequence of lease "cards". The real
+# pdfplumber text (verified against an actual export) looks like:
 #
-#     2,593 SF Sublet Lease - $31.50/SF FS Asking Rent
+#     3,019 SF Sublet Lease - $31.50/SF FS Asking Rent
 #     1750 Tysons Blvd, McLean, VA 22102
-#     Lease Details
-#     Move In       6/1/2021
-#     Expiration    5/1/2027
-#     Space Use     Office
-#     Tenant Overview
-#     Tenant Name   Acme Corporation
+#     Move In May 11, 2026 Expiration September 1, 2027
+#     Tenant Name Polysonics Size Occupied 3,019 SF
 #
-# We split the extracted text on each "X,XXX SF" header line, then read the
-# labelled fields out of each card. A card with no "Tenant Name" (i.e. no
-# Tenant Overview section) is skipped — without a tenant name no match is
-# possible. Everything here is pure string logic and unit-testable via
-# parse_lease_text(); only _extract_pdf_text() touches the file.
+# So the field positions are:
+#   - SF         : the number before " SF" on the header line  ("3,019 SF ...")
+#   - Move In    : between "Move In " and " Expiration"         ("May 11, 2026")
+#   - Expiration : everything after "Expiration " to EOL        ("September 1, 2027")
+#   - Tenant Name: between "Tenant Name " and " Size Occupied"  ("Polysonics")
+#
+# We split the text on each "X,XXX SF" header line, then read those fields out of
+# each card. A card with no "Tenant Name" is skipped — without a tenant name no
+# match is possible. Pure string logic, unit-testable via parse_lease_text();
+# only _extract_pdf_text() touches the file.
 
 # Header line that opens a lease card: leading "X,XXX SF" (the rent's "$/SF"
-# never appears at line start, so anchoring to ^ keeps the two apart).
+# never appears at line start, so anchoring to ^ keeps the two apart). The
+# Tenant Name line also contains "X,XXX SF" but starts with a word, not a digit.
 _SF_HEADER_RE = re.compile(r"^\s*([\d,]+)\s+SF\b", re.IGNORECASE)
 
-# A date token in either CoStar slash form or an ISO-ish form. Used to pull the
-# value cleanly out of a label line that may carry trailing words.
+# A date token, longest/most-specific form first:
+#   "September 1, 2027"  ->  Month D, YYYY
+#   "5/1/2027"           ->  M/D/YYYY (or with dashes)
+#   "September 2027"     ->  Month YYYY
 _DATE_TOKEN_RE = re.compile(
-    r"\d{1,4}[/-]\d{1,2}[/-]\d{1,4}|[A-Za-z]{3,9}\s+\d{4}"
+    r"[A-Za-z]{3,9}\s+\d{1,2},\s*\d{4}"
+    r"|\d{1,4}[/-]\d{1,2}[/-]\d{1,4}"
+    r"|[A-Za-z]{3,9}\s+\d{4}"
 )
 
 
@@ -290,6 +302,21 @@ def _find_label_value(lines: list, label: str) -> Optional[str]:
     return None
 
 
+def _cut_before(value: Optional[str], marker: str) -> Optional[str]:
+    """Trim `value` at the first case-insensitive occurrence of `marker`.
+
+    Used to drop trailing same-line fields, e.g. cut "Polysonics Size Occupied
+    3,019 SF" at " Size Occupied" -> "Polysonics", or "May 11, 2026 Expiration
+    September 1, 2027" at " Expiration" -> "May 11, 2026". If the marker is
+    absent, the value is returned unchanged (handles single-field-per-line
+    layouts too).
+    """
+    if not value:
+        return value
+    idx = value.lower().find(marker.lower())
+    return value[:idx].strip() if idx != -1 else value.strip()
+
+
 def _date_str_from(raw_value: Optional[str]) -> Optional[str]:
     """Extract the first date token from a label value, or None.
 
@@ -307,7 +334,9 @@ def parse_lease_text(text: str) -> list:
 
     Each returned dict: {tenant_name, sf, expiration_date, move_in_date}.
       - Splits into cards on each 'X,XXX SF' header line.
-      - tenant_name comes from the 'Tenant Name' label (Tenant Overview section).
+      - tenant_name: between "Tenant Name " and " Size Occupied".
+      - move_in    : between "Move In " and " Expiration".
+      - expiration : after "Expiration " to end of line.
       - Cards with no Tenant Name are skipped (no match possible).
       - A card with no Expiration yields expiration_date=None (no error).
     """
@@ -332,16 +361,21 @@ def parse_lease_text(text: str) -> list:
             except ValueError:
                 sf = None
 
-        tenant_name = _find_label_value(card, "Tenant Name")
+        # Tenant Name: drop the trailing " Size Occupied 3,019 SF" if present.
+        tenant_name = _cut_before(_find_label_value(card, "Tenant Name"), " Size Occupied")
         if not tenant_name:
-            # No Tenant Overview / Tenant Name -> cannot match. Skip the card.
+            # No Tenant Name -> cannot match. Skip the card.
             continue
+
+        # Move In and Expiration may share one line: cut Move In at " Expiration".
+        move_in_raw = _cut_before(_find_label_value(card, "Move In"), " Expiration")
+        expiration_raw = _find_label_value(card, "Expiration")
 
         leases.append({
             "tenant_name": tenant_name.strip(),
             "sf": sf,
-            "expiration_date": _date_str_from(_find_label_value(card, "Expiration")),
-            "move_in_date": _date_str_from(_find_label_value(card, "Move In")),
+            "expiration_date": _date_str_from(expiration_raw),
+            "move_in_date": _date_str_from(move_in_raw),
         })
     return leases
 
