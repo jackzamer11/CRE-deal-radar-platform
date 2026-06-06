@@ -735,7 +735,9 @@ export default function OutreachDraftModal(props: Props) {
                     {draft.projected_sf && (
                       <>
                         <span>·</span>
-                        <span>Projected {draft.projected_sf.toLocaleString()} SF</span>
+                        {/* SF now sources from the tenant's real current_sf, so it
+                            is the current footprint — not a projected estimate. */}
+                        <span>Current {draft.projected_sf.toLocaleString()} SF</span>
                       </>
                     )}
                   </div>

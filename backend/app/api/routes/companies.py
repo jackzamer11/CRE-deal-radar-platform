@@ -18,6 +18,7 @@ from app.schemas.property import MatchedProperty
 from app.schemas.outreach import OutreachDraft, OutreachLogCreate, OutreachLogOut, CallScript
 from app.services import signal_engine as se
 from app.services.scoring_model import score_property
+from app.services.match_scoring import medical_mismatch_penalty
 from app.services.rep_classification import classify_rep
 
 router = APIRouter(prefix="/companies", tags=["companies"])
@@ -635,6 +636,11 @@ def _compute_matched_properties(company: Company, db: Session) -> list:
             score += 10.0
             reasons.append(f"High landlord motivation ({prop.signal_score:.0f})")
         if score > 0:
+            # Soft medical/non-medical mismatch penalty — match still appears.
+            penalty = medical_mismatch_penalty(prop, company)
+            if penalty:
+                score += penalty
+                reasons.append("Medical/non-medical mismatch (−20)")
             scored.append((score, prop, reasons))
 
     scored.sort(key=lambda x: x[0], reverse=True)

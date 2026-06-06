@@ -18,6 +18,7 @@ from app.schemas.property import PropertyOut, PropertyListOut, PropertyCreate, S
 from app.schemas.outreach import OutreachLogCreate, OutreachLogOut, OutreachDraft, CallScript
 from app.services import signal_engine as se
 from app.services.scoring_model import score_property
+from app.services.match_scoring import medical_mismatch_penalty
 from app.services.property_outreach_service import generate_property_outreach
 from app.config import settings
 
@@ -569,6 +570,11 @@ def _compute_matched_tenants(prop: Property, db: Session) -> list:
             score += 10.0
             reasons.append(f"Lease expiry in {co.lease_expiry_months}mo")
         if score > 0:
+            # Soft medical/non-medical mismatch penalty — match still appears.
+            penalty = medical_mismatch_penalty(prop, co)
+            if penalty:
+                score += penalty
+                reasons.append("Medical/non-medical mismatch (−20)")
             scored.append((score, co, reasons))
 
     scored.sort(key=lambda x: x[0], reverse=True)

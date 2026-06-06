@@ -53,6 +53,9 @@ class Property(Base):
     tenancy = Column(String, nullable=True)                      # 'single' | 'multi'
     stories = Column(Integer, nullable=True)
     parking_ratio = Column(Float, nullable=True)                 # spaces per 1,000 SF
+    # Medical/non-medical classification — drives a soft match-score penalty when
+    # a medical property is matched to a non-medical tenant (or vice versa).
+    is_medical = Column(Boolean, nullable=False, default=False, server_default="0")
 
     # Occupancy & Leasing
     occupancy_pct = Column(Float, nullable=True)
