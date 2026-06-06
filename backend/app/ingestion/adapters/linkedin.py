@@ -100,10 +100,10 @@ def fetch_company_locations(company_name: str) -> List[Dict[str, Any]]:
     return []
 
 
-def estimate_sf_needed(headcount: int, growth_rate_pct: float, months_horizon: int = 18) -> int:
+def sf_needed_from_occupied(occupied_sf: Optional[int]) -> Optional[int]:
+    """SF needed = the company's real occupied SF.
+
+    Returns None when no real value exists. We deliberately do NOT estimate space
+    need from headcount, growth rate, or a SF/person assumption.
     """
-    Project space requirement at growth horizon.
-    Standard: 175 SF/head modern, 150 SF/head dense.
-    """
-    projected_heads = headcount * (1 + growth_rate_pct / 100 * (months_horizon / 12))
-    return int(projected_heads * 175)
+    return occupied_sf if occupied_sf else None

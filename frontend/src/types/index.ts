@@ -26,7 +26,8 @@ export interface MatchedTenant {
   name: string
   industry: string
   headcount: number | null
-  sf_needed: number
+  sf_needed: number | null        // real occupied SF; null when unknown
+  sf_display: string              // "11,000 SF" when known, else "Unknown"
   submarket: string | null
   match_score: number
   match_reasons: string[]

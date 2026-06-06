@@ -619,7 +619,7 @@ export default function OutreachDraftModal(props: Props) {
                 <span>·</span>
                 <span>{activeTabTenant.industry}</span>
                 <span>·</span>
-                <span>{activeTabTenant.sf_needed.toLocaleString()} SF needed</span>
+                <span>SF: {activeTabTenant.sf_display}</span>
               </div>
             )}
 
@@ -898,7 +898,7 @@ export default function OutreachDraftModal(props: Props) {
                       {t.industry} · {t.headcount ?? '—'} HC
                     </div>
                     <div className="text-[10px] text-ink-secondary mt-0.5">
-                      {t.sf_needed.toLocaleString()} SF needed
+                      SF: {t.sf_display}
                     </div>
                     <div className="text-[10px] text-violet-400 mt-1">
                       Match {t.match_score.toFixed(0)}

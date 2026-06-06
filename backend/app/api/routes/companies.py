@@ -313,10 +313,8 @@ def create_company(payload: CompanyManualCreate, db: Session = Depends(get_db)):
     if payload.current_sf and payload.current_headcount > 0:
         sf_per_head = round(payload.current_sf / payload.current_headcount, 1)
 
-    estimated_sf_needed = None
-    if payload.current_headcount:
-        growth_factor = 1 + ((growth_pct or 0) / 100.0) * 1.25
-        estimated_sf_needed = int(payload.current_headcount * growth_factor * 175)
+    # SF needed = the company's real occupied SF (sf_occupied). No estimate.
+    estimated_sf_needed = payload.current_sf if payload.current_sf else None
 
     lease_expiry_date_val = None
     if payload.lease_expiry_months and payload.lease_expiry_months > 0:
@@ -499,6 +497,8 @@ async def costar_tenant_import(
             c.current_address       = payload["current_address"]
             c.current_submarket     = payload["current_submarket"]
             c.current_sf            = payload["current_sf"]
+            # SF needed tracks real occupied SF (sf_occupied); None when unknown.
+            c.estimated_sf_needed   = payload["current_sf"] if payload["current_sf"] else None
             # Guard: never overwrite user-verified lease data with CoStar's value.
             # If the existing record has a protected source AND a verified date,
             # the user has manually confirmed this data — CoStar cannot override it.
@@ -527,7 +527,8 @@ async def costar_tenant_import(
             sf_per_head = None
             if payload["current_sf"] and payload["current_headcount"] and payload["current_headcount"] > 0:
                 sf_per_head = round(payload["current_sf"] / payload["current_headcount"], 1)
-            estimated_sf_needed = int(payload["current_headcount"] * 1.25 * 175) if payload["current_headcount"] else None
+            # SF needed = the company's real occupied SF (sf_occupied). No estimate.
+            estimated_sf_needed = payload["current_sf"] if payload["current_sf"] else None
 
             c = Company(
                 company_id            = _next_company_id(db),
