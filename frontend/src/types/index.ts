@@ -87,6 +87,7 @@ export interface TenantOutreachDraft {
 export interface PropertyOut extends PropertyListOut {
   year_built: number
   last_renovation_year: number | null
+  is_medical: boolean
   owner_type: string
   owner_phone: string | null
   owner_email: string | null
@@ -219,6 +220,7 @@ export interface MatchedProperty {
 
 export interface CompanyOut extends CompanyListOut {
   description: string | null
+  is_medical: boolean
   open_positions: number
   hiring_velocity: number | null
   current_sf: number | null

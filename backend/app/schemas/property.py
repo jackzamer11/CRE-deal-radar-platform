@@ -132,6 +132,7 @@ class PropertyOut(PropertyBase):
     created_at: datetime
     updated_at: datetime
     matched_tenants: list[MatchedTenant] = []
+    is_medical: bool = False
 
     @model_validator(mode='before')
     @classmethod

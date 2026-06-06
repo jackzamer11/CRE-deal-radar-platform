@@ -114,6 +114,14 @@ def ensure_properties(cur: sqlite3.Cursor) -> int:
     added += _add_column(cur, "properties", "owner_confirmed_leasing",      "BOOLEAN DEFAULT 0")
     added += _add_column(cur, "properties", "owner_confirmed_leasing_date", "DATE")
 
+    # ── Medical/non-medical classification (soft match penalty) ────────────
+    # Defaults to 0 (false) for all existing rows. Guarded so a partially-migrated
+    # DB can never abort startup on this single column.
+    try:
+        added += _add_column(cur, "properties", "is_medical", "BOOLEAN NOT NULL DEFAULT 0")
+    except Exception as _exc:
+        print(f"  ! properties.is_medical add skipped: {_exc}")
+
     return added
 
 
@@ -354,6 +362,15 @@ def ensure_companies(cur: sqlite3.Cursor) -> int:
     added += _add_column(cur, "companies", "snooze_reason",        "TEXT")
     added += _add_column(cur, "companies", "returned_from_snooze", "BOOLEAN")
     added += _add_column(cur, "companies", "expiry_priority_override", "BOOLEAN DEFAULT 0")
+
+    # ── Medical/non-medical classification (soft match penalty) ────────────
+    # Defaults to 0 (false) for all existing rows. Guarded so a partially-migrated
+    # DB can never abort startup on this single column.
+    try:
+        added += _add_column(cur, "companies", "is_medical", "BOOLEAN NOT NULL DEFAULT 0")
+    except Exception as _exc:
+        print(f"  ! companies.is_medical add skipped: {_exc}")
+
     return added
 
 

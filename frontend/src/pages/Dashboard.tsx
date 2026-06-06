@@ -400,6 +400,15 @@ export default function Dashboard() {
   const expiredLeases     = briefing.expired_leases ?? []
   const returnedSnoozeIds = new Set(briefing.returned_from_snooze_property_ids ?? [])
 
+  // Section A is split into Not Contacted / Contacted columns. A row counts as
+  // contacted from the local optimistic flag OR the server contact_status.
+  const tenantActionKey = (a: TenantMatchAction) =>
+    `${a.property_id}:${a.tenant_company_id}:${a.outreach_type}`
+  const isActionContacted = (a: TenantMatchAction) =>
+    contactedPairs[tenantActionKey(a)] === true || a.contact_status === 'CONTACTED'
+  const notContactedActions = tenantActions.filter(a => !isActionContacted(a))
+  const contactedActions    = tenantActions.filter(isActionContacted)
+
   const noContent = tenantActions.length === 0 && acqTargets.length === 0
 
   return (
@@ -646,18 +655,60 @@ export default function Dashboard() {
             {tenantActions.length === 0 ? (
               <div className="text-xs text-ink-muted px-2">No tenant-match actions queued.</div>
             ) : (
-              <div className="space-y-3">
-                {tenantActions.map(a => (
-                  <TenantActionRow
-                    key={`${a.property_id}-${a.tenant_company_id}-${a.outreach_type}`}
-                    action={a}
-                    onDraft={handleTenantDraft}
-                    onNavigate={navTenantAction}
-                    onSnooze={a => setSnoozeTarget({ propertyId: a.property_id, address: a.address })}
-                    isContacted={contactedPairs[`${a.property_id}:${a.tenant_company_id}:${a.outreach_type}`] === true}
-                    returnedFromSnooze={returnedSnoozeIds.has(a.property_id)}
-                  />
-                ))}
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                {/* Left column — Not Contacted */}
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2 mb-2 px-1">
+                    <span className="text-xs font-bold uppercase tracking-wider text-ink-secondary">Not Contacted</span>
+                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-surface-muted text-ink-muted border border-surface-border font-semibold">
+                      {notContactedActions.length}
+                    </span>
+                  </div>
+                  {notContactedActions.length === 0 ? (
+                    <div className="text-xs text-ink-muted px-2 py-4">Nothing left to contact.</div>
+                  ) : (
+                    <div className="space-y-3 max-h-[70vh] overflow-y-auto pr-1">
+                      {notContactedActions.map(a => (
+                        <TenantActionRow
+                          key={`${a.property_id}-${a.tenant_company_id}-${a.outreach_type}`}
+                          action={a}
+                          onDraft={handleTenantDraft}
+                          onNavigate={navTenantAction}
+                          onSnooze={a => setSnoozeTarget({ propertyId: a.property_id, address: a.address })}
+                          isContacted={false}
+                          returnedFromSnooze={returnedSnoozeIds.has(a.property_id)}
+                        />
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* Right column — Contacted */}
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2 mb-2 px-1">
+                    <span className="text-xs font-bold uppercase tracking-wider text-emerald-400">Contacted</span>
+                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 font-semibold">
+                      {contactedActions.length}
+                    </span>
+                  </div>
+                  {contactedActions.length === 0 ? (
+                    <div className="text-xs text-ink-muted px-2 py-4">No tenants contacted yet.</div>
+                  ) : (
+                    <div className="space-y-3 max-h-[70vh] overflow-y-auto pr-1">
+                      {contactedActions.map(a => (
+                        <TenantActionRow
+                          key={`${a.property_id}-${a.tenant_company_id}-${a.outreach_type}`}
+                          action={a}
+                          onDraft={handleTenantDraft}
+                          onNavigate={navTenantAction}
+                          onSnooze={a => setSnoozeTarget({ propertyId: a.property_id, address: a.address })}
+                          isContacted={true}
+                          returnedFromSnooze={returnedSnoozeIds.has(a.property_id)}
+                        />
+                      ))}
+                    </div>
+                  )}
+                </div>
               </div>
             )}
           </section>

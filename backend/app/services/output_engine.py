@@ -23,6 +23,7 @@ from app.schemas.dashboard import (
     DailyBriefing, DashboardStats, CallTarget, TenantMatchTarget,
     TenantMatchAction, AcquisitionTarget, ExpiredLease,
 )
+from app.services.match_scoring import medical_mismatch_penalty
 
 
 _SIGNAL_LABEL = {
@@ -191,6 +192,10 @@ def _compute_tenant_actions(db: Session) -> list:
                 score += 10.0
             if score <= 0:
                 continue
+
+            # Soft penalty for medical/non-medical mismatch — applied after the
+            # qualification gate so the match still appears, just scored lower.
+            score += medical_mismatch_penalty(prop, co)
 
             # Determine outreach type + target
             if prop.listed_for_sale:

@@ -89,6 +89,7 @@ class CompanyOut(CompanyBase):
     updated_at: datetime
     last_modified_by_user: Optional[datetime] = None
     matched_properties: list[MatchedProperty] = []
+    is_medical: bool = False
 
     # Snooze state (null = active)
     snoozed_until:        Optional[date] = None
