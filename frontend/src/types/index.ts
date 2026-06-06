@@ -397,6 +397,8 @@ export interface DailyBriefing {
   tenant_match_properties: TenantMatchTarget[]
   tenant_match_actions: TenantMatchAction[]
   acquisition_targets: AcquisitionTarget[]
+  snoozed_tenant_match_actions?: TenantMatchAction[]
+  snoozed_acquisition_targets?: AcquisitionTarget[]
   expired_leases: ExpiredLease[]
   returned_from_snooze_property_ids: string[]
   signal_refresh_timestamp: string | null

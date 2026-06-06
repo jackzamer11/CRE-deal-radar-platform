@@ -1327,6 +1327,21 @@ def update_property(property_id: str, payload: PropertyUpdate, db: Session = Dep
     return out
 
 
+@router.delete("/{property_id}", status_code=200)
+def delete_property(property_id: str, db: Session = Depends(get_db)):
+    """Hard-delete a property (and its cascade-owned opportunities) from the DB.
+
+    No soft delete. Dependent activity/outreach logs have their property_id
+    nulled by the ORM relationship default. Returns 404 if the record is absent.
+    """
+    prop = db.query(Property).filter(Property.property_id == property_id).first()
+    if not prop:
+        raise HTTPException(status_code=404, detail="Property not found")
+    db.delete(prop)
+    db.commit()
+    return {"deleted": property_id}
+
+
 @router.post("/{property_id}/snooze", response_model=PropertyOut)
 def snooze_property(property_id: str, payload: SnoozeRequest, db: Session = Depends(get_db)):
     """Snooze a property — hide it from Daily Briefing and Section A until snoozed_until date."""

@@ -57,6 +57,9 @@ export const snoozeProperty = (
 export const unsnoozeProperty = (propertyId: string): Promise<PropertyOut> =>
   api.post(`/properties/${propertyId}/unsnooze`).then(r => r.data)
 
+export const deleteProperty = (propertyId: string): Promise<{ deleted: string }> =>
+  api.delete(`/properties/${propertyId}`).then(r => r.data)
+
 export const getTenantOutreach = (propertyId: string): Promise<TenantOutreachDraft[]> =>
   api.get(`/properties/${propertyId}/tenant-outreach`).then(r => r.data)
 
@@ -91,6 +94,9 @@ export const snoozeCompany = (
 
 export const unsnoozeCompany = (companyId: string): Promise<CompanyOut> =>
   api.post(`/companies/${companyId}/unsnooze`).then(r => r.data)
+
+export const deleteCompany = (companyId: string): Promise<{ deleted: string }> =>
+  api.delete(`/companies/${companyId}`).then(r => r.data)
 
 export const createCompany = (payload: Record<string, unknown>): Promise<CompanyOut> =>
   api.post('/companies/', payload).then(r => r.data)

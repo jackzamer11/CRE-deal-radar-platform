@@ -1,9 +1,9 @@
 import { useEffect, useState, useRef } from 'react'
 import { useSearchParams, useNavigate } from 'react-router-dom'
-import { Building2, Filter, RefreshCw, X, Plus, Upload, Pencil, Check, MessageSquarePlus, Clock } from 'lucide-react'
+import { Building2, Filter, RefreshCw, X, Plus, Upload, Pencil, Check, MessageSquarePlus, Clock, Trash2 } from 'lucide-react'
 import {
   getProperties, getProperty, updatePropertyInPlaceRent, getPropertyOutreachHistory,
-  unsnoozeProperty,
+  unsnoozeProperty, deleteProperty,
 } from '../api/client'
 import type { PropertyListOut, PropertyOut, OutreachLog } from '../types'
 import { PriorityBadge } from '../components/PriorityBadge'
@@ -219,6 +219,17 @@ export default function Properties() {
       const next = new URLSearchParams(searchParams)
       next.delete('selected')
       setSearchParams(next, { replace: true })
+    }
+  }
+
+  const handleDeleteProperty = async (prop: PropertyOut) => {
+    if (!window.confirm('Are you sure? This cannot be undone.')) return
+    try {
+      await deleteProperty(prop.property_id)
+      setProperties(ps => ps.filter(p => p.property_id !== prop.property_id))
+      closePanel()
+    } catch {
+      window.alert('Could not delete this property. Please try again.')
     }
   }
 
@@ -692,6 +703,13 @@ export default function Properties() {
                   className="text-ink-muted hover:text-amber-400 p-1 rounded transition-colors"
                 >
                   <Clock size={15} />
+                </button>
+                <button
+                  onClick={() => handleDeleteProperty(selected)}
+                  title="Delete property"
+                  className="text-ink-muted hover:text-red-400 p-1 rounded transition-colors"
+                >
+                  <Trash2 size={15} />
                 </button>
                 <button onClick={closePanel} className="text-ink-muted hover:text-ink-primary p-1">
                   <X size={18} />
