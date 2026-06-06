@@ -76,6 +76,10 @@ COSTAR_TENANT_COLS = [
     "Next Break Date", "Rent/SF/year", "Future Move", "Future Move Type",
 ]
 
+# Minimum occupied square footage for a tenant location to be imported.
+# Rows with "SF Occupied" below this threshold are dropped (filtered_size).
+MIN_SF_OCCUPIED = 1500
+
 
 # ── CoStar tenant import helpers ──────────────────────────────────────────────
 
@@ -407,7 +411,7 @@ async def costar_tenant_import(
     Filter pipeline:
       1. State != VA             → filtered_state
       2. Submarket unmapped      → filtered_submarket  (tracks unmapped_submarkets)
-      3. SF Occupied < 2,500     → filtered_size
+      3. SF Occupied < 1,500     → filtered_size
 
     Dedupe key: (Tenant Name, Address) — case-insensitive, whitespace-trimmed.
     Auto-links to an existing Property when Address matches exactly.
@@ -464,9 +468,9 @@ async def costar_tenant_import(
             filtered_submarket += 1
             continue
 
-        # Filter 3: SF Occupied >= 2,500
+        # Filter 3: SF Occupied >= MIN_SF_OCCUPIED
         sf_occ = _cs_float(row, "SF Occupied")
-        if sf_occ is None or sf_occ < 2500:
+        if sf_occ is None or sf_occ < MIN_SF_OCCUPIED:
             filtered_size += 1
             continue
 
