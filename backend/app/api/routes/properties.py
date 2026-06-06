@@ -386,7 +386,7 @@ class TenantOutreachResult(BaseModel):
     company_id:         str
     company_name:       str
     contact_name:       Optional[str] = None
-    sf_needed:          int
+    sf_needed:          Optional[int] = None
     lease_expiry_months: Optional[int] = None
     email_draft:        str
     call_script:        str
@@ -526,6 +526,11 @@ def _adjacent_submarkets(submarket: Optional[str]) -> set:
     return adjacency.get(submarket, set())
 
 
+def _sf_needed_display(sf_needed: Optional[int]) -> str:
+    """Card label for SF needed: the real number when known, else 'Unknown'."""
+    return f"{sf_needed:,} SF" if sf_needed else "Unknown"
+
+
 def _compute_matched_tenants(prop: Property, db: Session) -> list:
     from app.models.company import Company
     from app.schemas.property import MatchedTenant
@@ -534,10 +539,9 @@ def _compute_matched_tenants(prop: Property, db: Session) -> list:
     if avail_sf <= 0:
         return []
 
-    candidates = db.query(Company).filter(
-        Company.estimated_sf_needed.isnot(None),
-        Company.estimated_sf_needed > 0,
-    ).all()
+    # SF needed (= real occupied SF) may be unknown; such tenants can still match
+    # on submarket / expansion / lease timing and are shown with "SF: Unknown".
+    candidates = db.query(Company).all()
 
     scored = []
     for co in candidates:
@@ -574,7 +578,8 @@ def _compute_matched_tenants(prop: Property, db: Session) -> list:
             name=co.name,
             industry=co.industry,
             headcount=co.current_headcount,
-            sf_needed=co.estimated_sf_needed or 0,
+            sf_needed=co.estimated_sf_needed if co.estimated_sf_needed else None,
+            sf_display=_sf_needed_display(co.estimated_sf_needed),
             submarket=co.current_submarket,
             match_score=round(score, 1),
             match_reasons=reasons,
@@ -1409,7 +1414,7 @@ def get_tenant_outreach(property_id: str, db: Session = Depends(get_db)):
         tenant_dict = {
             "name":                 company.name,
             "industry":             company.industry or "professional services",
-            "estimated_sf_needed":  company.estimated_sf_needed or mt.sf_needed,
+            "estimated_sf_needed":  company.estimated_sf_needed if company.estimated_sf_needed else None,
             "lease_expiry_months":  company.lease_expiry_months,
             "current_submarket":    company.current_submarket,
             "primary_contact_name": company.primary_contact_name,
@@ -1445,7 +1450,7 @@ def get_tenant_outreach(property_id: str, db: Session = Depends(get_db)):
                 company_id=company.company_id,
                 company_name=company.name,
                 contact_name=company.primary_contact_name,
-                sf_needed=company.estimated_sf_needed or mt.sf_needed,
+                sf_needed=company.estimated_sf_needed if company.estimated_sf_needed else None,
                 lease_expiry_months=company.lease_expiry_months,
                 email_draft=email_body,
                 call_script=call_script,

@@ -51,6 +51,22 @@ _PHASE1_FSV_CLOSING = (
     "in a conversation."
 )
 
+# Fix 3: SF-needed fallback. When a matched tenant has no real occupied SF
+# (sf_occupied null/zero → estimated_sf_needed None), property-side copy must
+# NEVER show a blank, placeholder, or estimated number. Instead it states the
+# requirement qualitatively with this exact wording.
+def _tenant_sf_fallback_sentence(submarket: Optional[str], lease_expiry_months) -> str:
+    sub = submarket or "submarket"
+    if lease_expiry_months is not None:
+        mo = "month" if int(lease_expiry_months) == 1 else "months"
+        timing = f"around {lease_expiry_months} {mo}"
+    else:
+        timing = "the coming months"
+    return (
+        f"A qualified tenant is looking for right-sized office space in the "
+        f"{sub}, with a lease commencement in {timing}."
+    )
+
 
 
 def _inject_hardcoded_sentences(email_body: str, inject_social_proof: bool = True) -> str:
@@ -351,7 +367,9 @@ def _build_tenant_match(
         exp      = tenant_dict.get("lease_expiry_months")
         sf_str   = f"{sf:,} SF" if sf else None
         exp_str  = (f"approximately {exp} {'month' if exp == 1 else 'months'}" if exp is not None else None)
-        sf_part  = f" seeking {sf_str}" if sf_str else ""
+        # Fix 3 / Fix 5: only reference a real SF number; otherwise use the
+        # qualitative "right-sized office space" framing (never a placeholder).
+        sf_part  = f" seeking {sf_str}" if sf_str else " seeking right-sized office space"
         exp_part = f" with a lease expiring {exp_str}" if exp_str else ""
         tenant_hint = (
             f"\nPrimary matched tenant profile (do NOT reveal tenant name): "
@@ -1010,6 +1028,22 @@ def generate_property_outreach(
 
     # Sanitize bracket placeholders (all paths): "Dear [Owner's Name]," etc.
     email_body = _sanitize_bracket_placeholders(email_body, property_dict)
+
+    # Fix 3: property-side tenant-describing copy with NO real SF must state the
+    # requirement qualitatively. Guarantee the exact fallback sentence is present
+    # (the LLM is also instructed to, but this makes it deterministic).
+    if (not is_tenant_side
+            and tenant_dict is not None
+            and outreach_type in ("tenant_match", "for_sale_vacancy")
+            and not tenant_dict.get("estimated_sf_needed")):
+        fallback = _tenant_sf_fallback_sentence(
+            property_dict.get("submarket"), tenant_dict.get("lease_expiry_months")
+        )
+        if "right-sized office space" not in email_body:
+            if "Thank you," in email_body:
+                email_body = email_body.replace("Thank you,", f"{fallback}\n\nThank you,", 1)
+            else:
+                email_body = f"{email_body}\n\n{fallback}"
 
     # Remove duplicate lease-expiry phrase on tenant-side copy.
     if is_tenant_side and tenant_dict:
