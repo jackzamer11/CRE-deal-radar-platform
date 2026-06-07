@@ -112,6 +112,9 @@ class DailyBriefing(BaseModel):
     tenant_match_properties: List[TenantMatchTarget]
     tenant_match_actions: List[TenantMatchAction] = []
     acquisition_targets:  List[AcquisitionTarget] = []
+    # Snoozed variants — surfaced behind the "Snoozed" toggle bubbles, hidden by default.
+    snoozed_tenant_match_actions: List[TenantMatchAction] = []
+    snoozed_acquisition_targets:  List[AcquisitionTarget] = []
     expired_leases: List[ExpiredLease] = []
     # property_ids whose snooze expired on this briefing load — show "Returned from Snooze" badge
     returned_from_snooze_property_ids: List[str] = []

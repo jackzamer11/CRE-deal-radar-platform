@@ -675,6 +675,21 @@ def get_company(company_id: str, db: Session = Depends(get_db)):
     return out
 
 
+@router.delete("/{company_id}", status_code=200)
+def delete_company(company_id: str, db: Session = Depends(get_db)):
+    """Hard-delete a company from the DB. No soft delete.
+
+    Dependent opportunities / activity / outreach logs have their company_id
+    nulled by the ORM relationship default. Returns 404 if the record is absent.
+    """
+    company = db.query(Company).filter(Company.company_id == company_id).first()
+    if not company:
+        raise HTTPException(status_code=404, detail="Company not found")
+    db.delete(company)
+    db.commit()
+    return {"deleted": company_id}
+
+
 class SnoozeRequest(BaseModel):
     snoozed_until: date                  # must be at least tomorrow (validated on frontend)
     snooze_reason: Optional[str] = None  # free text — e.g. "Just signed renewal — revisit next cycle"

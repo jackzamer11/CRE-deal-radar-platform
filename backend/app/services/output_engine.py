@@ -13,6 +13,7 @@ Daily output:
 from datetime import date
 from typing import List, Optional
 
+from sqlalchemy import and_
 from sqlalchemy.orm import Session
 
 from app.models.opportunity import Opportunity
@@ -123,17 +124,32 @@ def _process_company_snooze_returns(db: Session) -> list:
     return company_ids
 
 
-def _compute_tenant_actions(db: Session) -> list:
-    """Compute Section A: property+tenant match pairs for the briefing."""
+def _property_snooze_clause(snoozed: bool):
+    """Filter clause selecting active (default) vs snoozed properties.
+
+    Active  : snoozed_until IS NULL (expired snoozes are auto-cleared to NULL on
+              briefing load, so NULL == active).
+    Snoozed : snoozed_until set and still in the future.
+    """
+    if snoozed:
+        return and_(Property.snoozed_until.isnot(None), Property.snoozed_until > date.today())
+    return (Property.snoozed_until == None)
+
+
+def _compute_tenant_actions(db: Session, snoozed: bool = False) -> list:
+    """Compute Section A: property+tenant match pairs for the briefing.
+
+    snoozed=False → active properties only (default queue).
+    snoozed=True  → only snoozed properties (the "Snoozed" toggle view).
+    """
+    snooze_clause = _property_snooze_clause(snoozed)
     # Properties with sf_avail > 0 and dominant_score_type == tenant_match
-    # Snoozed properties are excluded regardless of urgency.
     props = (
         db.query(Property)
         .filter(
             Property.dominant_score_type == "tenant_match",
             Property.sf_avail > 0,
-            # Active snooze: snoozed_until IS NULL or snoozed_until <= today (already processed)
-            (Property.snoozed_until == None),
+            snooze_clause,
         )
         .all()
     )
@@ -143,7 +159,7 @@ def _compute_tenant_actions(db: Session) -> list:
         .filter(
             Property.listed_for_sale == True,
             Property.sf_avail > 0,
-            (Property.snoozed_until == None),
+            snooze_clause,
         )
         .all()
     )
@@ -243,14 +259,18 @@ def _compute_tenant_actions(db: Session) -> list:
     return actions
 
 
-def _compute_acquisition_targets(db: Session) -> list:
-    """Compute Section B: acquisition target properties. Excludes snoozed properties."""
+def _compute_acquisition_targets(db: Session, snoozed: bool = False) -> list:
+    """Compute Section B: acquisition target properties.
+
+    snoozed=False → active properties only (default).
+    snoozed=True  → only snoozed properties (the "Snoozed" toggle view).
+    """
     props = (
         db.query(Property)
         .filter(
             Property.signal_score >= 40,
             Property.dominant_score_type == "acquisition",
-            (Property.snoozed_until == None),
+            _property_snooze_clause(snoozed),
         )
         .order_by(Property.signal_score.desc())
         .all()
@@ -450,6 +470,9 @@ def generate_daily_briefing(db: Session) -> DailyBriefing:
     tenant_match_actions = _compute_tenant_actions(db)
     acquisition_targets  = _compute_acquisition_targets(db)
     expired_leases       = _compute_expired_leases(db)
+    # Snoozed variants power the "Snoozed" toggle bubbles (hidden by default).
+    snoozed_tenant_match_actions = _compute_tenant_actions(db, snoozed=True)
+    snoozed_acquisition_targets  = _compute_acquisition_targets(db, snoozed=True)
 
     return DailyBriefing(
         briefing_date=date.today(),
@@ -461,6 +484,8 @@ def generate_daily_briefing(db: Session) -> DailyBriefing:
         tenant_match_properties=tenant_match_targets,
         tenant_match_actions=tenant_match_actions,
         acquisition_targets=acquisition_targets,
+        snoozed_tenant_match_actions=snoozed_tenant_match_actions,
+        snoozed_acquisition_targets=snoozed_acquisition_targets,
         expired_leases=expired_leases,
         returned_from_snooze_property_ids=returned_from_snooze_ids,
         signal_refresh_timestamp=str(date.today()),
