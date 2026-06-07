@@ -338,9 +338,11 @@ export default function Properties() {
   const isSnoozedActive = (p: PropertyListOut) =>
     p.snoozed_until != null && p.snoozed_until > new Date().toISOString().slice(0, 10)
 
+  // Default view hides any property whose snooze is still active (future date).
+  // "Snoozed" toggle flips to a dedicated snoozed-only view.
   const displayedProperties = showSnoozedOnly
     ? properties.filter(isSnoozedActive)
-    : properties
+    : properties.filter(p => !isSnoozedActive(p))
 
   const colCount = 19
 
@@ -484,8 +486,10 @@ export default function Properties() {
             <tbody>
               {loading ? (
                 <tr><td colSpan={colCount} className="text-center py-8 text-ink-muted">Loading...</td></tr>
-              ) : properties.length === 0 ? (
-                <tr><td colSpan={colCount} className="text-center py-8 text-ink-muted">No properties found</td></tr>
+              ) : displayedProperties.length === 0 ? (
+                <tr><td colSpan={colCount} className="text-center py-8 text-ink-muted">
+                  {showSnoozedOnly ? 'No snoozed properties' : 'No properties found'}
+                </td></tr>
               ) : displayedProperties.map(p => (
                 <tr key={p.id} onClick={() => handleSelect(p)}>
                   <td className="mono text-xs text-accent-blue">{p.property_id}</td>
