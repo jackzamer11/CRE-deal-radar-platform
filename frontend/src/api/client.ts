@@ -278,6 +278,15 @@ export const updateActivityNote = (
 ): Promise<ActivityLog> =>
   api.patch(`/activity/${entryId}/notes`, { notes }).then(r => r.data)
 
+export const updateActivityStage = (
+  entryId: number,
+  payload: { stage: string; next_touch_date?: string | null },
+): Promise<ActivityLog> =>
+  api.patch(`/activity/${entryId}/stage`, payload).then(r => r.data)
+
+export const getReEngage = (): Promise<ActivityLog[]> =>
+  api.get('/activity/re-engage').then(r => r.data)
+
 export const createActivity = (payload: {
   action_type: string
   action_taken: string

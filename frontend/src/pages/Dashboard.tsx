@@ -3,12 +3,13 @@ import { useNavigate } from 'react-router-dom'
 import {
   Zap, TrendingUp, AlertTriangle,
   RefreshCw, Plus, Database, Upload, Building2, Target, MessageSquarePlus, Clock, X,
+  History, ClipboardList,
 } from 'lucide-react'
-import { getDailyBriefing, runPipeline, getProperty, importLeaseActivity, unsnoozeProperty } from '../api/client'
+import { getDailyBriefing, runPipeline, getProperty, importLeaseActivity, unsnoozeProperty, getReEngage } from '../api/client'
 import type { CoStarImportResult } from '../api/client'
 import type {
   DailyBriefing, TenantMatchAction, AcquisitionTarget,
-  PropertyOut, MatchedTenant,
+  PropertyOut, MatchedTenant, ActivityLog, ActivityStage,
 } from '../types'
 import SnoozeModal from '../components/SnoozeModal'
 import ScoreBadge from '../components/ScoreBadge'
@@ -51,6 +52,24 @@ function StatusBadge({ status }: { status: string }) {
   return (
     <span className={`text-[9px] px-2 py-0.5 rounded border font-bold tracking-wider ${cls}`}>
       {label}
+    </span>
+  )
+}
+
+const STAGE_CHIP: Record<ActivityStage, string> = {
+  'Sent':           'bg-blue-500/15 text-blue-400 border-blue-500/30',
+  'Replied':        'bg-violet-500/15 text-violet-400 border-violet-500/30',
+  'Interested':     'bg-emerald-500/15 text-emerald-400 border-emerald-500/30',
+  'In Play':        'bg-amber-500/15 text-amber-400 border-amber-500/30',
+  'Not Interested': 'bg-red-500/15 text-red-400 border-red-500/30',
+  'Dormant':        'bg-surface-muted text-ink-muted border-surface-border',
+}
+
+function StageChip({ stage }: { stage: ActivityStage }) {
+  const cls = STAGE_CHIP[stage] ?? STAGE_CHIP['Sent']
+  return (
+    <span className={`text-[9px] px-2 py-0.5 rounded border font-bold tracking-wider ${cls}`}>
+      {stage}
     </span>
   )
 }
@@ -233,6 +252,7 @@ function SectionHeader({
 export default function Dashboard() {
   const navigate = useNavigate()
   const [briefing, setBriefing]           = useState<DailyBriefing | null>(null)
+  const [reEngage, setReEngage]           = useState<ActivityLog[]>([])
   const [loading, setLoading]             = useState(true)
   const [error, setError]                 = useState<string | null>(null)
   const [showAddModal, setShowAddModal]   = useState(false)
@@ -342,6 +362,12 @@ export default function Dashboard() {
     }
   }
 
+  const loadReEngage = async () => {
+    try {
+      setReEngage(await getReEngage())
+    } catch { /* ignore — Re-engage Today is non-critical */ }
+  }
+
   const load = async () => {
     setLoading(true)
     setError(null)
@@ -352,12 +378,14 @@ export default function Dashboard() {
     } finally {
       setLoading(false)
     }
+    void loadReEngage()
   }
 
   const silentRefresh = async () => {
     try {
       setBriefing(await getDailyBriefing())
     } catch { /* ignore — stale data is fine */ }
+    void loadReEngage()
   }
 
   const handleRunPipeline = async () => {
@@ -620,6 +648,49 @@ export default function Dashboard() {
                 >
                   <MessageSquarePlus size={11} />
                   Follow Up
+                </button>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {/* Re-engage Today — activity contacts whose next_touch_date is due */}
+      {reEngage.length > 0 && (
+        <section className="mb-10">
+          <SectionHeader
+            icon={History}
+            color="text-amber-400"
+            title="Re-engage Today"
+            count={reEngage.length}
+          />
+          <div className="space-y-3">
+            {reEngage.map(item => (
+              <div
+                key={item.id}
+                className="bg-surface-card border border-amber-500/30 rounded-xl p-4 flex items-start gap-4"
+              >
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap mb-1">
+                    <span className="text-sm font-bold text-ink-primary truncate">
+                      {item.contact_name || item.company_name || 'Contact'}
+                    </span>
+                    <StageChip stage={(item.stage ?? 'Sent') as ActivityStage} />
+                    {item.next_touch_date && (
+                      <span className="text-[10px] text-amber-400">Due {item.next_touch_date}</span>
+                    )}
+                  </div>
+                  <div className="text-[11px] text-ink-secondary truncate">
+                    {item.property_address || item.company_name || item.action_taken}
+                  </div>
+                </div>
+                <button
+                  onClick={() => navigate(`/activity?focus=${item.id}`)}
+                  className="flex-shrink-0 flex items-center gap-1 text-[10px] px-3 py-1.5 rounded-lg
+                             bg-amber-600 hover:bg-amber-700 text-white font-semibold transition-colors"
+                >
+                  <ClipboardList size={11} />
+                  Open in Activity Log
                 </button>
               </div>
             ))}

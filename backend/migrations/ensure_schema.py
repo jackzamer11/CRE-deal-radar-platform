@@ -179,14 +179,49 @@ def ensure_outreach_log(cur: sqlite3.Cursor) -> int:
     return added
 
 
+def _add_activity_column(cur: sqlite3.Cursor, col: str, col_def: str) -> int:
+    """Add an activity_logs column, guarded against duplicate-column errors.
+
+    Belt-and-suspenders: a PRAGMA check skips columns that already exist, and the
+    ALTER is additionally wrapped in try/except so a concurrent/duplicate add
+    (e.g. column created between the check and the ALTER) never aborts startup.
+    """
+    if _has_column(cur, "activity_logs", col):
+        return 0
+    try:
+        cur.execute(f"ALTER TABLE activity_logs ADD COLUMN {col} {col_def}")
+        print(f"  + activity_logs.{col}")
+        return 1
+    except sqlite3.OperationalError as exc:
+        if "duplicate column name" in str(exc).lower():
+            return 0
+        raise
+
+
 def ensure_activity_logs(cur: sqlite3.Cursor) -> int:
-    """Add outreach-specific columns to activity_logs if missing."""
+    """Add outreach + stage-tracking columns to activity_logs if missing."""
     added = 0
     added += _add_column(cur, "activity_logs", "outreach_type",  "TEXT")
     added += _add_column(cur, "activity_logs", "target_type",    "TEXT")
     added += _add_column(cur, "activity_logs", "contact_method", "TEXT")
     added += _add_column(cur, "activity_logs", "subject",        "TEXT")
     added += _add_column(cur, "activity_logs", "notes",          "TEXT")
+
+    # ── Stage pipeline (current state) + revisit reminder ──────────────────────
+    # 'stage' defaults to 'Sent', which backfills every existing row on ADD COLUMN.
+    # 'next_touch_date' is the optional revisit date (Dormant / Not Interested).
+    added += _add_activity_column(cur, "stage", "TEXT DEFAULT 'Sent'")
+    added += _add_activity_column(cur, "next_touch_date", "DATE")
+
+    # Backfill any legacy rows whose stage is still NULL/empty → 'Sent'.
+    try:
+        cur.execute(
+            "UPDATE activity_logs SET stage = 'Sent' "
+            "WHERE stage IS NULL OR stage = ''"
+        )
+    except sqlite3.OperationalError:
+        pass
+
     return added
 
 

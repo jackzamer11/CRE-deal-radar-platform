@@ -4,6 +4,13 @@ export type Confidence = 'HIGH' | 'MEDIUM' | 'LOW'
 export type Stage = 'IDENTIFIED' | 'CONTACTED' | 'ACTIVE' | 'UNDER_LOI' | 'CLOSED' | 'DEAD'
 export type ActionType = 'CALL' | 'EMAIL' | 'MEETING' | 'SIGNAL_UPDATE' | 'RESEARCH' | 'NOTE'
 
+// Activity-log pipeline stage — current state only; can move any direction.
+// (Named ActivityStage to avoid colliding with the opportunity `Stage` above.)
+export type ActivityStage = 'Sent' | 'Replied' | 'Interested' | 'In Play' | 'Not Interested' | 'Dormant'
+export const STAGES: ActivityStage[] = ['Sent', 'Replied', 'Interested', 'In Play', 'Not Interested', 'Dormant']
+// Stages that prompt for a revisit (next_touch_date) when selected.
+export const REVISIT_STAGES: ActivityStage[] = ['Not Interested', 'Dormant']
+
 export interface SignalBreakdown {
   lease_rollover: number
   vacancy_trend: number
@@ -285,9 +292,12 @@ export interface ActivityLog {
   follow_up_date: string | null
   follow_up_action: string | null
   created_by: string
+  stage: ActivityStage
+  next_touch_date: string | null
   property_address: string | null
   company_name: string | null
   opportunity_ref: string | null
+  contact_name: string | null
   outreach_type: string | null
   notes: string | null
 }

@@ -1,5 +1,5 @@
 from datetime import datetime, date
-from sqlalchemy import Column, Integer, String, Float, Text, Date, DateTime, ForeignKey
+from sqlalchemy import Column, Integer, String, Float, Text, Date, DateTime, ForeignKey, text
 from sqlalchemy.orm import relationship
 
 from app.database import Base
@@ -22,6 +22,15 @@ class ActivityLog(Base):
     action_type = Column(String, nullable=False)  # CALL / EMAIL / MEETING / SIGNAL_UPDATE / RESEARCH / NOTE
     action_taken = Column(Text, nullable=False)
     outcome = Column(Text, nullable=True)
+
+    # Pipeline stage — current state only; can move in any direction at any time.
+    # One of: Sent | Replied | Interested | In Play | Not Interested | Dormant.
+    # Defaults to Sent for every new entry (and every migrated legacy entry).
+    stage = Column(String, nullable=False, default="Sent", server_default=text("'Sent'"))
+
+    # Optional revisit / follow-up reminder. Required by the UI when the stage is
+    # moved to Dormant or Not Interested; optional for Interested / In Play.
+    next_touch_date = Column(Date, nullable=True)
 
     # Outreach-specific tracking (nullable — only set for outreach_sent events)
     outreach_type  = Column(String, nullable=True)   # tenant_match | for_sale_vacancy | acquisition
