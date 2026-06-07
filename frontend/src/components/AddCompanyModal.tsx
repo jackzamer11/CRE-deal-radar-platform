@@ -102,9 +102,8 @@ export default function AddCompanyModal({ onClose, onSaved }: Props) {
   const growthPct    = prev > 0 ? ((headcount - prev) / prev * 100).toFixed(0) : null
   const sfPerHead    = form.current_sf && headcount > 0
     ? (parseInt(form.current_sf) / headcount).toFixed(0) : null
-  const sfNeeded     = headcount > 0 && growthPct
-    ? Math.round(headcount * (1 + parseFloat(growthPct) / 100 * 1.25) * 175)
-    : headcount > 0 ? headcount * 175 : 0
+  // SF needed = the company's real occupied SF (sf_occupied). No estimate.
+  const sfNeeded     = form.current_sf ? parseInt(form.current_sf) : null
 
   const handleSubmit = async () => {
     setSaving(true)
@@ -240,8 +239,8 @@ export default function AddCompanyModal({ onClose, onSaved }: Props) {
                     </span>
                   </div>
                   <div className="flex justify-between text-xs">
-                    <span className="text-ink-muted">Estimated SF Needed (18mo)</span>
-                    <span className="text-ink-primary mono">{sfNeeded.toLocaleString()} SF</span>
+                    <span className="text-ink-muted">SF Needed</span>
+                    <span className="text-ink-primary mono">{sfNeeded ? `${sfNeeded.toLocaleString()} SF` : 'Unknown'}</span>
                   </div>
                   {sfPerHead && (
                     <div className="flex justify-between text-xs">

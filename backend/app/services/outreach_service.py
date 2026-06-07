@@ -7,14 +7,12 @@ it does not invoke GPT-4o directly.
 
 Requires OPENAI_API_KEY in the environment.
 """
-import math
 import os
 from typing import Optional
 
 from app.services.rep_classification import classify_rep, MAJOR_BROKER_FIRMS
 from app.config import NOVA_OFFICE_BENCHMARKS, SUBMARKET_BENCHMARKS
 
-SF_PER_PERSON        = 175
 NOVA_AVG_RENT        = NOVA_OFFICE_BENCHMARKS["avg_market_rent_psf"]
 NOVA_AVG_VACANCY     = NOVA_OFFICE_BENCHMARKS["avg_vacancy_pct"]
 NOVA_AVG_FREE_RENT   = NOVA_OFFICE_BENCHMARKS["avg_free_rent_months"]
@@ -39,36 +37,14 @@ _SIGNATURE_INSTRUCTION = (
 
 def project_sf(company: dict) -> Optional[int]:
     """
-    Project SF needed at the 12-18 month horizon.
+    SF needed = the company's real occupied square footage (sf_occupied).
 
-    lease_trajectory overrides:
-      CONTRACTING / FLAT → return current_sf unchanged
-      GROWING            → force growth logic
-      AUTO / null        → tiered SF/head logic
+    If the company reports a real, non-zero occupied SF figure, that IS the
+    SF-needed figure. When no real value exists, SF needed is None — we never
+    estimate it from headcount, growth rate, or a SF/person assumption.
     """
-    current_sf  = company.get("current_sf")
-    headcount   = company.get("current_headcount")
-    growth_pct  = company.get("headcount_growth_pct")
-    trajectory  = (company.get("lease_trajectory") or "AUTO").upper()
-    growth_rate = (growth_pct / 100.0) if growth_pct is not None else 0.15
-
-    if trajectory in ("CONTRACTING", "FLAT"):
-        return current_sf
-
-    if current_sf and headcount:
-        sf_per_head         = current_sf / headcount
-        projected_headcount = headcount * (1 + growth_rate)
-
-        if trajectory == "GROWING" or sf_per_head < 100:
-            return math.ceil(current_sf * (1 + growth_rate) / 100) * 100
-        elif sf_per_head <= 200:
-            return math.ceil(projected_headcount * sf_per_head / 100) * 100
-        else:
-            return math.ceil(current_sf * 1.05 / 100) * 100
-
-    if headcount:
-        return math.ceil(headcount * (1 + growth_rate) * SF_PER_PERSON / 100) * 100
-    return None
+    current_sf = company.get("current_sf")
+    return current_sf if current_sf else None
 
 
 def _industry_pain(industry: str) -> str:
@@ -264,13 +240,8 @@ def generate_outreach(company: dict) -> dict:
     if lease_date:
         lease_str += f" (break date {lease_date})"
 
-    sf_line = f"{current_sf:,} SF currently" if current_sf else "SF unknown"
-    if projected_sf and current_sf:
-        delta    = projected_sf - current_sf
-        sign     = "+" if delta >= 0 else ""
-        sf_line += f" → projected {projected_sf:,} SF ({sign}{delta:,} SF)"
-    elif projected_sf:
-        sf_line += f"; projected need {projected_sf:,} SF"
+    # SF needed = real occupied SF only. When unknown, never substitute an estimate.
+    sf_line = f"{current_sf:,} SF occupied" if current_sf else "SF unknown — do not state or estimate a square footage"
 
     rent_line = "in-place rent unknown"
     if current_rent and market_rent:

@@ -68,6 +68,9 @@ class Company(Base):
     future_move_flag = Column(Boolean, nullable=True)
     future_move_type = Column(String, nullable=True)
     linked_property_id = Column(Integer, nullable=True)
+    # Medical/non-medical classification — drives a soft match-score penalty when
+    # a non-medical tenant is matched to a medical property (or vice versa).
+    is_medical = Column(Boolean, nullable=False, default=False, server_default="0")
 
     # Lease trajectory — manually set by broker; drives SF projection in outreach agent
     # Values: AUTO | CONTRACTING | FLAT | GROWING

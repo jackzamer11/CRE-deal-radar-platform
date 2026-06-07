@@ -33,7 +33,8 @@ export interface MatchedTenant {
   name: string
   industry: string
   headcount: number | null
-  sf_needed: number
+  sf_needed: number | null        // real occupied SF; null when unknown
+  sf_display: string              // "11,000 SF" when known, else "Unknown"
   submarket: string | null
   match_score: number
   match_reasons: string[]
@@ -93,6 +94,7 @@ export interface TenantOutreachDraft {
 export interface PropertyOut extends PropertyListOut {
   year_built: number
   last_renovation_year: number | null
+  is_medical: boolean
   owner_type: string
   owner_phone: string | null
   owner_email: string | null
@@ -225,6 +227,7 @@ export interface MatchedProperty {
 
 export interface CompanyOut extends CompanyListOut {
   description: string | null
+  is_medical: boolean
   open_positions: number
   hiring_velocity: number | null
   current_sf: number | null
@@ -404,6 +407,8 @@ export interface DailyBriefing {
   tenant_match_properties: TenantMatchTarget[]
   tenant_match_actions: TenantMatchAction[]
   acquisition_targets: AcquisitionTarget[]
+  snoozed_tenant_match_actions?: TenantMatchAction[]
+  snoozed_acquisition_targets?: AcquisitionTarget[]
   expired_leases: ExpiredLease[]
   returned_from_snooze_property_ids: string[]
   signal_refresh_timestamp: string | null

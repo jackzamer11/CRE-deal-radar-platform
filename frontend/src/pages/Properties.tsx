@@ -1,9 +1,9 @@
 import { useEffect, useState, useRef } from 'react'
 import { useSearchParams, useNavigate } from 'react-router-dom'
-import { Building2, Filter, RefreshCw, X, Plus, Upload, Pencil, Check, MessageSquarePlus, Clock } from 'lucide-react'
+import { Building2, Filter, RefreshCw, X, Plus, Upload, Pencil, Check, MessageSquarePlus, Clock, Trash2 } from 'lucide-react'
 import {
   getProperties, getProperty, updatePropertyInPlaceRent, getPropertyOutreachHistory,
-  unsnoozeProperty,
+  unsnoozeProperty, deleteProperty,
 } from '../api/client'
 import type { PropertyListOut, PropertyOut, OutreachLog } from '../types'
 import { PriorityBadge } from '../components/PriorityBadge'
@@ -219,6 +219,17 @@ export default function Properties() {
       const next = new URLSearchParams(searchParams)
       next.delete('selected')
       setSearchParams(next, { replace: true })
+    }
+  }
+
+  const handleDeleteProperty = async (prop: PropertyOut) => {
+    if (!window.confirm('Are you sure? This cannot be undone.')) return
+    try {
+      await deleteProperty(prop.property_id)
+      setProperties(ps => ps.filter(p => p.property_id !== prop.property_id))
+      closePanel()
+    } catch {
+      window.alert('Could not delete this property. Please try again.')
     }
   }
 
@@ -697,6 +708,13 @@ export default function Properties() {
                 >
                   <Clock size={15} />
                 </button>
+                <button
+                  onClick={() => handleDeleteProperty(selected)}
+                  title="Delete property"
+                  className="text-ink-muted hover:text-red-400 p-1 rounded transition-colors"
+                >
+                  <Trash2 size={15} />
+                </button>
                 <button onClick={closePanel} className="text-ink-muted hover:text-ink-primary p-1">
                   <X size={18} />
                 </button>
@@ -769,7 +787,7 @@ export default function Properties() {
                       ? selected.matched_tenants?.[0]
                       : undefined
                     const tCtx = top
-                      ? `Industry: ${top.industry}; Headcount: ${top.headcount ?? 'N/A'}; SF Needed: ${top.sf_needed.toLocaleString()}; Submarket: ${top.submarket ?? 'N/A'}`
+                      ? `Industry: ${top.industry}; Headcount: ${top.headcount ?? 'N/A'}; SF Needed: ${top.sf_display}; Submarket: ${top.submarket ?? 'N/A'}`
                       : undefined
                     setOutreachModal({
                       prop: selected,
@@ -866,7 +884,7 @@ export default function Properties() {
                               targetType = 'broker'
                               label = 'Draft Broker Outreach (Tenant Match)'
                             }
-                            const tCtx = `Industry: ${t.industry}; Headcount: ${t.headcount ?? 'N/A'}; SF Needed: ${t.sf_needed.toLocaleString()}; Submarket: ${t.submarket ?? 'N/A'}`
+                            const tCtx = `Industry: ${t.industry}; Headcount: ${t.headcount ?? 'N/A'}; SF Needed: ${t.sf_display}; Submarket: ${t.submarket ?? 'N/A'}`
                             return (
                               <div
                                 key={t.company_id}
@@ -883,8 +901,8 @@ export default function Properties() {
                                     <div className="text-[10px] text-ink-muted">
                                       {t.industry}
                                       {isPhase1
-                                        ? ` · ${t.sf_needed.toLocaleString()} SF`
-                                        : ` · ${t.headcount ?? '—'} HC · ${t.sf_needed.toLocaleString()} SF needed`}
+                                        ? ` · SF: ${t.sf_display}`
+                                        : ` · ${t.headcount ?? '—'} HC · SF: ${t.sf_display}`}
                                     </div>
                                     {/* Match reasons only shown in Phase 2 */}
                                     {!isPhase1 && t.match_reasons.length > 0 && (

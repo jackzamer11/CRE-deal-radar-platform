@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   Zap, TrendingUp, AlertTriangle,
-  RefreshCw, Plus, Database, Upload, Building2, Target, MessageSquarePlus, Clock, X,
+  RefreshCw, Plus, Database, Upload, Building2, Target, MessageSquarePlus, Clock, X, RotateCcw,
   History, ClipboardList,
 } from 'lucide-react'
 import { getDailyBriefing, runPipeline, getProperty, importLeaseActivity, unsnoozeProperty, getReEngage } from '../api/client'
@@ -75,7 +75,7 @@ function StageChip({ stage }: { stage: ActivityStage }) {
 }
 
 function TenantActionRow({
-  action, onDraft, onNavigate, onSnooze, isContacted, returnedFromSnooze,
+  action, onDraft, onNavigate, onSnooze, isContacted, returnedFromSnooze, onUnsnooze,
 }: {
   action: TenantMatchAction
   onDraft: (a: TenantMatchAction) => void
@@ -83,6 +83,7 @@ function TenantActionRow({
   onSnooze: (a: TenantMatchAction) => void
   isContacted?: boolean
   returnedFromSnooze?: boolean
+  onUnsnooze?: (a: TenantMatchAction) => void
 }) {
   const typeLabel = action.outreach_type === 'for_sale_vacancy'
     ? 'For Sale + Vacancy'
@@ -138,29 +139,43 @@ function TenantActionRow({
           <MessageSquarePlus size={11} />
           Draft Outreach
         </button>
-        <button
-          onClick={(e) => { e.stopPropagation(); onSnooze(action) }}
-          className="flex items-center gap-1 text-[10px] px-3 py-1.5 rounded-lg bg-surface-muted hover:bg-amber-500/10
-                     text-ink-muted hover:text-amber-400 border border-surface-border hover:border-amber-500/40
-                     font-semibold transition-colors"
-          title="Snooze — remove from queue temporarily"
-        >
-          <Clock size={11} />
-          Snooze
-        </button>
+        {onUnsnooze ? (
+          <button
+            onClick={(e) => { e.stopPropagation(); onUnsnooze(action) }}
+            className="flex items-center gap-1 text-[10px] px-3 py-1.5 rounded-lg bg-surface-muted hover:bg-emerald-500/10
+                       text-ink-muted hover:text-emerald-400 border border-surface-border hover:border-emerald-500/40
+                       font-semibold transition-colors"
+            title="Unsnooze — return to the active queue"
+          >
+            <RotateCcw size={11} />
+            Unsnooze
+          </button>
+        ) : (
+          <button
+            onClick={(e) => { e.stopPropagation(); onSnooze(action) }}
+            className="flex items-center gap-1 text-[10px] px-3 py-1.5 rounded-lg bg-surface-muted hover:bg-amber-500/10
+                       text-ink-muted hover:text-amber-400 border border-surface-border hover:border-amber-500/40
+                       font-semibold transition-colors"
+            title="Snooze — remove from queue temporarily"
+          >
+            <Clock size={11} />
+            Snooze
+          </button>
+        )}
       </div>
     </div>
   )
 }
 
 function AcquisitionRow({
-  target, onDraft, onNavigate, onSnooze, returnedFromSnooze,
+  target, onDraft, onNavigate, onSnooze, returnedFromSnooze, onUnsnooze,
 }: {
   target: AcquisitionTarget
   onDraft: (t: AcquisitionTarget) => void
   onNavigate: (t: AcquisitionTarget) => void
   onSnooze: (t: AcquisitionTarget) => void
   returnedFromSnooze?: boolean
+  onUnsnooze?: (t: AcquisitionTarget) => void
 }) {
   const targetLabel = target.target_type === 'sales_broker' ? 'Sales Broker' : 'Owner'
   const fmtPrice = (n: number | null) => n != null
@@ -222,16 +237,29 @@ function AcquisitionRow({
           <MessageSquarePlus size={11} />
           Draft Outreach
         </button>
-        <button
-          onClick={(e) => { e.stopPropagation(); onSnooze(target) }}
-          className="flex items-center gap-1 text-[10px] px-3 py-1.5 rounded-lg bg-surface-muted hover:bg-amber-500/10
-                     text-ink-muted hover:text-amber-400 border border-surface-border hover:border-amber-500/40
-                     font-semibold transition-colors"
-          title="Snooze — remove from queue temporarily"
-        >
-          <Clock size={11} />
-          Snooze
-        </button>
+        {onUnsnooze ? (
+          <button
+            onClick={(e) => { e.stopPropagation(); onUnsnooze(target) }}
+            className="flex items-center gap-1 text-[10px] px-3 py-1.5 rounded-lg bg-surface-muted hover:bg-emerald-500/10
+                       text-ink-muted hover:text-emerald-400 border border-surface-border hover:border-emerald-500/40
+                       font-semibold transition-colors"
+            title="Unsnooze — return to the active queue"
+          >
+            <RotateCcw size={11} />
+            Unsnooze
+          </button>
+        ) : (
+          <button
+            onClick={(e) => { e.stopPropagation(); onSnooze(target) }}
+            className="flex items-center gap-1 text-[10px] px-3 py-1.5 rounded-lg bg-surface-muted hover:bg-amber-500/10
+                       text-ink-muted hover:text-amber-400 border border-surface-border hover:border-amber-500/40
+                       font-semibold transition-colors"
+            title="Snooze — remove from queue temporarily"
+          >
+            <Clock size={11} />
+            Snooze
+          </button>
+        )}
       </div>
     </div>
   )
@@ -298,6 +326,9 @@ export default function Dashboard() {
 
   // Snooze state
   const [snoozeTarget, setSnoozeTarget] = useState<{ propertyId: string; address: string } | null>(null)
+  // "Snoozed" toggle bubbles — default hidden (Fix 1 / Fix 2).
+  const [showSnoozedTenants, setShowSnoozedTenants] = useState(false)
+  const [showSnoozedAcq, setShowSnoozedAcq] = useState(false)
   const [undoToast, setUndoToast] = useState<{
     propertyId: string; address: string; timer: ReturnType<typeof setTimeout>
   } | null>(null)
@@ -319,6 +350,13 @@ export default function Dashboard() {
     setUndoToast(null)
     try {
       await unsnoozeProperty(pid)
+      void silentRefresh()
+    } catch { /* ignore */ }
+  }
+
+  const handleUnsnoozeProperty = async (propertyId: string) => {
+    try {
+      await unsnoozeProperty(propertyId)
       void silentRefresh()
     } catch { /* ignore */ }
   }
@@ -427,6 +465,19 @@ export default function Dashboard() {
   const acqTargets        = briefing.acquisition_targets ?? []
   const expiredLeases     = briefing.expired_leases ?? []
   const returnedSnoozeIds = new Set(briefing.returned_from_snooze_property_ids ?? [])
+
+  // Section A is split into Not Contacted / Contacted columns. A row counts as
+  // contacted from the local optimistic flag OR the server contact_status.
+  const tenantActionKey = (a: TenantMatchAction) =>
+    `${a.property_id}:${a.tenant_company_id}:${a.outreach_type}`
+  const isActionContacted = (a: TenantMatchAction) =>
+    contactedPairs[tenantActionKey(a)] === true || a.contact_status === 'CONTACTED'
+  const notContactedActions = tenantActions.filter(a => !isActionContacted(a))
+  const contactedActions    = tenantActions.filter(isActionContacted)
+
+  // Snoozed cards — hidden by default, revealed by the per-section "Snoozed" toggle.
+  const snoozedTenantActions = briefing.snoozed_tenant_match_actions ?? []
+  const snoozedAcqTargets    = briefing.snoozed_acquisition_targets ?? []
 
   const noContent = tenantActions.length === 0 && acqTargets.length === 0
 
@@ -708,40 +759,147 @@ export default function Dashboard() {
         <div className="space-y-10">
           {/* Section A — Tenant Match Actions (sorted by lease expiry ASC) */}
           <section>
-            <SectionHeader
-              icon={Building2}
-              color="text-violet-400"
-              title="Section A — Tenant Match Actions"
-              count={tenantActions.length}
-            />
-            {tenantActions.length === 0 ? (
+            <div className="flex items-center justify-between gap-3">
+              <SectionHeader
+                icon={Building2}
+                color="text-violet-400"
+                title="Section A — Tenant Match Actions"
+                count={tenantActions.length}
+              />
+              <button
+                onClick={() => setShowSnoozedTenants(v => !v)}
+                className={`flex items-center gap-1.5 text-[10px] px-3 py-1.5 rounded-full border font-semibold transition-colors
+                  ${showSnoozedTenants
+                    ? 'bg-amber-500/15 text-amber-400 border-amber-500/40'
+                    : 'bg-surface-muted text-ink-muted border-surface-border hover:text-amber-400 hover:border-amber-500/40'}`}
+                title="Show / hide snoozed tenant matches"
+                aria-pressed={showSnoozedTenants}
+              >
+                <Clock size={11} />
+                Snoozed
+                <span className="px-1.5 py-0.5 rounded-full bg-black/20 text-[9px]">{snoozedTenantActions.length}</span>
+              </button>
+            </div>
+            {showSnoozedTenants ? (
+              snoozedTenantActions.length === 0 ? (
+                <div className="text-xs text-ink-muted px-2 py-4">No snoozed tenant matches.</div>
+              ) : (
+                <div className="space-y-3 max-h-[70vh] overflow-y-auto pr-1">
+                  {snoozedTenantActions.map(a => (
+                    <TenantActionRow
+                      key={`snz-${a.property_id}-${a.tenant_company_id}-${a.outreach_type}`}
+                      action={a}
+                      onDraft={handleTenantDraft}
+                      onNavigate={navTenantAction}
+                      onSnooze={() => {}}
+                      onUnsnooze={a => handleUnsnoozeProperty(a.property_id)}
+                      isContacted={isActionContacted(a)}
+                    />
+                  ))}
+                </div>
+              )
+            ) : tenantActions.length === 0 ? (
               <div className="text-xs text-ink-muted px-2">No tenant-match actions queued.</div>
             ) : (
-              <div className="space-y-3">
-                {tenantActions.map(a => (
-                  <TenantActionRow
-                    key={`${a.property_id}-${a.tenant_company_id}-${a.outreach_type}`}
-                    action={a}
-                    onDraft={handleTenantDraft}
-                    onNavigate={navTenantAction}
-                    onSnooze={a => setSnoozeTarget({ propertyId: a.property_id, address: a.address })}
-                    isContacted={contactedPairs[`${a.property_id}:${a.tenant_company_id}:${a.outreach_type}`] === true}
-                    returnedFromSnooze={returnedSnoozeIds.has(a.property_id)}
-                  />
-                ))}
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                {/* Left column — Not Contacted */}
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2 mb-2 px-1">
+                    <span className="text-xs font-bold uppercase tracking-wider text-ink-secondary">Not Contacted</span>
+                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-surface-muted text-ink-muted border border-surface-border font-semibold">
+                      {notContactedActions.length}
+                    </span>
+                  </div>
+                  {notContactedActions.length === 0 ? (
+                    <div className="text-xs text-ink-muted px-2 py-4">Nothing left to contact.</div>
+                  ) : (
+                    <div className="space-y-3 max-h-[70vh] overflow-y-auto pr-1">
+                      {notContactedActions.map(a => (
+                        <TenantActionRow
+                          key={`${a.property_id}-${a.tenant_company_id}-${a.outreach_type}`}
+                          action={a}
+                          onDraft={handleTenantDraft}
+                          onNavigate={navTenantAction}
+                          onSnooze={a => setSnoozeTarget({ propertyId: a.property_id, address: a.address })}
+                          isContacted={false}
+                          returnedFromSnooze={returnedSnoozeIds.has(a.property_id)}
+                        />
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* Right column — Contacted */}
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2 mb-2 px-1">
+                    <span className="text-xs font-bold uppercase tracking-wider text-emerald-400">Contacted</span>
+                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 font-semibold">
+                      {contactedActions.length}
+                    </span>
+                  </div>
+                  {contactedActions.length === 0 ? (
+                    <div className="text-xs text-ink-muted px-2 py-4">No tenants contacted yet.</div>
+                  ) : (
+                    <div className="space-y-3 max-h-[70vh] overflow-y-auto pr-1">
+                      {contactedActions.map(a => (
+                        <TenantActionRow
+                          key={`${a.property_id}-${a.tenant_company_id}-${a.outreach_type}`}
+                          action={a}
+                          onDraft={handleTenantDraft}
+                          onNavigate={navTenantAction}
+                          onSnooze={a => setSnoozeTarget({ propertyId: a.property_id, address: a.address })}
+                          isContacted={true}
+                          returnedFromSnooze={returnedSnoozeIds.has(a.property_id)}
+                        />
+                      ))}
+                    </div>
+                  )}
+                </div>
               </div>
             )}
           </section>
 
           {/* Section B — Acquisition Targets (signal_score >= 40, sorted DESC) */}
           <section>
-            <SectionHeader
-              icon={Target}
-              color="text-emerald-400"
-              title="Section B — Acquisition Targets"
-              count={acqTargets.length}
-            />
-            {acqTargets.length === 0 ? (
+            <div className="flex items-center justify-between gap-3">
+              <SectionHeader
+                icon={Target}
+                color="text-emerald-400"
+                title="Section B — Acquisition Targets"
+                count={acqTargets.length}
+              />
+              <button
+                onClick={() => setShowSnoozedAcq(v => !v)}
+                className={`flex items-center gap-1.5 text-[10px] px-3 py-1.5 rounded-full border font-semibold transition-colors
+                  ${showSnoozedAcq
+                    ? 'bg-amber-500/15 text-amber-400 border-amber-500/40'
+                    : 'bg-surface-muted text-ink-muted border-surface-border hover:text-amber-400 hover:border-amber-500/40'}`}
+                title="Show / hide snoozed acquisition targets"
+                aria-pressed={showSnoozedAcq}
+              >
+                <Clock size={11} />
+                Snoozed
+                <span className="px-1.5 py-0.5 rounded-full bg-black/20 text-[9px]">{snoozedAcqTargets.length}</span>
+              </button>
+            </div>
+            {showSnoozedAcq ? (
+              snoozedAcqTargets.length === 0 ? (
+                <div className="text-xs text-ink-muted px-2 py-4">No snoozed acquisition targets.</div>
+              ) : (
+                <div className="space-y-3 max-h-[70vh] overflow-y-auto pr-1">
+                  {snoozedAcqTargets.map(t => (
+                    <AcquisitionRow
+                      key={`snz-${t.property_id}`}
+                      target={t}
+                      onDraft={handleAcqDraft}
+                      onNavigate={navAcquisition}
+                      onSnooze={() => {}}
+                      onUnsnooze={t => handleUnsnoozeProperty(t.property_id)}
+                    />
+                  ))}
+                </div>
+              )
+            ) : acqTargets.length === 0 ? (
               <div className="text-xs text-ink-muted px-2">No acquisition targets meet the threshold.</div>
             ) : (
               <div className="space-y-3">

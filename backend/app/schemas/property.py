@@ -93,7 +93,8 @@ class MatchedTenant(BaseModel):
     name: str
     industry: str
     headcount: Optional[int]
-    sf_needed: int
+    sf_needed: Optional[int]          # real occupied SF; None when unknown
+    sf_display: str                   # "11,000 SF" when known, else "Unknown"
     submarket: Optional[str]
     match_score: float
     match_reasons: list[str]
@@ -131,6 +132,7 @@ class PropertyOut(PropertyBase):
     created_at: datetime
     updated_at: datetime
     matched_tenants: list[MatchedTenant] = []
+    is_medical: bool = False
 
     @model_validator(mode='before')
     @classmethod

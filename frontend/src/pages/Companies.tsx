@@ -2,9 +2,9 @@ import { useEffect, useState } from 'react'
 import { useSearchParams, useNavigate } from 'react-router-dom'
 import {
   Users, Filter, X, TrendingUp, Clock, MapPin, Plus, RefreshCw,
-  Upload, Pencil, Check, AlertTriangle, Zap, Send, Building2,
+  Upload, Pencil, Check, AlertTriangle, Zap, Send, Building2, Trash2,
 } from 'lucide-react'
-import { getCompanies, getCompany, updateCompanyLease, updateCompanyTrajectory, unsnoozeCompany } from '../api/client'
+import { getCompanies, getCompany, updateCompanyLease, updateCompanyTrajectory, unsnoozeCompany, deleteCompany } from '../api/client'
 import type { CompanyListOut, CompanyOut, RepClass } from '../types'
 import { PriorityBadge } from '../components/PriorityBadge'
 import ScoreBadge from '../components/ScoreBadge'
@@ -263,6 +263,17 @@ export default function Companies() {
       const next = new URLSearchParams(searchParams)
       next.delete('selected')
       setSearchParams(next, { replace: true })
+    }
+  }
+
+  const handleDeleteCompany = async (companyId: string) => {
+    if (!window.confirm('Are you sure? This cannot be undone.')) return
+    try {
+      await deleteCompany(companyId)
+      setCompanies(cs => cs.filter(c => c.company_id !== companyId))
+      closePanel()
+    } catch {
+      window.alert('Could not delete this company. Please try again.')
     }
   }
 
@@ -558,6 +569,13 @@ export default function Companies() {
                   className="text-ink-muted hover:text-amber-400 p-1 rounded-lg hover:bg-surface-muted"
                 >
                   <Clock size={16} />
+                </button>
+                <button
+                  onClick={() => handleDeleteCompany(selected.company_id)}
+                  title="Delete company"
+                  className="text-ink-muted hover:text-red-400 p-1 rounded-lg hover:bg-surface-muted"
+                >
+                  <Trash2 size={16} />
                 </button>
                 <button onClick={closePanel} className="text-ink-muted hover:text-ink-primary p-1">
                   <X size={18} />

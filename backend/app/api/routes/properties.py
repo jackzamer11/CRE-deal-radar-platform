@@ -18,6 +18,7 @@ from app.schemas.property import PropertyOut, PropertyListOut, PropertyCreate, S
 from app.schemas.outreach import OutreachLogCreate, OutreachLogOut, OutreachDraft, CallScript
 from app.services import signal_engine as se
 from app.services.scoring_model import score_property
+from app.services.match_scoring import medical_mismatch_penalty
 from app.services.property_outreach_service import generate_property_outreach
 from app.config import settings
 
@@ -386,7 +387,7 @@ class TenantOutreachResult(BaseModel):
     company_id:         str
     company_name:       str
     contact_name:       Optional[str] = None
-    sf_needed:          int
+    sf_needed:          Optional[int] = None
     lease_expiry_months: Optional[int] = None
     email_draft:        str
     call_script:        str
@@ -526,6 +527,11 @@ def _adjacent_submarkets(submarket: Optional[str]) -> set:
     return adjacency.get(submarket, set())
 
 
+def _sf_needed_display(sf_needed: Optional[int]) -> str:
+    """Card label for SF needed: the real number when known, else 'Unknown'."""
+    return f"{sf_needed:,} SF" if sf_needed else "Unknown"
+
+
 def _compute_matched_tenants(prop: Property, db: Session) -> list:
     from app.models.company import Company
     from app.schemas.property import MatchedTenant
@@ -534,10 +540,9 @@ def _compute_matched_tenants(prop: Property, db: Session) -> list:
     if avail_sf <= 0:
         return []
 
-    candidates = db.query(Company).filter(
-        Company.estimated_sf_needed.isnot(None),
-        Company.estimated_sf_needed > 0,
-    ).all()
+    # SF needed (= real occupied SF) may be unknown; such tenants can still match
+    # on submarket / expansion / lease timing and are shown with "SF: Unknown".
+    candidates = db.query(Company).all()
 
     scored = []
     for co in candidates:
@@ -565,6 +570,11 @@ def _compute_matched_tenants(prop: Property, db: Session) -> list:
             score += 10.0
             reasons.append(f"Lease expiry in {co.lease_expiry_months}mo")
         if score > 0:
+            # Soft medical/non-medical mismatch penalty — match still appears.
+            penalty = medical_mismatch_penalty(prop, co)
+            if penalty:
+                score += penalty
+                reasons.append("Medical/non-medical mismatch (−20)")
             scored.append((score, co, reasons))
 
     scored.sort(key=lambda x: x[0], reverse=True)
@@ -574,7 +584,8 @@ def _compute_matched_tenants(prop: Property, db: Session) -> list:
             name=co.name,
             industry=co.industry,
             headcount=co.current_headcount,
-            sf_needed=co.estimated_sf_needed or 0,
+            sf_needed=co.estimated_sf_needed if co.estimated_sf_needed else None,
+            sf_display=_sf_needed_display(co.estimated_sf_needed),
             submarket=co.current_submarket,
             match_score=round(score, 1),
             match_reasons=reasons,
@@ -1316,6 +1327,21 @@ def update_property(property_id: str, payload: PropertyUpdate, db: Session = Dep
     return out
 
 
+@router.delete("/{property_id}", status_code=200)
+def delete_property(property_id: str, db: Session = Depends(get_db)):
+    """Hard-delete a property (and its cascade-owned opportunities) from the DB.
+
+    No soft delete. Dependent activity/outreach logs have their property_id
+    nulled by the ORM relationship default. Returns 404 if the record is absent.
+    """
+    prop = db.query(Property).filter(Property.property_id == property_id).first()
+    if not prop:
+        raise HTTPException(status_code=404, detail="Property not found")
+    db.delete(prop)
+    db.commit()
+    return {"deleted": property_id}
+
+
 @router.post("/{property_id}/snooze", response_model=PropertyOut)
 def snooze_property(property_id: str, payload: SnoozeRequest, db: Session = Depends(get_db)):
     """Snooze a property — hide it from Daily Briefing and Section A until snoozed_until date."""
@@ -1409,7 +1435,7 @@ def get_tenant_outreach(property_id: str, db: Session = Depends(get_db)):
         tenant_dict = {
             "name":                 company.name,
             "industry":             company.industry or "professional services",
-            "estimated_sf_needed":  company.estimated_sf_needed or mt.sf_needed,
+            "estimated_sf_needed":  company.estimated_sf_needed if company.estimated_sf_needed else None,
             "lease_expiry_months":  company.lease_expiry_months,
             "current_submarket":    company.current_submarket,
             "primary_contact_name": company.primary_contact_name,
@@ -1445,7 +1471,7 @@ def get_tenant_outreach(property_id: str, db: Session = Depends(get_db)):
                 company_id=company.company_id,
                 company_name=company.name,
                 contact_name=company.primary_contact_name,
-                sf_needed=company.estimated_sf_needed or mt.sf_needed,
+                sf_needed=company.estimated_sf_needed if company.estimated_sf_needed else None,
                 lease_expiry_months=company.lease_expiry_months,
                 email_draft=email_body,
                 call_script=call_script,

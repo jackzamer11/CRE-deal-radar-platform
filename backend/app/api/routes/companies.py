@@ -18,6 +18,7 @@ from app.schemas.property import MatchedProperty
 from app.schemas.outreach import OutreachDraft, OutreachLogCreate, OutreachLogOut, CallScript
 from app.services import signal_engine as se
 from app.services.scoring_model import score_property
+from app.services.match_scoring import medical_mismatch_penalty
 from app.services.rep_classification import classify_rep
 
 router = APIRouter(prefix="/companies", tags=["companies"])
@@ -75,6 +76,10 @@ COSTAR_TENANT_COLS = [
     "Best Tenant Contact", "Best Tenant Phone", "Tenant Representative",
     "Next Break Date", "Rent/SF/year", "Future Move", "Future Move Type",
 ]
+
+# Minimum occupied square footage for a tenant location to be imported.
+# Rows with "SF Occupied" below this threshold are dropped (filtered_size).
+MIN_SF_OCCUPIED = 1500
 
 
 # ── CoStar tenant import helpers ──────────────────────────────────────────────
@@ -309,10 +314,8 @@ def create_company(payload: CompanyManualCreate, db: Session = Depends(get_db)):
     if payload.current_sf and payload.current_headcount > 0:
         sf_per_head = round(payload.current_sf / payload.current_headcount, 1)
 
-    estimated_sf_needed = None
-    if payload.current_headcount:
-        growth_factor = 1 + ((growth_pct or 0) / 100.0) * 1.25
-        estimated_sf_needed = int(payload.current_headcount * growth_factor * 175)
+    # SF needed = the company's real occupied SF (sf_occupied). No estimate.
+    estimated_sf_needed = payload.current_sf if payload.current_sf else None
 
     lease_expiry_date_val = None
     if payload.lease_expiry_months and payload.lease_expiry_months > 0:
@@ -407,7 +410,7 @@ async def costar_tenant_import(
     Filter pipeline:
       1. State != VA             → filtered_state
       2. Submarket unmapped      → filtered_submarket  (tracks unmapped_submarkets)
-      3. SF Occupied < 2,500     → filtered_size
+      3. SF Occupied < 1,500     → filtered_size
 
     Dedupe key: (Tenant Name, Address) — case-insensitive, whitespace-trimmed.
     Auto-links to an existing Property when Address matches exactly.
@@ -464,9 +467,9 @@ async def costar_tenant_import(
             filtered_submarket += 1
             continue
 
-        # Filter 3: SF Occupied >= 2,500
+        # Filter 3: SF Occupied >= MIN_SF_OCCUPIED
         sf_occ = _cs_float(row, "SF Occupied")
-        if sf_occ is None or sf_occ < 2500:
+        if sf_occ is None or sf_occ < MIN_SF_OCCUPIED:
             filtered_size += 1
             continue
 
@@ -495,6 +498,8 @@ async def costar_tenant_import(
             c.current_address       = payload["current_address"]
             c.current_submarket     = payload["current_submarket"]
             c.current_sf            = payload["current_sf"]
+            # SF needed tracks real occupied SF (sf_occupied); None when unknown.
+            c.estimated_sf_needed   = payload["current_sf"] if payload["current_sf"] else None
             # Guard: never overwrite user-verified lease data with CoStar's value.
             # If the existing record has a protected source AND a verified date,
             # the user has manually confirmed this data — CoStar cannot override it.
@@ -523,7 +528,8 @@ async def costar_tenant_import(
             sf_per_head = None
             if payload["current_sf"] and payload["current_headcount"] and payload["current_headcount"] > 0:
                 sf_per_head = round(payload["current_sf"] / payload["current_headcount"], 1)
-            estimated_sf_needed = int(payload["current_headcount"] * 1.25 * 175) if payload["current_headcount"] else None
+            # SF needed = the company's real occupied SF (sf_occupied). No estimate.
+            estimated_sf_needed = payload["current_sf"] if payload["current_sf"] else None
 
             c = Company(
                 company_id            = _next_company_id(db),
@@ -630,6 +636,11 @@ def _compute_matched_properties(company: Company, db: Session) -> list:
             score += 10.0
             reasons.append(f"High landlord motivation ({prop.signal_score:.0f})")
         if score > 0:
+            # Soft medical/non-medical mismatch penalty — match still appears.
+            penalty = medical_mismatch_penalty(prop, company)
+            if penalty:
+                score += penalty
+                reasons.append("Medical/non-medical mismatch (−20)")
             scored.append((score, prop, reasons))
 
     scored.sort(key=lambda x: x[0], reverse=True)
@@ -662,6 +673,21 @@ def get_company(company_id: str, db: Session = Depends(get_db)):
     out = CompanyOutSchema.model_validate(company)
     out.matched_properties = _compute_matched_properties(company, db)
     return out
+
+
+@router.delete("/{company_id}", status_code=200)
+def delete_company(company_id: str, db: Session = Depends(get_db)):
+    """Hard-delete a company from the DB. No soft delete.
+
+    Dependent opportunities / activity / outreach logs have their company_id
+    nulled by the ORM relationship default. Returns 404 if the record is absent.
+    """
+    company = db.query(Company).filter(Company.company_id == company_id).first()
+    if not company:
+        raise HTTPException(status_code=404, detail="Company not found")
+    db.delete(company)
+    db.commit()
+    return {"deleted": company_id}
 
 
 class SnoozeRequest(BaseModel):
