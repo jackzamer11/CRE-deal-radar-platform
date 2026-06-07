@@ -872,6 +872,24 @@ def _build_acquisition(p: dict, target_type: str) -> dict:
         if benchmark else ""
     )
 
+    # Listing-aware framing: a property that is actively marketed for sale must NOT
+    # be approached as an "off-market" opportunity. When listed, acknowledge that
+    # it is on the market; otherwise keep the discreet off-market framing.
+    listed_for_sale = bool(p.get("listed_for_sale"))
+    if listed_for_sale:
+        listing_framing = (
+            f"This property is currently listed and actively marketed for sale — "
+            f"acknowledge that directly in the opening, e.g. 'I saw your {submarket} "
+            f"property is currently on the market'. Do NOT describe this as a quiet, "
+            f"discreet, or unlisted opportunity. "
+        )
+        ask_line = "The ask: 'Are you open to a conversation about a potential acquisition?' "
+        user_ask = "ask about a potential acquisition while the property is on the market"
+    else:
+        listing_framing = ""
+        ask_line = "The ask: 'Are you open to a conversation about a potential off-market sale?' "
+        user_ask = "ask about an off-market conversation"
+
     system = (
         f"You are {AGENT_NAME} at {FIRM_NAME}. "
         f"Write discreet acquisition outreach addressed to {addressee}. "
@@ -881,7 +899,8 @@ def _build_acquisition(p: dict, target_type: str) -> dict:
         f"The second sentence must reference the urgency signal: {urgency_signal}. "
         f"Do NOT reveal buyer name, buyer capital, or any specific buyer details. "
         f"Reference the dominant signal subtly without revealing platform intelligence: {signal_hint}. "
-        f"The ask: 'Are you open to a conversation about a potential off-market sale?' "
+        f"{listing_framing}"
+        f"{ask_line}"
         f"Cite CBRE Q1 2026 NoVA data: cap rates, vacancy, transaction volume.{benchmark_clause} "
         f"NEVER suggest specific days of the week. "
         f"Close with: 'I'd welcome a brief call at your convenience.' "
@@ -895,7 +914,7 @@ def _build_acquisition(p: dict, target_type: str) -> dict:
         "2. Email body — maximum 150 words (excluding signature block); "
         "   use full property address; "
         "   frame as representing a private buyer; "
-        "   cite one CBRE Q1 2026 cap rate or vacancy data point; ask about off-market conversation\n"
+        f"   cite one CBRE Q1 2026 cap rate or vacancy data point; {user_ask}\n"
         "3. Call script: Opening (2 sentences)\n"
         "4. Call script: Core message (3 sentences)\n"
         "5. Call script: Pain probe question (1 sentence)\n"
