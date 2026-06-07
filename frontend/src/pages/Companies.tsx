@@ -103,6 +103,7 @@ export default function Companies() {
   const [showTenantImportModal, setShowTenantImportModal] = useState(false)
   const [showOutreachModal, setShowOutreachModal]   = useState(false)
   const [showSnoozeModal, setShowSnoozeModal]       = useState(false)
+  const [showSnoozedOnly, setShowSnoozedOnly]       = useState(false)
 
   // Trajectory state
   const [trajectorySaving, setTrajectorySaving] = useState(false)
@@ -143,11 +144,19 @@ export default function Companies() {
     }
   }, [])
 
-  const displayedCompanies = topExpiryMode
-    ? companies.filter(c => c.lease_expiry_months === null).slice(0, 20)
-    : topOutreachMode
-      ? companies.slice(0, 20)
-      : companies
+  // Client-side snooze filter (all companies are already loaded).
+  const isSnoozedActive = (c: CompanyListOut) =>
+    c.snoozed_until != null && c.snoozed_until > new Date().toISOString().slice(0, 10)
+
+  // Default view hides any company whose snooze is still active (future date).
+  // The "Snoozed" toggle flips to a dedicated snoozed-only view.
+  const displayedCompanies = showSnoozedOnly
+    ? companies.filter(isSnoozedActive)
+    : topExpiryMode
+      ? companies.filter(c => !isSnoozedActive(c)).filter(c => c.lease_expiry_months === null).slice(0, 20)
+      : topOutreachMode
+        ? companies.filter(c => !isSnoozedActive(c)).slice(0, 20)
+        : companies.filter(c => !isSnoozedActive(c))
 
   const needingExpiryCount   = companies.filter(c => c.lease_expiry_months === null).length
   const needingOutreachCount = companies.length
@@ -220,6 +229,14 @@ export default function Companies() {
     } catch { /* no-op — leave panel as-is on failure */ }
   }
 
+  // Unsnooze directly from the snoozed-only list view (no detail panel needed).
+  const handleUnsnoozeFromList = async (companyId: string) => {
+    try {
+      await unsnoozeCompany(companyId)
+      load()
+    } catch { /* no-op */ }
+  }
+
   const handleSelectCompany = async (c: CompanyListOut) => {
     setEditingLease(false)
     try {
@@ -263,8 +280,9 @@ export default function Companies() {
   const clearFilters = () => {
     setSubmarket(''); setPriority(''); setRepFilter('')
     setExpansionOnly(false); setTopExpiryMode(false); setTopOutreachMode(false)
+    setShowSnoozedOnly(false)
   }
-  const hasActiveFilters = submarket || priority || repFilter || expansionOnly || topExpiryMode || topOutreachMode
+  const hasActiveFilters = submarket || priority || repFilter || expansionOnly || topExpiryMode || topOutreachMode || showSnoozedOnly
 
   return (
     <div className="p-6">
@@ -272,7 +290,7 @@ export default function Companies() {
         <div className="flex items-center gap-3">
           <Users size={20} className="text-emerald-400" />
           <h1 className="text-xl font-bold text-ink-primary">Companies</h1>
-          <span className="text-ink-muted text-sm">({companies.length})</span>
+          <span className="text-ink-muted text-sm">({displayedCompanies.length})</span>
         </div>
         <div className="flex items-center gap-2">
           <button
@@ -363,6 +381,18 @@ export default function Companies() {
           Top 20 Needing Outreach
         </button>
 
+        {/* Snoozed-only view toggle */}
+        <button
+          onClick={() => { setShowSnoozedOnly(v => !v); if (!showSnoozedOnly) { setTopExpiryMode(false); setTopOutreachMode(false) } }}
+          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors
+            ${showSnoozedOnly
+              ? 'bg-amber-500/20 border-amber-500/50 text-amber-300'
+              : 'bg-surface-card border-surface-border text-ink-secondary hover:text-ink-primary'}`}
+        >
+          <Clock size={12} />
+          Snoozed
+        </button>
+
         {hasActiveFilters && (
           <button
             onClick={clearFilters}
@@ -385,13 +415,21 @@ export default function Companies() {
           Showing top {Math.min(needingOutreachCount, 20)} companies needing outreach — no contact in 90 days, MAJOR firm reps excluded.
         </div>
       )}
+      {showSnoozedOnly && (
+        <div className="mb-3 flex items-center gap-2 text-xs text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded-lg px-3 py-2">
+          <Clock size={13} />
+          Showing snoozed companies only. Click Unsnooze to return one to the main list.
+        </div>
+      )}
 
       {/* Cards grid */}
       <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-4">
         {loading ? (
           <div className="col-span-3 text-center py-12 text-ink-muted">Loading...</div>
         ) : displayedCompanies.length === 0 ? (
-          <div className="col-span-3 text-center py-12 text-ink-muted">No companies found</div>
+          <div className="col-span-3 text-center py-12 text-ink-muted">
+            {showSnoozedOnly ? 'No snoozed companies' : 'No companies found'}
+          </div>
         ) : displayedCompanies.map(c => (
           <div
             key={c.id}
@@ -461,6 +499,25 @@ export default function Companies() {
               <div className="mt-3 flex items-center gap-1.5 text-[10px] text-emerald-400 font-bold uppercase tracking-wider">
                 <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
                 Expansion Signal Active
+              </div>
+            )}
+
+            {/* Snoozed banner with inline unsnooze (snoozed-only view) */}
+            {isSnoozedActive(c) && (
+              <div className="mt-3 flex items-center justify-between gap-2 px-2 py-1.5 rounded-lg
+                              bg-amber-500/10 border border-amber-500/30">
+                <div className="flex items-center gap-1.5 min-w-0">
+                  <Clock size={11} className="text-amber-400 flex-shrink-0" />
+                  <span className="text-[10px] text-amber-300 truncate">
+                    Snoozed until {c.snoozed_until}{c.snooze_reason ? ` — ${c.snooze_reason}` : ''}
+                  </span>
+                </div>
+                <button
+                  onClick={(e) => { e.stopPropagation(); handleUnsnoozeFromList(c.company_id) }}
+                  className="text-[10px] font-semibold text-amber-400 hover:text-amber-300 flex-shrink-0"
+                >
+                  Unsnooze
+                </button>
               </div>
             )}
           </div>

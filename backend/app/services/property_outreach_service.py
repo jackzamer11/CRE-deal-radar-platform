@@ -853,18 +853,21 @@ def _build_acquisition(p: dict, target_type: str) -> dict:
     salutation      = f"Dear {recipient_raw}," if recipient_raw else "Dear Property Owner,"
     addressee       = f"the sales broker ({sales_contact})" if sales_contact else "the property owner"
 
-    # Fix 4: urgency signal
+    # Context observation for the second sentence — stated as neutral market
+    # context, NEVER as pressure on the owner. Hold period in particular is phrased
+    # as a plain factual observation ("given your long-term ownership"), never as a
+    # reason the owner should feel pressure to sell (Fix 1).
     dom         = p.get("days_on_market")
     vacancy_pct = p.get("vacancy_pct")
     years_owned = p.get("years_owned")
     if dom and int(dom) > 30:
-        urgency_signal = f"on market {dom} days"
+        context_signal = f"on market {dom} days"
     elif vacancy_pct and float(vacancy_pct) > 0:
-        urgency_signal = f"{float(vacancy_pct):.0f}% vacancy"
+        context_signal = f"{float(vacancy_pct):.0f}% vacancy"
     elif years_owned:
-        urgency_signal = f"{years_owned}-year hold period"
+        context_signal = f"given your long-term ownership ({years_owned}-year hold)"
     else:
-        urgency_signal = signal_hint
+        context_signal = signal_hint
 
     # Fix 5: benchmark clause (omit if no data)
     benchmark_clause = (
@@ -896,7 +899,7 @@ def _build_acquisition(p: dict, target_type: str) -> dict:
         f"Open the email with exactly '{salutation}' on its own line. "
         f"Frame as: 'I represent a private buyer actively evaluating office assets in {submarket}.' "
         f"Use the full property address: 'your property at {address_display}'. "
-        f"The second sentence must reference the urgency signal: {urgency_signal}. "
+        f"The second sentence should reference this only as neutral market context, never as pressure on the owner: {context_signal}. "
         f"Do NOT reveal buyer name, buyer capital, or any specific buyer details. "
         f"Reference the dominant signal subtly without revealing platform intelligence: {signal_hint}. "
         f"{listing_framing}"
