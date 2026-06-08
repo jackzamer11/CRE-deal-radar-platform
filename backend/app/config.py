@@ -23,7 +23,6 @@ class Settings(BaseSettings):
 
     # Signal engine parameters
     nova_avg_hold_years: float = 7.0
-    modern_sf_per_head: int = 175
     cramped_sf_per_head: int = 150
 
     # Submarket reference data (avg asking $/SF for comps)

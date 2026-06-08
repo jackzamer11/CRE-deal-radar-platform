@@ -535,26 +535,35 @@ def _sf_needed_display(sf_needed: Optional[int]) -> str:
 def _compute_matched_tenants(prop: Property, db: Session) -> list:
     from app.models.company import Company
     from app.schemas.property import MatchedTenant
+    from app.services.match_scoring import sf_match_suppressed
+    from app.services.opportunity_stage_service import pair_is_contacted
 
     avail_sf = prop.sf_avail or (int(prop.vacant_sf) if prop.vacant_sf else 0)
     if avail_sf <= 0:
         return []
 
-    # SF needed (= real occupied SF) may be unknown; such tenants can still match
-    # on submarket / expansion / lease timing and are shown with "SF: Unknown".
+    # SF (= real occupied SF) may be unknown; such tenants can still match on
+    # submarket / expansion / lease timing and are shown with "SF: Unknown"
+    # (outreach for them is blocked separately until the figure is populated).
     candidates = db.query(Company).all()
 
     scored = []
     for co in candidates:
-        sf_needed = co.estimated_sf_needed or 0
+        sf_occupied = co.current_sf_occupied or 0
+        # Fix 2: when BOTH SF figures are known and the gap exceeds MAX_SF_DELTA,
+        # suppress the pairing entirely — no card, no outreach — UNLESS this exact
+        # pair has already been contacted (contacted history is never disturbed).
+        if (sf_match_suppressed(sf_occupied, avail_sf)
+                and not pair_is_contacted(db, prop.id, co.id)):
+            continue
         reasons: list = []
         score = 0.0
-        if sf_needed > 0 and avail_sf > 0:
-            ratio = sf_needed / avail_sf
+        if sf_occupied > 0 and avail_sf > 0:
+            ratio = sf_occupied / avail_sf
             if 0.6 <= ratio <= 1.4:
                 pct = abs(1.0 - ratio) * 100
                 score += 40.0
-                reasons.append(f"SF fit ±{pct:.0f}% ({sf_needed:,} needed vs {avail_sf:,} avail)")
+                reasons.append(f"SF fit ±{pct:.0f}% ({sf_occupied:,} occupied vs {avail_sf:,} avail)")
         if co.current_submarket == prop.submarket:
             score += 30.0
             reasons.append(f"Same submarket ({prop.submarket})")
@@ -584,8 +593,8 @@ def _compute_matched_tenants(prop: Property, db: Session) -> list:
             name=co.name,
             industry=co.industry,
             headcount=co.current_headcount,
-            sf_needed=co.estimated_sf_needed if co.estimated_sf_needed else None,
-            sf_display=_sf_needed_display(co.estimated_sf_needed),
+            sf_needed=co.current_sf_occupied if co.current_sf_occupied else None,
+            sf_display=_sf_needed_display(co.current_sf_occupied),
             submarket=co.current_submarket,
             match_score=round(score, 1),
             match_reasons=reasons,
@@ -1430,12 +1439,18 @@ def get_tenant_outreach(property_id: str, db: Session = Depends(get_db)):
             "years_owned":          prop.years_owned,
             "dominant_score_type":  prop.dominant_score_type,
         }
-        # Fix 4: headcount excluded — tenant-side emails must not reference
-        # headcount; SF needed and lease expiry are the permitted identifiers.
+        # Fix 1: block outreach for a tenant with unknown occupied SF. The tenant
+        # still appears as a match card (with "SF: Unknown") via
+        # _compute_matched_tenants — only the outreach draft is withheld here.
+        if not company.current_sf_occupied:
+            continue
+
+        # headcount excluded — tenant-side emails must not reference headcount;
+        # occupied SF and lease expiry are the permitted identifiers.
         tenant_dict = {
             "name":                 company.name,
             "industry":             company.industry or "professional services",
-            "estimated_sf_needed":  company.estimated_sf_needed if company.estimated_sf_needed else None,
+            "current_sf_occupied":  company.current_sf_occupied,
             "lease_expiry_months":  company.lease_expiry_months,
             "current_submarket":    company.current_submarket,
             "primary_contact_name": company.primary_contact_name,
@@ -1453,11 +1468,6 @@ def get_tenant_outreach(property_id: str, db: Session = Depends(get_db)):
                 tenant_dict=tenant_dict,
             )
             email_body = draft["email_body"]
-            # Fix 2: The confirmed-leasing disclosure ("Please note that the owner has
-            # confirmed openness…") is now injected at the service layer
-            # (generate_property_outreach) for every tenant_side call, using the exact
-            # canonical wording from _PHASE2_CONFIRMED_DISCLOSURE. No duplicate injection
-            # here — the service handles it idempotently.
 
             call_parts = [
                 f"Opening: {draft.get('call_script_opening', '')}",
@@ -1471,7 +1481,7 @@ def get_tenant_outreach(property_id: str, db: Session = Depends(get_db)):
                 company_id=company.company_id,
                 company_name=company.name,
                 contact_name=company.primary_contact_name,
-                sf_needed=company.estimated_sf_needed if company.estimated_sf_needed else None,
+                sf_needed=company.current_sf_occupied if company.current_sf_occupied else None,
                 lease_expiry_months=company.lease_expiry_months,
                 email_draft=email_body,
                 call_script=call_script,
@@ -1527,14 +1537,38 @@ def draft_property_outreach(
     if company_id:
         comp = db.query(Company).filter(Company.company_id == company_id).first()
         if comp:
+            # Fix 1 & Fix 2: for a tenant-paired draft, block outreach when the
+            # tenant's occupied SF is unknown, and suppress it when the SF gap to
+            # the property exceeds MAX_SF_DELTA — unless the pair is already
+            # contacted (contacted pairs are never disturbed).
+            if outreach_type in ("tenant_match", "for_sale_vacancy"):
+                from app.services.match_scoring import sf_match_suppressed, MAX_SF_DELTA
+                from app.services.opportunity_stage_service import pair_is_contacted
+                already_contacted = pair_is_contacted(db, prop.id, comp.id)
+                if not already_contacted:
+                    if not comp.current_sf_occupied:
+                        raise HTTPException(
+                            status_code=422,
+                            detail=(
+                                "SF: Unknown — set 'SF Occupied (CoStar)' on this tenant "
+                                "before generating outreach."
+                            ),
+                        )
+                    if sf_match_suppressed(comp.current_sf_occupied, prop.sf_avail):
+                        raise HTTPException(
+                            status_code=422,
+                            detail=(
+                                "SF mismatch — occupied SF and available SF differ by "
+                                f"more than {MAX_SF_DELTA} SF; pairing suppressed."
+                            ),
+                        )
             tenant_dict = {c.key: getattr(comp, c.key) for c in comp.__table__.columns}
             hc  = comp.current_headcount
-            sf  = comp.estimated_sf_needed
+            sf  = comp.current_sf_occupied
             exp = comp.lease_expiry_months
             tenant_context = (
-                f"Industry: {comp.industry or 'N/A'}; "
                 f"Headcount: {hc if hc is not None else 'N/A'}; "
-                f"SF Needed: {f'{int(sf):,}' if sf else 'N/A'}; "
+                f"SF Occupied: {f'{int(sf):,}' if sf else 'N/A'}; "
                 f"Lease Expiry: {f'{exp}mo' if exp is not None else 'N/A'}"
             )
 

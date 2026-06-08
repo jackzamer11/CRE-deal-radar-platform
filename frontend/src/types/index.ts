@@ -142,7 +142,7 @@ export interface CompanyListOut {
   current_headcount: number | null
   headcount_growth_pct: number | null
   current_submarket: string | null
-  current_sf: number | null
+  current_sf_occupied: number | null
   current_rent_psf: number | null
   lease_expiry_months: number | null
   lease_expiry_date: string | null
@@ -230,9 +230,8 @@ export interface CompanyOut extends CompanyListOut {
   is_medical: boolean
   open_positions: number
   hiring_velocity: number | null
-  current_sf: number | null
+  current_sf_occupied: number | null
   sf_per_head: number | null
-  estimated_sf_needed: number | null
   sig_headcount_growth: number
   sig_hiring_velocity: number
   sig_lease_expiry: number

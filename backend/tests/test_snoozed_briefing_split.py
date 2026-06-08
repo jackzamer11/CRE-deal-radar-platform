@@ -59,7 +59,7 @@ def test_snoozed_tenant_action_only_in_snoozed_view(db_session):
     _property(db_session, snoozed=True, dominant="tenant_match")
     db_session.add(Company(
         company_id="CO-SNZ", name="Snz Co", industry="Technology",
-        current_submarket="Tysons", current_sf=5000, estimated_sf_needed=5000,
+        current_submarket="Tysons", current_sf_occupied=5000,
         lease_expiry_months=10,
     ))
     db_session.commit()

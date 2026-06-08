@@ -58,7 +58,7 @@ def _minimal_tenant(lease_expiry_months=12):
         "name": DISTINCT_TENANT_NAME,
         "industry": "Health Care",
         "current_submarket": "Tysons",
-        "estimated_sf_needed": 3500,
+        "current_sf_occupied": 3500,
         "lease_expiry_months": lease_expiry_months,
         "opportunity_score": 80,
         "priority": "HIGH",

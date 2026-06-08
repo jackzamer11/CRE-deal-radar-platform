@@ -35,18 +35,6 @@ _SIGNATURE_INSTRUCTION = (
 )
 
 
-def project_sf(company: dict) -> Optional[int]:
-    """
-    SF needed = the company's real occupied square footage (sf_occupied).
-
-    If the company reports a real, non-zero occupied SF figure, that IS the
-    SF-needed figure. When no real value exists, SF needed is None — we never
-    estimate it from headcount, growth rate, or a SF/person assumption.
-    """
-    current_sf = company.get("current_sf")
-    return current_sf if current_sf else None
-
-
 def _industry_pain(industry: str) -> str:
     i = industry.lower()
     if any(k in i for k in ("federal", "government", "defense", "contractor", "dod")):
@@ -214,8 +202,9 @@ def generate_outreach(company: dict) -> dict:
     submarket     = company.get("current_submarket") or ""
     headcount     = company.get("current_headcount")
     growth_pct    = company.get("headcount_growth_pct")
-    current_sf    = company.get("current_sf")
-    projected_sf  = project_sf(company)
+    # Real occupied SF is the ONLY SF figure — never derived from headcount.
+    current_sf    = company.get("current_sf_occupied")
+    projected_sf  = current_sf if current_sf else None
     lease_mo      = company.get("lease_expiry_months")
     lease_date    = company.get("lease_expiry_date") or ""
     industry      = (company.get("industry") or "").split("(")[0].strip()

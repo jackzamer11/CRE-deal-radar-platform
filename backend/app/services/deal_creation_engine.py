@@ -79,7 +79,7 @@ def _estimated_sf_needed(company: Company) -> Optional[int]:
     Returns None when no real value exists — we never estimate space need from
     headcount, growth rate, or a SF/person assumption.
     """
-    return company.current_sf if company.current_sf else None
+    return company.current_sf_occupied if company.current_sf_occupied else None
 
 
 def _sf_phrase(sf_needed: Optional[int]) -> str:

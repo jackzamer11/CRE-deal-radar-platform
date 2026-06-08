@@ -450,7 +450,7 @@ def _build_tenant_match(
     # Fix 2: the owner does not need sector detail — the matched tenant is referred
     # to ONLY as "a qualified tenant". Industry / sector is never passed to the model.
     if tenant_dict is not None:
-        sf       = tenant_dict.get("estimated_sf_needed")
+        sf       = tenant_dict.get("current_sf_occupied")
         exp      = tenant_dict.get("lease_expiry_months")
         sf_str   = f"{sf:,} SF" if sf else None
         exp_str  = (f"approximately {exp} {'month' if exp == 1 else 'months'}" if exp is not None else None)
@@ -632,7 +632,7 @@ def _build_for_sale_vacancy(
     # plus SF needed and lease expiry.  No industry label reaches the model.
     # The closing line is injected post-LLM in generate_property_outreach.
     if tenant_dict is not None:
-        sf  = tenant_dict.get("estimated_sf_needed")
+        sf  = tenant_dict.get("current_sf_occupied")
         exp = tenant_dict.get("lease_expiry_months")
         sf_str  = f"{sf:,} SF" if sf else None
         exp_str = (f"approximately {exp} {'month' if exp == 1 else 'months'}" if exp is not None else None)
@@ -755,7 +755,7 @@ def _build_tenant_side(p: dict, tenant_dict: dict) -> dict:
     industry       = tenant_dict.get("industry") or "professional services firm"
     # Fix 4: headcount is NOT passed to tenant-side copy — SF needed and lease
     # expiry are the permitted identifiers. Never reference headcount in tenant emails.
-    sf_needed      = tenant_dict.get("estimated_sf_needed")
+    sf_needed      = tenant_dict.get("current_sf_occupied")
     lease_expiry_m = tenant_dict.get("lease_expiry_months")
     submarket_pref = tenant_dict.get("current_submarket") or submarket
 
@@ -774,17 +774,19 @@ def _build_tenant_side(p: dict, tenant_dict: dict) -> dict:
     rent_clause = (
         f" at approximately ${asking_rent:.2f}/SF" if asking_rent else ""
     )
+    # Fix 3: SF always displays as approximate, rounded to the nearest 100.
     sf_clause = (
-        f" with {sf_avail:,} square feet available" if sf_avail else ""
+        f" with approximately {sf_avail:,} SF available" if sf_avail else ""
     )
 
-    sf_display  = f"{sf_needed:,} SF" if sf_needed else None
+    sf_needed_rounded = round(sf_needed / 100) * 100 if sf_needed else None
+    sf_display  = f"approximately {sf_needed_rounded:,} SF" if sf_needed_rounded else None
     exp_display = (f"{lease_expiry_m} {'month' if lease_expiry_m == 1 else 'months'}" if lease_expiry_m is not None else None)
 
-    # Space-fit note: reference SF match only — no headcount (Fix 4)
+    # Space-fit note: reference SF match only — no headcount
     space_fit_note = (
-        f"Space-fit note: the property has {sf_avail:,} SF available — "
-        f"reference this as well-matched for a company seeking {sf_display}."
+        f"Space-fit note: the property has approximately {sf_avail:,} SF available — "
+        f"reference this as well-matched for a company needing {sf_display}."
         if sf_avail and sf_needed else ""
     )
 
@@ -805,18 +807,21 @@ def _build_tenant_side(p: dict, tenant_dict: dict) -> dict:
     ]
     property_profile = "\n".join(property_profile_lines)
 
-    # SF-fit constraint for system prompt (no headcount — Fix 4)
+    # SF-fit constraint for system prompt (no headcount). SF stays approximate.
     sf_fit_constraint = (
-        f"\n- The available space ({sf_avail:,} SF) is well-matched for a company "
-        f"seeking approximately {sf_display} — weave this fit naturally into the email body "
-        "without quoting their own data back to them."
-        if sf_avail and sf_needed else ""
+        f"\n- The available space (approximately {sf_avail:,} SF) is a good fit for a company "
+        f"needing {sf_display} — weave this in naturally, and always phrase any SF figure as "
+        f"'approximately X SF'. Never quote their own data back to them."
+        if sf_avail and sf_needed else
+        "\n- Always phrase any square-footage figure as 'approximately X SF' (rounded), never an exact number."
     )
 
-    # Fix 3: CBRE data is optional and must reinforce the lease-timing hook.
+    # Fix 3: CBRE data is optional and must support a selling point — e.g. a LOW
+    # submarket vacancy rate that creates urgency. Never a data dump.
     tenant_proof_rule = (
-        f"You may reference ONE CBRE Q1 2026 {submarket} number, but only if it sharpens the "
-        f"lease-timing hook — if it does not earn its place in the sentence, leave it out."
+        f"You may reference ONE CBRE Q1 2026 {submarket} number ONLY if it supports the urgency of "
+        f"acting now — e.g. a low vacancy rate meaning good space is scarce. If it does not directly "
+        f"support a selling point, leave it out entirely. Never list multiple stats."
         if benchmark else
         "Do NOT cite or invent any market statistic."
     )
@@ -856,7 +861,8 @@ def _build_tenant_side(p: dict, tenant_dict: dict) -> dict:
         "   no bullet points; open on the lease-timing hook, then the fit, then the single ask; "
         + (f"   describe the property generally (asset class, submarket, SF available, asking rent ${asking_rent:.2f}/SF), " if asking_rent else
            "   describe the property generally (asset class, submarket, SF available — do NOT include a specific rent figure), ")
-        + (f"   you may note that the available {sf_avail:,} SF suits a company seeking {sf_display}, " if sf_avail and sf_needed else "")
+        + (f"   you may note that the available space (approximately {sf_avail:,} SF) suits a company needing {sf_display}, " if sf_avail and sf_needed else "")
+        + "   always phrase SF as 'approximately X SF'; "
         + "   end with 'I'd welcome a brief call at your convenience.'\n"
         "3. Call script: Opening\n"
         "4. Call script: Core message\n"
@@ -1148,9 +1154,11 @@ def generate_property_outreach(
     parsed = _parse_response(raw)
 
     # ── Post-LLM sentence injection ─────────────────────────────────────────
-    # "agent" title used in all paths (Fix 3 — advisor → agent everywhere).
+    # "agent" title used in all paths. Fix 3: the social-proof line
+    # ("I work exclusively… before they hit the open listings") is no longer
+    # injected on any path — tenant-side included.
     is_tenant_side = (direction == "tenant_side")
-    email_body = _inject_hardcoded_sentences(parsed["email_body"], inject_social_proof=is_tenant_side)
+    email_body = _inject_hardcoded_sentences(parsed["email_body"], inject_social_proof=False)
 
     # Sanitize bracket placeholders (all paths): "Dear [Owner's Name]," etc.
     email_body = _sanitize_bracket_placeholders(email_body, property_dict)
@@ -1161,7 +1169,7 @@ def generate_property_outreach(
     if (not is_tenant_side
             and tenant_dict is not None
             and outreach_type in ("tenant_match", "for_sale_vacancy")
-            and not tenant_dict.get("estimated_sf_needed")):
+            and not tenant_dict.get("current_sf_occupied")):
         fallback = _tenant_sf_fallback_sentence(
             property_dict.get("submarket"), tenant_dict.get("lease_expiry_months")
         )
@@ -1191,21 +1199,9 @@ def generate_property_outreach(
             email_body = _hc_pattern.sub("", email_body)
             email_body = _re.sub(r"  +", " ", email_body).strip()
 
-    # Fix 2: Phase 2 tenant-side → inject confirmed-leasing disclosure.
-    # This applies whenever direction="tenant_side" (the endpoint already guards
-    # for owner_confirmed_leasing=True, so this is always correct).
-    # The get_tenant_outreach endpoint also strips/updates any prior disclosure,
-    # but we inject the canonical wording here so it works from any call site.
-    if is_tenant_side:
-        if _PHASE2_CONFIRMED_DISCLOSURE not in email_body:
-            if "Thank you," in email_body:
-                email_body = email_body.replace(
-                    "Thank you,",
-                    f"{_PHASE2_CONFIRMED_DISCLOSURE}\n\nThank you,",
-                    1,
-                )
-            else:
-                email_body += f"\n\n{_PHASE2_CONFIRMED_DISCLOSURE}"
+    # Fix 3: the confirmed-leasing disclosure ("Please note that the owner has
+    # confirmed openness to leasing discussions…") is NO LONGER injected on
+    # tenant-side emails — it made the note read like a platform output.
 
     # ── Fix 4: attach the deterministic OWNER / TENANT call script ───────────
     # For the matched-deal flow (tenant_match / for_sale_vacancy) the call script
