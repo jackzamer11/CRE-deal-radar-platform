@@ -406,6 +406,24 @@ def ensure_companies(cur: sqlite3.Cursor) -> int:
     except Exception as _exc:
         print(f"  ! companies.is_medical add skipped: {_exc}")
 
+    # ── Single SF field: current_sf_occupied (real occupied SF, never calculated) ──
+    # Replaces the legacy current_sf / estimated_sf_needed pair. Add idempotently,
+    # then port any existing legacy value across so no real SF data is lost on the
+    # live DB. The whole block is guarded so a partially-migrated DB never aborts
+    # startup. Backfill copies the IDENTICAL CoStar value under the new name — it
+    # changes no business state (contacted records keep their SF unchanged).
+    try:
+        added += _add_column(cur, "companies", "current_sf_occupied", "INTEGER")
+        # Backfill from legacy columns only where the new field is still empty.
+        for legacy in ("current_sf", "estimated_sf_needed"):
+            if _has_column(cur, "companies", legacy):
+                cur.execute(
+                    f"UPDATE companies SET current_sf_occupied = {legacy} "
+                    f"WHERE current_sf_occupied IS NULL AND {legacy} IS NOT NULL"
+                )
+    except Exception as _exc:
+        print(f"  ! companies.current_sf_occupied add/backfill skipped: {_exc}")
+
     return added
 
 

@@ -55,7 +55,7 @@ def _make_company(session, *, company_id, snoozed_until=None, submarket="Tysons"
         current_headcount=50,
         headcount_growth_pct=22.0,
         current_submarket=submarket,
-        estimated_sf_needed=5000,
+        current_sf_occupied=5000,
         lease_expiry_months=10,
         opportunity_score=80.0,
         priority="HIGH",

@@ -1,17 +1,18 @@
 """
-SF-needed = real occupied SF (sf_occupied) — never an estimate.
+SF = real occupied SF (current_sf_occupied) — never an estimate.
 
-Covers the three required behaviours after removing the headcount × growth × 175
-projection from SF-needed calculation:
+After collapsing current_sf / estimated_sf_needed into the single
+current_sf_occupied field and removing the headcount × growth × 175 projection,
+this module locks the behaviour:
 
-  (1) A company with a real sf_occupied value → SF needed equals that value.
-  (2) A company with sf_occupied = null → SF needed is None, and the property-side
-      outreach draft falls back to the "right-sized office space" copy (no blank,
-      no placeholder, no estimated number).
-  (3) A company with sf_occupied = null → the matched-tenant card shows
-      "SF: Unknown" (never a calculated estimate).
-
-The growth_rate field itself is untouched — only its use in SF calculation is gone.
+  (1) The SF used for a company everywhere is its real current_sf_occupied —
+      headcount and growth rate never change it.
+  (2) current_sf_occupied = null → SF is unknown: the property-side outreach draft
+      falls back to the "right-sized office space" copy (no blank / placeholder /
+      estimated number).
+  (3) current_sf_occupied = null → the matched-tenant card still appears (matched
+      on other signals) and shows "SF: Unknown" (decision: keep the card, block
+      only outreach).
 """
 from unittest.mock import patch
 
@@ -26,7 +27,6 @@ import app.models.outreach_draft  # noqa: F401 — registered for completeness
 from app.database import Base
 from app.models.company import Company
 from app.models.property import Property
-from app.services.outreach_service import project_sf
 
 
 # ── In-memory DB fixture ───────────────────────────────────────────────────────
@@ -63,34 +63,47 @@ def _fake_chat(system, user, *, max_tokens=600):
     )
 
 
-# ── (1) real sf_occupied → SF needed equals it ─────────────────────────────────
-def test_sf_needed_equals_real_occupied_sf():
-    # project_sf is the single source of truth for "SF needed".
-    assert project_sf({"current_sf": 11000, "current_headcount": 50,
-                       "headcount_growth_pct": 40.0}) == 11000
-    # Growth rate and headcount must NOT influence the figure anymore.
-    assert project_sf({"current_sf": 11000, "current_headcount": 999,
-                       "headcount_growth_pct": 200.0}) == 11000
+def _property(db, **over):
+    p = Property(
+        property_id=over.get("property_id", "NVA-SF"),
+        address="1 SF Plaza",
+        submarket="Tysons",
+        total_sf=50000,
+        year_built=2005,
+        sf_avail=over.get("sf_avail", 11000),
+        owner_name="Owner LLC",
+        in_place_rent_psf=35.0,
+        market_rent_psf=38.0,
+        market_cap_rate=6.5,
+        listed_for_sale=False,
+    )
+    db.add(p)
+    db.commit()
+    return p
 
 
-def test_sf_needed_from_costar_current_sf(db_session):
-    """estimated_sf_needed stored at import equals the real occupied SF, not 175×."""
-    co = Company(company_id="CO-SF", name="SF Co", industry="Tech",
-                 current_headcount=50, headcount_growth_pct=40.0, current_sf=11000)
-    # mirror the import rule: estimated_sf_needed = current_sf when present
-    co.estimated_sf_needed = co.current_sf if co.current_sf else None
+# ── (1) real occupied SF is the figure used — headcount/growth never change it ──
+def test_sf_equals_real_occupied_sf(db_session):
+    from app.api.routes.properties import _compute_matched_tenants
+
+    prop = _property(db_session, sf_avail=11000)
+    # Wildly large headcount and growth must NOT influence the SF figure.
+    co = Company(
+        company_id="CO-SF", name="SF Co", industry="Technology",
+        current_submarket="Tysons", current_headcount=999,
+        headcount_growth_pct=200.0, current_sf_occupied=11000,
+    )
     db_session.add(co)
     db_session.commit()
-    assert co.estimated_sf_needed == 11000
+
+    matched = _compute_matched_tenants(prop, db_session)
+    card = next((m for m in matched if m.company_id == "CO-SF"), None)
+    assert card is not None
+    assert card.sf_needed == 11000          # the real occupied SF, verbatim
+    assert card.sf_display == "11,000 SF"
 
 
-# ── (2) null sf_occupied → None + "right-sized office space" fallback copy ──────
-def test_sf_needed_none_when_occupied_missing():
-    assert project_sf({"current_sf": None, "current_headcount": 50,
-                       "headcount_growth_pct": 40.0}) is None
-    assert project_sf({"current_sf": 0, "current_headcount": 50}) is None
-
-
+# ── (2) null occupied SF → "right-sized office space" fallback copy ─────────────
 def test_outreach_draft_uses_right_sized_copy_when_sf_missing():
     import app.services.property_outreach_service as svc
 
@@ -109,7 +122,7 @@ def test_outreach_draft_uses_right_sized_copy_when_sf_missing():
         "name": "ZZZ Test Co",
         "industry": "Technology",
         "current_submarket": "Tysons",
-        "estimated_sf_needed": None,   # sf_occupied was null → SF needed is None
+        "current_sf_occupied": None,   # SF unknown → SF figure is None
         "lease_expiry_months": 12,
     }
 
@@ -129,7 +142,7 @@ def test_outreach_draft_uses_right_sized_copy_when_sf_missing():
     assert "[" not in body and "]" not in body, "No bracket placeholders allowed"
 
 
-# ── (3) null sf_occupied → match card shows "SF: Unknown" ───────────────────────
+# ── (3) null occupied SF → match card shows "SF: Unknown" (card kept) ───────────
 def test_match_card_shows_sf_unknown_when_occupied_missing(db_session):
     from app.api.routes.properties import _compute_matched_tenants, _sf_needed_display
 
@@ -138,30 +151,17 @@ def test_match_card_shows_sf_unknown_when_occupied_missing(db_session):
     assert _sf_needed_display(0) == "Unknown"
     assert _sf_needed_display(11000) == "11,000 SF"
 
-    prop = Property(
-        property_id="NVA-CARD",
-        address="1 Card Plaza",
-        submarket="Tysons",
-        total_sf=50000,
-        year_built=2005,
-        sf_avail=5000,
-        owner_name="Owner LLC",
-        in_place_rent_psf=35.0,
-        market_rent_psf=38.0,
-        market_cap_rate=6.5,
-        listed_for_sale=False,
-    )
+    prop = _property(db_session, property_id="NVA-CARD", sf_avail=5000)
     # Tenant with NO occupied SF, but matchable on submarket → should still appear.
     co = Company(
         company_id="CO-NOSF",
         name="No SF Co",
         industry="Technology",
         current_submarket="Tysons",
-        current_sf=None,
-        estimated_sf_needed=None,
+        current_sf_occupied=None,
         expansion_signal=True,
     )
-    db_session.add_all([prop, co])
+    db_session.add(co)
     db_session.commit()
 
     matched = _compute_matched_tenants(prop, db_session)

@@ -19,6 +19,7 @@ from app.schemas.outreach import OutreachDraft, OutreachLogCreate, OutreachLogOu
 from app.services import signal_engine as se
 from app.services.scoring_model import score_property
 from app.services.match_scoring import medical_mismatch_penalty
+from app.services.opportunity_stage_service import pair_is_contacted as _pair_contacted
 from app.services.rep_classification import classify_rep
 
 router = APIRouter(prefix="/companies", tags=["companies"])
@@ -203,7 +204,7 @@ def _parse_costar_tenant_row(row: dict, row_num: int) -> tuple:
         "current_headcount":    headcount,
         "current_address":      _cs_str(row, "Address"),
         "current_submarket":    submarket,
-        "current_sf":           _cs_int(row, "SF Occupied"),
+        "current_sf_occupied":  _cs_int(row, "SF Occupied"),
         "lease_expiry_months":  _months_until(_cs_str(row, "Next Break Date")),
         "primary_contact_name": _cs_str(row, "Best Tenant Contact"),
         "primary_contact_phone":_cs_str(row, "Best Tenant Phone"),
@@ -226,7 +227,7 @@ class CompanyManualCreate(BaseModel):
     open_positions: int = 0
     current_address: Optional[str] = None
     current_submarket: Optional[str] = None
-    current_sf: Optional[int] = None
+    current_sf_occupied: Optional[int] = None
     lease_expiry_months: Optional[int] = None
     primary_contact_name: Optional[str] = None
     primary_contact_title: Optional[str] = None
@@ -241,7 +242,7 @@ def _run_signals(company: Company) -> None:
         company.open_positions or 0,
         company.current_headcount,
         company.lease_expiry_months,
-        company.current_sf,
+        company.current_sf_occupied,
         company.current_submarket,
         tenant_representative=company.tenant_representative,
         nearby_company_count=1,
@@ -282,8 +283,8 @@ def _run_signals(company: Company) -> None:
             company.hiring_velocity = round(
                 (company.open_positions or 0) / company.current_headcount * 100, 1
             )
-        if company.current_sf and company.current_headcount > 0:
-            company.sf_per_head = round(company.current_sf / company.current_headcount, 1)
+        if company.current_sf_occupied and company.current_headcount > 0:
+            company.sf_per_head = round(company.current_sf_occupied / company.current_headcount, 1)
 
     # Set expansion signal
     company.expansion_signal = (
@@ -311,11 +312,8 @@ def create_company(payload: CompanyManualCreate, db: Session = Depends(get_db)):
         hiring_velocity = round(payload.open_positions / payload.current_headcount * 100, 1)
 
     sf_per_head = None
-    if payload.current_sf and payload.current_headcount > 0:
-        sf_per_head = round(payload.current_sf / payload.current_headcount, 1)
-
-    # SF needed = the company's real occupied SF (sf_occupied). No estimate.
-    estimated_sf_needed = payload.current_sf if payload.current_sf else None
+    if payload.current_sf_occupied and payload.current_headcount > 0:
+        sf_per_head = round(payload.current_sf_occupied / payload.current_headcount, 1)
 
     lease_expiry_date_val = None
     if payload.lease_expiry_months and payload.lease_expiry_months > 0:
@@ -334,11 +332,10 @@ def create_company(payload: CompanyManualCreate, db: Session = Depends(get_db)):
         hiring_velocity       = hiring_velocity,
         current_address       = payload.current_address,
         current_submarket     = payload.current_submarket,
-        current_sf            = payload.current_sf,
+        current_sf_occupied   = payload.current_sf_occupied,
         sf_per_head           = sf_per_head,
         lease_expiry_months   = payload.lease_expiry_months,
         lease_expiry_date     = lease_expiry_date_val,
-        estimated_sf_needed   = estimated_sf_needed,
         primary_contact_name  = payload.primary_contact_name,
         primary_contact_title = payload.primary_contact_title,
         primary_contact_phone = payload.primary_contact_phone,
@@ -497,9 +494,7 @@ async def costar_tenant_import(
             c.current_headcount     = payload["current_headcount"]
             c.current_address       = payload["current_address"]
             c.current_submarket     = payload["current_submarket"]
-            c.current_sf            = payload["current_sf"]
-            # SF needed tracks real occupied SF (sf_occupied); None when unknown.
-            c.estimated_sf_needed   = payload["current_sf"] if payload["current_sf"] else None
+            c.current_sf_occupied   = payload["current_sf_occupied"]
             # Guard: never overwrite user-verified lease data with CoStar's value.
             # If the existing record has a protected source AND a verified date,
             # the user has manually confirmed this data — CoStar cannot override it.
@@ -526,10 +521,8 @@ async def costar_tenant_import(
         else:
             # Derived fields
             sf_per_head = None
-            if payload["current_sf"] and payload["current_headcount"] and payload["current_headcount"] > 0:
-                sf_per_head = round(payload["current_sf"] / payload["current_headcount"], 1)
-            # SF needed = the company's real occupied SF (sf_occupied). No estimate.
-            estimated_sf_needed = payload["current_sf"] if payload["current_sf"] else None
+            if payload["current_sf_occupied"] and payload["current_headcount"] and payload["current_headcount"] > 0:
+                sf_per_head = round(payload["current_sf_occupied"] / payload["current_headcount"], 1)
 
             c = Company(
                 company_id            = _next_company_id(db),
@@ -539,11 +532,10 @@ async def costar_tenant_import(
                 open_positions        = 0,
                 current_address       = payload["current_address"],
                 current_submarket     = payload["current_submarket"],
-                current_sf            = payload["current_sf"],
+                current_sf_occupied   = payload["current_sf_occupied"],
                 sf_per_head           = sf_per_head,
                 lease_expiry_months   = payload["lease_expiry_months"],
                 lease_expiry_source   = "costar" if payload["lease_expiry_months"] is not None else None,
-                estimated_sf_needed   = estimated_sf_needed,
                 primary_contact_name  = payload["primary_contact_name"],
                 primary_contact_phone = payload["primary_contact_phone"],
                 website               = payload["website"],
@@ -594,10 +586,13 @@ def _adjacent_submarkets(submarket: Optional[str]) -> set:
 
 def _compute_matched_properties(company: Company, db: Session) -> list:
     from app.schemas.company import MatchedProperty
+    from app.services.match_scoring import sf_match_suppressed
     from sqlalchemy import or_
 
-    sf_needed = company.estimated_sf_needed or 0
-    if sf_needed <= 0:
+    # SF source is the company's real occupied SF — never calculated. Unknown SF
+    # yields no matched-property cards on the company surface (existing behaviour).
+    sf_occupied = company.current_sf_occupied or 0
+    if sf_occupied <= 0:
         return []
 
     candidates = db.query(Property).filter(
@@ -610,14 +605,19 @@ def _compute_matched_properties(company: Company, db: Session) -> list:
     scored = []
     for prop in candidates:
         avail = prop.sf_avail or (int(prop.vacant_sf) if prop.vacant_sf else 0)
+        # Fix 2: suppress pairings whose SF gap exceeds MAX_SF_DELTA, unless this
+        # exact pair has already been contacted (contacted history is untouched).
+        if (sf_match_suppressed(sf_occupied, avail)
+                and not _pair_contacted(db, prop.id, company.id)):
+            continue
         reasons: list = []
         score = 0.0
         if avail > 0:
-            ratio = sf_needed / avail
+            ratio = sf_occupied / avail
             if 0.6 <= ratio <= 1.4:
                 pct = abs(1.0 - ratio) * 100
                 score += 40.0
-                reasons.append(f"SF fit ±{pct:.0f}% ({sf_needed:,} needed vs {avail:,} avail)")
+                reasons.append(f"SF fit ±{pct:.0f}% ({sf_occupied:,} occupied vs {avail:,} avail)")
         if company.current_submarket == prop.submarket:
             score += 30.0
             reasons.append(f"Same submarket ({prop.submarket})")
@@ -828,6 +828,33 @@ def update_lease_trajectory(
     return company
 
 
+class SfOccupiedUpdate(BaseModel):
+    # Nullable: clearing the field (SF unknown) is a valid edit.
+    current_sf_occupied: Optional[int] = None
+
+
+@router.patch("/{company_id}/sf-occupied", response_model=CompanyOut)
+def update_sf_occupied(
+    company_id: str,
+    payload: SfOccupiedUpdate,
+    db: Session = Depends(get_db),
+):
+    """Set the company's real occupied SF (CoStar "SF Occupied"), the single SF
+    field. Never calculated. Re-runs signals so sf_per_head / utilization update."""
+    company = db.query(Company).filter(Company.company_id == company_id).first()
+    if not company:
+        raise HTTPException(status_code=404, detail="Company not found")
+    if payload.current_sf_occupied is not None and payload.current_sf_occupied < 0:
+        raise HTTPException(status_code=422, detail="current_sf_occupied must be >= 0")
+
+    company.current_sf_occupied   = payload.current_sf_occupied
+    company.last_modified_by_user = datetime.utcnow()
+    _run_signals(company)
+    db.commit()
+    db.refresh(company)
+    return company
+
+
 @router.post("/refresh-signals", response_model=dict)
 def refresh_all_signals(db: Session = Depends(get_db)):
     companies = db.query(Company).all()
@@ -836,8 +863,6 @@ def refresh_all_signals(db: Session = Depends(get_db)):
     db.commit()
     return {"refreshed": len(companies)}
 
-
-# ── Outreach endpoints ────────────────────────────────────────────────────────
 
 @router.post("/{company_id}/draft-outreach")
 def draft_outreach(company_id: str, db: Session = Depends(get_db)):
@@ -852,12 +877,23 @@ def draft_outreach(company_id: str, db: Session = Depends(get_db)):
     if not company:
         raise HTTPException(status_code=404, detail="Company not found")
 
+    # Fix 1: block outreach generation until real occupied SF is on record. SF is
+    # never calculated, so an unknown figure means we cannot responsibly draft.
+    if not company.current_sf_occupied:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "SF: Unknown — set 'SF Occupied (CoStar)' on this company before "
+                "generating outreach."
+            ),
+        )
+
     company_dict = {
         "name":                 company.name,
         "industry":             company.industry,
         "current_headcount":    company.current_headcount,
         "headcount_growth_pct": company.headcount_growth_pct,
-        "current_sf":           company.current_sf,
+        "current_sf_occupied":  company.current_sf_occupied,
         "current_submarket":    company.current_submarket,
         "lease_expiry_months":  company.lease_expiry_months,
         "lease_expiry_date":    str(company.lease_expiry_date) if company.lease_expiry_date else None,

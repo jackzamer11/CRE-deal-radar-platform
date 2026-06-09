@@ -56,7 +56,7 @@ def _tenant(industry="Health Care", sf_needed=3500, lease_expiry_months=12):
         "name": "ZZZ Distinctive Tenant Co",
         "industry": industry,
         "current_submarket": "Tysons",
-        "estimated_sf_needed": sf_needed,
+        "current_sf_occupied": sf_needed,
         "lease_expiry_months": lease_expiry_months,
         "primary_contact_name": "Jane Smith",
         "opportunity_score": 80,

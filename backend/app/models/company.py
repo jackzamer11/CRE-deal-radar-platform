@@ -26,15 +26,17 @@ class Company(Base):
     # Location & Space
     current_address = Column(String, nullable=True)
     current_submarket = Column(String, nullable=True)
-    current_sf = Column(Integer, nullable=True)
-    sf_per_head = Column(Float, nullable=True)            # current_sf / headcount
+    # The company's ACTUAL occupied square footage, sourced from CoStar ("SF
+    # Occupied") or entered manually. This is the single SF field for a company:
+    # it is NEVER calculated from headcount. Null means "SF unknown".
+    current_sf_occupied = Column(Integer, nullable=True)
+    sf_per_head = Column(Float, nullable=True)            # current_sf_occupied / headcount
 
     # Lease
     lease_expiry_date = Column(Date, nullable=True)
     lease_expiry_months = Column(Integer, nullable=True)  # Months until expiry
     lease_expiry_source = Column(String, nullable=True)   # costar | manual | sec_filing | landlord_confirmed | public_record
     lease_expiry_last_verified = Column(Date, nullable=True)
-    estimated_sf_needed = Column(Integer, nullable=True)  # Projected space need
 
     # Behavioral Signals
     expansion_signal = Column(Boolean, default=False)

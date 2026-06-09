@@ -24,7 +24,7 @@ from app.schemas.dashboard import (
     DailyBriefing, DashboardStats, CallTarget, TenantMatchTarget,
     TenantMatchAction, AcquisitionTarget, ExpiredLease,
 )
-from app.services.match_scoring import medical_mismatch_penalty
+from app.services.match_scoring import medical_mismatch_penalty, sf_match_suppressed
 
 
 _SIGNAL_LABEL = {
@@ -171,8 +171,8 @@ def _compute_tenant_actions(db: Session, snoozed: bool = False) -> list:
     # Active snooze: snoozed_until IS NULL or <= today (expired snoozes already
     # auto-cleared to NULL on briefing load). Null-safe: NULL = active.
     companies = db.query(Company).filter(
-        Company.estimated_sf_needed.isnot(None),
-        Company.estimated_sf_needed > 0,
+        Company.current_sf_occupied.isnot(None),
+        Company.current_sf_occupied > 0,
         (Company.snoozed_until == None),
     ).all()
 
@@ -191,8 +191,12 @@ def _compute_tenant_actions(db: Session, snoozed: bool = False) -> list:
         if avail_sf <= 0:
             continue
         for co in companies:
-            sf_needed = co.estimated_sf_needed or 0
+            sf_needed = co.current_sf_occupied or 0
             if sf_needed <= 0:
+                continue
+            # Fix 2: suppress pairings whose SF gap exceeds MAX_SF_DELTA, unless the
+            # pair is already contacted (contacted pairs are never disturbed).
+            if sf_match_suppressed(sf_needed, avail_sf) and (prop.id, co.id) not in contacted:
                 continue
             score = 0.0
             ratio = sf_needed / avail_sf if avail_sf > 0 else 0
@@ -327,7 +331,7 @@ def _compute_expired_leases(db: Session) -> list:
             company_id=co.company_id,
             name=co.name,
             industry=co.industry,
-            sf_needed=co.estimated_sf_needed,
+            sf_needed=co.current_sf_occupied,
             submarket=co.current_submarket,
             headcount=co.current_headcount,
         )

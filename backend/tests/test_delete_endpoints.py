@@ -71,8 +71,7 @@ def _make_company(session):
         name="Delete Co",
         industry="Technology",
         current_submarket="Tysons",
-        current_sf=4000,
-        estimated_sf_needed=4000,
+        current_sf_occupied=4000,
     )
     session.add(co)
     session.commit()

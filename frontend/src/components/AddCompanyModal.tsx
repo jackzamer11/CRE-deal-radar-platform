@@ -40,7 +40,7 @@ const defaultForm = {
   open_positions:        '',
   current_address:       '',
   current_submarket:     '',
-  current_sf:            '',
+  current_sf_occupied:   '',
   lease_expiry_months:   '',
   primary_contact_name:  '',
   primary_contact_title: '',
@@ -100,10 +100,10 @@ export default function AddCompanyModal({ onClose, onSaved }: Props) {
   const headcount    = parseInt(form.current_headcount) || 0
   const prev         = parseInt(form.headcount_12mo_ago) || 0
   const growthPct    = prev > 0 ? ((headcount - prev) / prev * 100).toFixed(0) : null
-  const sfPerHead    = form.current_sf && headcount > 0
-    ? (parseInt(form.current_sf) / headcount).toFixed(0) : null
-  // SF needed = the company's real occupied SF (sf_occupied). No estimate.
-  const sfNeeded     = form.current_sf ? parseInt(form.current_sf) : null
+  const sfPerHead    = form.current_sf_occupied && headcount > 0
+    ? (parseInt(form.current_sf_occupied) / headcount).toFixed(0) : null
+  // SF = the company's real occupied SF (current_sf_occupied). Never estimated.
+  const sfNeeded     = form.current_sf_occupied ? parseInt(form.current_sf_occupied) : null
 
   const handleSubmit = async () => {
     setSaving(true)
@@ -118,7 +118,7 @@ export default function AddCompanyModal({ onClose, onSaved }: Props) {
         open_positions:        form.open_positions ? parseInt(form.open_positions) : 0,
         current_address:       form.current_address || undefined,
         current_submarket:     form.current_submarket || undefined,
-        current_sf:            form.current_sf ? parseInt(form.current_sf) : undefined,
+        current_sf_occupied:   form.current_sf_occupied ? parseInt(form.current_sf_occupied) : undefined,
         lease_expiry_months:   form.lease_expiry_months ? parseInt(form.lease_expiry_months) : undefined,
         primary_contact_name:  form.primary_contact_name || undefined,
         primary_contact_title: form.primary_contact_title || undefined,
@@ -270,9 +270,9 @@ export default function AddCompanyModal({ onClose, onSaved }: Props) {
                     {SUBMARKETS.map(s => <option key={s} value={s}>{s}</option>)}
                   </select>
                 </Field>
-                <Field label="Current SF Leased">
+                <Field label="SF Occupied (CoStar)" hint="real occupied SF — never estimated; leave blank if unknown">
                   <input className={inputCls} type="number" placeholder="e.g. 5500"
-                    value={form.current_sf} onChange={set('current_sf')} />
+                    value={form.current_sf_occupied} onChange={set('current_sf_occupied')} />
                 </Field>
               </div>
               <Field label="Months Until Lease Expiry" hint="most important signal — be precise">

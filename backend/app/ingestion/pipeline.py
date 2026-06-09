@@ -33,7 +33,6 @@ from app.services.scoring_model import score_property
 from app.services.deal_creation_engine import (
     create_opportunity_from_match,
     _is_nearby,
-    _estimated_sf_needed,
     ADJACENT_SUBMARKETS,
 )
 from app.config import settings
@@ -177,8 +176,8 @@ def refresh_property_signals(db: Session, prop: Property) -> None:
 def refresh_company_signals(db: Session, company: Company) -> None:
     """Full signal recompute for a single company."""
     if company.current_headcount:
-        if company.current_sf:
-            company.sf_per_head = round(company.current_sf / company.current_headcount, 1)
+        if company.current_sf_occupied:
+            company.sf_per_head = round(company.current_sf_occupied / company.current_headcount, 1)
 
         if company.headcount_12mo_ago and company.headcount_12mo_ago > 0:
             company.headcount_growth_pct = round(
@@ -195,7 +194,7 @@ def refresh_company_signals(db: Session, company: Company) -> None:
         company.open_positions or 0,
         company.current_headcount,          # None → signal abstains correctly
         company.lease_expiry_months,
-        company.current_sf,
+        company.current_sf_occupied,
         company.current_submarket,
         tenant_representative=company.tenant_representative,
         nearby_company_count=1,
@@ -229,7 +228,6 @@ def refresh_company_signals(db: Session, company: Company) -> None:
         and (company.lease_expiry_months or 999) <= 24
         and (company.sf_per_head or 999) <= 150
     )
-    company.estimated_sf_needed = _estimated_sf_needed(company)
 
 
 def run_deal_creation(db: Session) -> dict:
@@ -238,7 +236,7 @@ def run_deal_creation(db: Session) -> dict:
 
     Runs a full cross-product of ALL companies × ALL properties:
       - Submarket match or adjacency (ADJACENT_SUBMARKETS map)
-      - SF fit: company current_sf ±30% vs property RBA (skipped when current_sf unknown)
+      - SF fit: company current_sf_occupied ±30% vs property RBA (skipped when unknown)
       - Final threshold applied by create_opportunity_from_match (IGNORE priority → skip)
     Companies with missing lease expiry or headcount (insufficient_data=True) are
     included — their opportunities are scored on available signals only.
@@ -269,7 +267,7 @@ def run_deal_creation(db: Session) -> dict:
             company.open_positions or 0,
             company.current_headcount,
             company.lease_expiry_months,
-            company.current_sf,
+            company.current_sf_occupied,
             company.current_submarket,
             tenant_representative=company.tenant_representative,
         )
@@ -290,10 +288,10 @@ def run_deal_creation(db: Session) -> dict:
                 continue
             passed_submarket += 1
 
-            # Filter 2: SF fit ±30% of tenant's current footprint
-            if company.current_sf:
-                lo = company.current_sf * 0.70
-                hi = company.current_sf * 1.30
+            # Filter 2: SF fit ±30% of tenant's real occupied footprint
+            if company.current_sf_occupied:
+                lo = company.current_sf_occupied * 0.70
+                hi = company.current_sf_occupied * 1.30
                 if not (lo <= prop.total_sf <= hi):
                     continue
             passed_sf_fit += 1

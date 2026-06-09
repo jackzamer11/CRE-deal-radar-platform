@@ -81,8 +81,7 @@ def _make_tenant(session, *, is_medical):
         name="Tenant Co",
         industry="Technology",
         current_submarket="Tysons",   # same submarket → +30
-        current_sf=5000,
-        estimated_sf_needed=5000,      # ratio 1.0 → +40
+        current_sf_occupied=5000,      # ratio 1.0 → +40
         lease_expiry_months=10,        # <= 18 → +10
         is_medical=is_medical,
     )
@@ -128,7 +127,7 @@ def test_medical_property_nonmedical_tenant_scores_20_lower(db_session):
     assert penalized > 0
 
 
-# ── (2) CoStar upsert sets estimated_sf_needed = current_sf ─────────────────────
+# ── (2) CoStar upsert sets current_sf_occupied from "SF Occupied" ───────────────
 def _costar_row(tenant_name, sf_occupied):
     base = {col: "" for col in COSTAR_TENANT_COLS}
     base.update({
@@ -156,18 +155,16 @@ def _upload(client, rows):
     return resp.json()
 
 
-def test_costar_upsert_sets_estimated_sf_needed_to_current_sf(client, db_session):
-    # Insert path
+def test_costar_upsert_sets_current_sf_occupied(client, db_session):
+    # Insert path — CoStar "SF Occupied" lands in the single current_sf_occupied field.
     res1 = _upload(client, [_costar_row("UpsertCo", 6000)])
     assert res1["inserted"] == 1
     co = db_session.query(Company).filter_by(name="UpsertCo").first()
     assert co is not None
-    assert co.current_sf == 6000
-    assert co.estimated_sf_needed == co.current_sf == 6000
+    assert co.current_sf_occupied == 6000
 
     # Update (re-import same tenant+address) path with a different SF
     res2 = _upload(client, [_costar_row("UpsertCo", 8200)])
     assert res2["updated"] == 1
     db_session.refresh(co)
-    assert co.current_sf == 8200
-    assert co.estimated_sf_needed == co.current_sf == 8200
+    assert co.current_sf_occupied == 8200
