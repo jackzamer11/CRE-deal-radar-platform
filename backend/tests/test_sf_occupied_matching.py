@@ -220,6 +220,41 @@ def test_reported_hrr_vs_pitt_st_suppressed(db_session):
     ), "N Pitt St (2,954 avail) must be suppressed for HRR (40,000) (company surface)"
 
 
+def test_company_card_endpoint_suppresses_contacted_mismatch(client, db_session):
+    """End-to-end via the Company-card endpoint (GET /api/companies/{id}): a gross SF
+    mismatch must NOT appear even when the pair has already been contacted.
+
+    This reproduces the reported bug exactly — the contacted exemption used to bypass
+    the SF delta and surface 1240-1250 N Pitt St (2,954 avail) for Human Resources
+    Research (40,000 occupied). The SF delta is now a hard filter on this display.
+    """
+    prop = _property(
+        db_session, sf_avail=2954, total_sf=42000, vacant_sf=2954.0,
+        property_id="NVA-PITT", submarket="Alexandria (Old Town)",
+    )
+    co = Company(
+        company_id="CO-HRR", name="Human Resources Research", industry="Federal",
+        current_submarket="Alexandria (Old Town)", current_sf_occupied=40000,
+        current_rent_psf=40.0, lease_expiry_months=12, expansion_signal=True,
+    )
+    db_session.add(co)
+    db_session.commit()
+    # Mark the exact pair contacted — this is what previously bypassed suppression.
+    db_session.add(OutreachLog(
+        property_id=prop.id, company_id=co.id, outreach_type="tenant_match",
+        marked_contacted=True,
+    ))
+    db_session.commit()
+
+    resp = client.get("/api/companies/CO-HRR")
+    assert resp.status_code == 200, resp.text
+    matched = resp.json().get("matched_properties", [])
+    assert not any(p["property_id"] == "NVA-PITT" for p in matched), (
+        "1240-1250 N Pitt St (2,954 SF avail) must NOT appear on HRR's Company card "
+        f"(Δ37,046 ≫ 800), even when contacted; got: {matched}"
+    )
+
+
 # ── (5) contacted pairs are excluded from the delta filter ──────────────────────
 def test_contacted_pair_excluded_from_delta_filter(db_session):
     """A pair whose SF gap exceeds MAX_SF_DELTA is normally suppressed — but if the
