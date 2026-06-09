@@ -4,11 +4,12 @@ import {
   Users, Filter, X, TrendingUp, Clock, MapPin, Plus, RefreshCw,
   Upload, Pencil, Check, AlertTriangle, Zap, Send, Building2, Trash2,
 } from 'lucide-react'
-import { getCompanies, getCompany, updateCompanyLease, updateCompanyTrajectory, unsnoozeCompany, deleteCompany } from '../api/client'
+import { getCompanies, getCompany, updateCompanyLease, unsnoozeCompany, deleteCompany } from '../api/client'
 import type { CompanyListOut, CompanyOut, RepClass } from '../types'
 import { PriorityBadge } from '../components/PriorityBadge'
 import ScoreBadge from '../components/ScoreBadge'
 import AddCompanyModal from '../components/AddCompanyModal'
+import EditCompanyModal from '../components/EditCompanyModal'
 import CoStarTenantImportModal from '../components/CoStarTenantImportModal'
 import OutreachDraftModal from '../components/OutreachDraftModal'
 import CompanySnoozeModal from '../components/CompanySnoozeModal'
@@ -20,13 +21,6 @@ const LEASE_SOURCES = [
   { value: 'sec_filing',         label: 'SEC filing' },
   { value: 'landlord_confirmed', label: 'Landlord confirmed' },
   { value: 'public_record',      label: 'Public record' },
-]
-
-const TRAJECTORY_OPTIONS = [
-  { value: 'AUTO',        label: 'Auto (tiered SF/head)',   color: 'text-ink-secondary' },
-  { value: 'GROWING',     label: 'Growing',                 color: 'text-emerald-400'   },
-  { value: 'FLAT',        label: 'Flat (steady-state)',     color: 'text-blue-400'       },
-  { value: 'CONTRACTING', label: 'Contracting',             color: 'text-amber-400'      },
 ]
 
 function GrowthBadge({ pct }: { pct: number | null }) {
@@ -103,10 +97,8 @@ export default function Companies() {
   const [showTenantImportModal, setShowTenantImportModal] = useState(false)
   const [showOutreachModal, setShowOutreachModal]   = useState(false)
   const [showSnoozeModal, setShowSnoozeModal]       = useState(false)
+  const [showEditModal, setShowEditModal]           = useState(false)
   const [showSnoozedOnly, setShowSnoozedOnly]       = useState(false)
-
-  // Trajectory state
-  const [trajectorySaving, setTrajectorySaving] = useState(false)
 
   // Lease expiry inline edit state
   const [editingLease, setEditingLease]     = useState(false)
@@ -161,17 +153,6 @@ export default function Companies() {
   const needingExpiryCount   = companies.filter(c => c.lease_expiry_months === null).length
   const needingOutreachCount = companies.length
 
-  const saveTrajectory = async (company: typeof selected, value: string) => {
-    if (!company) return
-    setTrajectorySaving(true)
-    try {
-      await updateCompanyTrajectory(company.company_id, value)
-      setSelected({ ...company, lease_trajectory: value })
-      load()
-    } finally {
-      setTrajectorySaving(false)
-    }
-  }
 
   const openLeaseEdit = () => {
     setLeaseMonthsInput('')
@@ -552,6 +533,13 @@ export default function Companies() {
           onSnoozed={handleSnoozed}
         />
       )}
+      {showEditModal && selected && (
+        <EditCompanyModal
+          company={selected}
+          onClose={() => setShowEditModal(false)}
+          onSaved={(updated) => { setSelected(updated); setShowEditModal(false); load() }}
+        />
+      )}
 
       {/* Detail panel */}
       {selected && !showOutreachModal && (
@@ -563,6 +551,13 @@ export default function Companies() {
                 <div className="text-xs text-ink-muted mt-0.5">{selected.industry}</div>
               </div>
               <div className="flex items-center gap-1">
+                <button
+                  onClick={() => setShowEditModal(true)}
+                  title="Edit company"
+                  className="text-ink-muted hover:text-accent-blue p-1 rounded-lg hover:bg-surface-muted"
+                >
+                  <Pencil size={16} />
+                </button>
                 <button
                   onClick={() => setShowSnoozeModal(true)}
                   title="Snooze company — remove from Daily Briefing / outreach queue"
@@ -687,28 +682,12 @@ export default function Companies() {
                     )}
                   </div>
 
+                  <Row
+                    label="SF Occupied (CoStar)"
+                    value={selected.current_sf_occupied != null ? `${selected.current_sf_occupied.toLocaleString()} SF` : 'Unknown'}
+                  />
                   <Row label="Submarket" value={selected.current_submarket || '—'} />
                   <Row label="Expansion Signal" value={selected.expansion_signal ? '✓ Active' : '—'} />
-
-                  {/* Lease Trajectory dropdown */}
-                  <div className="flex justify-between items-center">
-                    <span className="text-xs text-ink-muted flex-shrink-0">Lease Trajectory</span>
-                    <select
-                      value={selected.lease_trajectory || 'AUTO'}
-                      disabled={trajectorySaving}
-                      onChange={e => saveTrajectory(selected, e.target.value)}
-                      className={`text-xs bg-surface-card border border-surface-border rounded-lg px-2 py-1
-                                  focus:outline-none focus:border-accent-blue/50 disabled:opacity-50
-                                  ${selected.lease_trajectory === 'CONTRACTING' ? 'text-amber-400'
-                                    : selected.lease_trajectory === 'GROWING' ? 'text-emerald-400'
-                                    : selected.lease_trajectory === 'FLAT' ? 'text-blue-400'
-                                    : 'text-ink-secondary'}`}
-                    >
-                      {TRAJECTORY_OPTIONS.map(opt => (
-                        <option key={opt.value} value={opt.value}>{opt.label}</option>
-                      ))}
-                    </select>
-                  </div>
 
                   {/* Tenant Rep */}
                   <div className="flex justify-between items-start pt-0.5">

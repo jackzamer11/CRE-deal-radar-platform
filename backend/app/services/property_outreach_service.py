@@ -284,6 +284,26 @@ def _submarket_context(submarket: Optional[str]) -> str:
     return ""
 
 
+def _submarket_vacancy(submarket: Optional[str]) -> Optional[float]:
+    """Return the CBRE Q1 2026 vacancy rate for a submarket, or None if unknown."""
+    if not submarket:
+        return None
+    b = CBRE_2026_BENCHMARKS.get(submarket)
+    return b["vacancy"] if b else None
+
+
+def _vacancy_urgency_sentence(submarket: Optional[str]) -> Optional[str]:
+    """Fix 3: a single submarket-vacancy urgency line for tenant-side emails.
+
+    Returns the exact sentence when a CBRE vacancy rate exists for the submarket,
+    else None (so the caller omits it entirely). Vacancy only — never rent PSF.
+    """
+    vac = _submarket_vacancy(submarket)
+    if vac is None:
+        return None
+    return f"With {submarket}'s vacancy rate at {vac:.1f}%, quality options are moving quickly."
+
+
 def search_property_intelligence(property_dict: dict) -> list:
     """Run two Anthropic web searches on the property+owner and return structured findings.
 
@@ -816,14 +836,13 @@ def _build_tenant_side(p: dict, tenant_dict: dict) -> dict:
         "\n- Always phrase any square-footage figure as 'approximately X SF' (rounded), never an exact number."
     )
 
-    # Fix 3: CBRE data is optional and must support a selling point — e.g. a LOW
-    # submarket vacancy rate that creates urgency. Never a data dump.
+    # Fix 3: the only market statistic allowed on tenant-side is a single submarket
+    # VACANCY-rate urgency line, injected deterministically post-LLM (see
+    # generate_property_outreach). The model must not add any stats of its own —
+    # especially never rent PSF.
     tenant_proof_rule = (
-        f"You may reference ONE CBRE Q1 2026 {submarket} number ONLY if it supports the urgency of "
-        f"acting now — e.g. a low vacancy rate meaning good space is scarce. If it does not directly "
-        f"support a selling point, leave it out entirely. Never list multiple stats."
-        if benchmark else
-        "Do NOT cite or invent any market statistic."
+        "Do NOT cite or invent any market statistic, rent figure, or vacancy "
+        "number — a single market line is added separately. Never mention rent PSF."
     )
 
     system = (
@@ -1182,6 +1201,28 @@ def generate_property_outreach(
     # Remove duplicate lease-expiry phrase on tenant-side copy.
     if is_tenant_side and tenant_dict:
         email_body = _dedup_lease_clause(email_body, tenant_dict.get("lease_expiry_months"))
+
+    # Fix 3: reintroduce CBRE submarket vacancy on tenant-side ONLY as a single
+    # urgency line, placed right after the property pitch (before the closing ask).
+    # Omitted entirely when no submarket vacancy is known. Vacancy only — no rent PSF.
+    if is_tenant_side:
+        vac_sentence = _vacancy_urgency_sentence(property_dict.get("submarket"))
+        if vac_sentence and vac_sentence not in email_body:
+            paras = email_body.split("\n\n")
+            ask_idx = next(
+                (i for i, p in enumerate(paras) if "I'd welcome a brief call" in p),
+                None,
+            )
+            if ask_idx is None:
+                ask_idx = next(
+                    (i for i, p in enumerate(paras) if p.strip().startswith("Thank you")),
+                    None,
+                )
+            if ask_idx is None:
+                paras.append(vac_sentence)
+            else:
+                paras.insert(ask_idx, vac_sentence)
+            email_body = "\n\n".join(paras)
 
     # Safety strip: property-side copy must never mention headcount,
     # and must never contain a redundant "I propose a short call" sentence.

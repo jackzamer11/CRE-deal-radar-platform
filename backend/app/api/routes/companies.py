@@ -828,6 +828,33 @@ def update_lease_trajectory(
     return company
 
 
+class SfOccupiedUpdate(BaseModel):
+    # Nullable: clearing the field (SF unknown) is a valid edit.
+    current_sf_occupied: Optional[int] = None
+
+
+@router.patch("/{company_id}/sf-occupied", response_model=CompanyOut)
+def update_sf_occupied(
+    company_id: str,
+    payload: SfOccupiedUpdate,
+    db: Session = Depends(get_db),
+):
+    """Set the company's real occupied SF (CoStar "SF Occupied"), the single SF
+    field. Never calculated. Re-runs signals so sf_per_head / utilization update."""
+    company = db.query(Company).filter(Company.company_id == company_id).first()
+    if not company:
+        raise HTTPException(status_code=404, detail="Company not found")
+    if payload.current_sf_occupied is not None and payload.current_sf_occupied < 0:
+        raise HTTPException(status_code=422, detail="current_sf_occupied must be >= 0")
+
+    company.current_sf_occupied   = payload.current_sf_occupied
+    company.last_modified_by_user = datetime.utcnow()
+    _run_signals(company)
+    db.commit()
+    db.refresh(company)
+    return company
+
+
 @router.post("/refresh-signals", response_model=dict)
 def refresh_all_signals(db: Session = Depends(get_db)):
     companies = db.query(Company).all()
@@ -836,8 +863,6 @@ def refresh_all_signals(db: Session = Depends(get_db)):
     db.commit()
     return {"refreshed": len(companies)}
 
-
-# ── Outreach endpoints ────────────────────────────────────────────────────────
 
 @router.post("/{company_id}/draft-outreach")
 def draft_outreach(company_id: str, db: Session = Depends(get_db)):
