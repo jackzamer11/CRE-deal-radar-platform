@@ -285,23 +285,61 @@ def _submarket_context(submarket: Optional[str]) -> str:
 
 
 def _submarket_vacancy(submarket: Optional[str]) -> Optional[float]:
-    """Return the CBRE Q1 2026 vacancy rate for a submarket, or None if unknown."""
+    """Return the CBRE Q1 2026 vacancy rate (as a percent, e.g. 7.4) for a
+    submarket, or None if unknown."""
     if not submarket:
         return None
     b = CBRE_2026_BENCHMARKS.get(submarket)
     return b["vacancy"] if b else None
 
 
-def _vacancy_urgency_sentence(submarket: Optional[str]) -> Optional[str]:
-    """Fix 3: a single submarket-vacancy urgency line for tenant-side emails.
+# Vacancy-rate thresholds (as fractions of 1.0) that gate the CBRE urgency line.
+#   Tenant: a LOW-vacancy submarket creates scarcity urgency  → cite only below 10%.
+#   Owner:  a HIGH-vacancy submarket makes tenants scarce      → cite only above 15%.
+TENANT_VACANCY_URGENCY_THRESHOLD = 0.10
+OWNER_VACANCY_URGENCY_THRESHOLD  = 0.15
 
-    Returns the exact sentence when a CBRE vacancy rate exists for the submarket,
-    else None (so the caller omits it entirely). Vacancy only — never rent PSF.
+
+def _tenant_vacancy_sentence(submarket: Optional[str]) -> Optional[str]:
+    """Fix 2: tenant-side CBRE vacancy line — only when submarket vacancy is BELOW
+    10% (scarcity urgency). At/above 10%, return None and rely on lease timing.
+    Vacancy only — never rent PSF.
     """
     vac = _submarket_vacancy(submarket)
-    if vac is None:
+    if vac is None or (vac / 100.0) >= TENANT_VACANCY_URGENCY_THRESHOLD:
         return None
-    return f"With {submarket}'s vacancy rate at {vac:.1f}%, quality options are moving quickly."
+    return f"With {submarket}'s vacancy rate at {vac:.1f}%, quality options are limited."
+
+
+def _owner_vacancy_sentence(submarket: Optional[str]) -> Optional[str]:
+    """Fix 3: owner-side CBRE vacancy line — only when submarket vacancy is ABOVE
+    15% (tenant scarcity). At/below 15%, return None so the caller substitutes a
+    lease-timeline urgency line instead. Vacancy only — never rent PSF.
+    """
+    vac = _submarket_vacancy(submarket)
+    if vac is None or (vac / 100.0) <= OWNER_VACANCY_URGENCY_THRESHOLD:
+        return None
+    return (
+        f"With {submarket}'s vacancy rate at {vac:.1f}%, qualified tenants are harder "
+        f"to come by — this is one worth moving on."
+    )
+
+
+def _owner_lease_timeline_sentence(tenant_dict: Optional[dict]) -> str:
+    """Owner-side urgency fallback when the vacancy line is omitted: lean on the
+    matched tenant's lease timeline as the reason to move now. Never names the
+    tenant or its industry."""
+    exp = (tenant_dict or {}).get("lease_expiry_months")
+    if exp is not None:
+        mo = "month" if int(exp) == 1 else "months"
+        return (
+            f"With the tenant's lease expiring in approximately {exp} {mo}, the timing is the "
+            f"urgency here — this is one worth moving on while it lines up."
+        )
+    return (
+        "With the tenant's lease timeline already in motion, the timing is the urgency "
+        "here — this is one worth moving on while it lines up."
+    )
 
 
 def search_property_intelligence(property_dict: dict) -> list:
@@ -1202,27 +1240,31 @@ def generate_property_outreach(
     if is_tenant_side and tenant_dict:
         email_body = _dedup_lease_clause(email_body, tenant_dict.get("lease_expiry_months"))
 
-    # Fix 3: reintroduce CBRE submarket vacancy on tenant-side ONLY as a single
-    # urgency line, placed right after the property pitch (before the closing ask).
-    # Omitted entirely when no submarket vacancy is known. Vacancy only — no rent PSF.
+    # CBRE submarket-vacancy urgency line, injected as a single sentence right
+    # after the property pitch (before the closing ask). Vacancy only — no rent PSF.
+    def _insert_before_ask(body: str, sentence: str) -> str:
+        if not sentence or sentence in body:
+            return body
+        paras = body.split("\n\n")
+        idx = next((i for i, p in enumerate(paras) if "I'd welcome a brief call" in p), None)
+        if idx is None:
+            idx = next((i for i, p in enumerate(paras) if p.strip().startswith("Thank you")), None)
+        if idx is None:
+            paras.append(sentence)
+        else:
+            paras.insert(idx, sentence)
+        return "\n\n".join(paras)
+
+    submarket = property_dict.get("submarket")
     if is_tenant_side:
-        vac_sentence = _vacancy_urgency_sentence(property_dict.get("submarket"))
-        if vac_sentence and vac_sentence not in email_body:
-            paras = email_body.split("\n\n")
-            ask_idx = next(
-                (i for i, p in enumerate(paras) if "I'd welcome a brief call" in p),
-                None,
-            )
-            if ask_idx is None:
-                ask_idx = next(
-                    (i for i, p in enumerate(paras) if p.strip().startswith("Thank you")),
-                    None,
-                )
-            if ask_idx is None:
-                paras.append(vac_sentence)
-            else:
-                paras.insert(ask_idx, vac_sentence)
-            email_body = "\n\n".join(paras)
+        # Fix 2: cite vacancy only when it is BELOW 10% (scarcity); else omit and
+        # let the lease-timing hook carry the urgency.
+        email_body = _insert_before_ask(email_body, _tenant_vacancy_sentence(submarket))
+    elif outreach_type in ("tenant_match", "for_sale_vacancy"):
+        # Fix 3: owner-side cites vacancy only when it is ABOVE 15% (tenant
+        # scarcity); otherwise substitute a lease-timeline urgency line.
+        owner_line = _owner_vacancy_sentence(submarket) or _owner_lease_timeline_sentence(tenant_dict)
+        email_body = _insert_before_ask(email_body, owner_line)
 
     # Safety strip: property-side copy must never mention headcount,
     # and must never contain a redundant "I propose a short call" sentence.

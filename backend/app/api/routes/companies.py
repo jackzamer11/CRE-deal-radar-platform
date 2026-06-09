@@ -604,9 +604,11 @@ def _compute_matched_properties(company: Company, db: Session) -> list:
 
     scored = []
     for prop in candidates:
-        avail = prop.sf_avail or (int(prop.vacant_sf) if prop.vacant_sf else 0)
-        # Fix 2: suppress pairings whose SF gap exceeds MAX_SF_DELTA, unless this
-        # exact pair has already been contacted (contacted history is untouched).
+        # Fix 1: the SF delta filter uses AVAILABLE SF only (never total/vacant).
+        avail = prop.sf_avail or 0
+        # Fix 2: suppress pairings whose gap to available SF exceeds MAX_SF_DELTA
+        # (or whose available SF is null), unless this exact pair is already
+        # contacted (contacted history is untouched).
         if (sf_match_suppressed(sf_occupied, avail)
                 and not _pair_contacted(db, prop.id, company.id)):
             continue

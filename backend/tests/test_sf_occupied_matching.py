@@ -61,10 +61,10 @@ def client(db_session):
         app.dependency_overrides.clear()
 
 
-def _property(db, *, sf_avail=5000, property_id="NVA-1"):
+def _property(db, *, sf_avail=5000, total_sf=50000, property_id="NVA-1"):
     p = Property(
         property_id=property_id, address="1 Plaza", submarket="Tysons",
-        total_sf=50000, year_built=2005, sf_avail=sf_avail, owner_name="Owner LLC",
+        total_sf=total_sf, year_built=2005, sf_avail=sf_avail, owner_name="Owner LLC",
         in_place_rent_psf=35.0, market_rent_psf=38.0, market_cap_rate=6.5,
         listed_for_sale=False,
     )
@@ -149,6 +149,31 @@ def test_799_delta_appears_in_matches(db_session):
     assert any(m.company_id == "CO-NEAR" for m in matched), (
         "a pairing within MAX_SF_DELTA must still match"
     )
+
+
+# ── (Fix 1) delta filter uses AVAILABLE SF, not Total SF ────────────────────────
+def test_delta_uses_available_sf_not_total_sf(db_session):
+    """Total SF within 800 of occupied must NOT save a pairing whose AVAILABLE SF
+    gap exceeds 800 — the filter compares against available SF only."""
+    from app.api.routes.properties import _compute_matched_tenants
+    # occupied 5000; total_sf 5200 (Δ200, within tolerance) but sf_avail 6000 (Δ1000).
+    prop = _property(db_session, sf_avail=6000, total_sf=5200)
+    _company(db_session, sf_occupied=5000, company_id="CO-AVAILFAR")
+    matched = _compute_matched_tenants(prop, db_session)
+    assert not any(m.company_id == "CO-AVAILFAR" for m in matched), (
+        "delta must be measured against available SF (6000), not total SF (5200)"
+    )
+
+
+def test_null_available_sf_suppresses(db_session):
+    """Fix 1: when available SF is null the pairing is suppressed entirely."""
+    from app.api.routes.properties import _compute_matched_tenants
+    assert sf_match_suppressed(5000, None) is True
+    assert sf_match_suppressed(5000, 0) is True
+    prop = _property(db_session, sf_avail=None)
+    _company(db_session, sf_occupied=5000, company_id="CO-NOAVAIL")
+    matched = _compute_matched_tenants(prop, db_session)
+    assert matched == [], "null available SF must suppress all matches for the property"
 
 
 # ── (5) contacted pairs are excluded from the delta filter ──────────────────────
