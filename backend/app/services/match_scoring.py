@@ -5,6 +5,9 @@ These live in one module so every match surface (the Daily Briefing tenant
 actions, the property-side matched-tenant card, and the company-side matched-
 property card) applies identical scoring rules.
 """
+import logging
+
+logger = logging.getLogger(__name__)
 
 # Soft penalty applied when exactly one side of a match is medical (a medical
 # property matched to a non-medical tenant, or vice versa). It is a SOFT signal:
@@ -51,8 +54,24 @@ def sf_match_suppressed(company_sf_occupied, property_available_sf) -> bool:
         abs(company_sf_occupied - property_available_sf) > MAX_SF_DELTA.
     """
     if not company_sf_occupied:
+        logger.debug(
+            "sf_match_suppressed: occupied=%r available=%r -> False "
+            "(tenant occupied SF unknown; handled elsewhere)",
+            company_sf_occupied, property_available_sf,
+        )
         return False
     if not property_available_sf:
+        logger.debug(
+            "sf_match_suppressed: occupied=%r available=%r -> True "
+            "(available SF unknown; cannot size the pairing)",
+            company_sf_occupied, property_available_sf,
+        )
         return True
-    return abs(int(company_sf_occupied) - int(property_available_sf)) > MAX_SF_DELTA
+    delta = abs(int(company_sf_occupied) - int(property_available_sf))
+    suppressed = delta > MAX_SF_DELTA
+    logger.debug(
+        "sf_match_suppressed: occupied=%s available=%s delta=%s threshold=%s -> %s",
+        int(company_sf_occupied), int(property_available_sf), delta, MAX_SF_DELTA, suppressed,
+    )
+    return suppressed
 

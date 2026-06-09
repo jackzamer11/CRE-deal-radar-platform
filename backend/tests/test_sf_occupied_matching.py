@@ -61,10 +61,12 @@ def client(db_session):
         app.dependency_overrides.clear()
 
 
-def _property(db, *, sf_avail=5000, total_sf=50000, property_id="NVA-1"):
+def _property(db, *, sf_avail=5000, total_sf=50000, vacant_sf=None, property_id="NVA-1",
+              submarket="Tysons"):
     p = Property(
-        property_id=property_id, address="1 Plaza", submarket="Tysons",
-        total_sf=total_sf, year_built=2005, sf_avail=sf_avail, owner_name="Owner LLC",
+        property_id=property_id, address="1 Plaza", submarket=submarket,
+        total_sf=total_sf, year_built=2005, sf_avail=sf_avail, vacant_sf=vacant_sf,
+        owner_name="Owner LLC",
         in_place_rent_psf=35.0, market_rent_psf=38.0, market_cap_rate=6.5,
         listed_for_sale=False,
     )
@@ -174,6 +176,83 @@ def test_null_available_sf_suppresses(db_session):
     _company(db_session, sf_occupied=5000, company_id="CO-NOAVAIL")
     matched = _compute_matched_tenants(prop, db_session)
     assert matched == [], "null available SF must suppress all matches for the property"
+
+
+def test_delta_ignores_vacant_sf(db_session):
+    """The delta filter must read AVAILABLE SF, never vacant_sf: a vacant_sf within
+    800 of occupied must NOT save a pairing whose available SF gap exceeds 800."""
+    from app.api.routes.properties import _compute_matched_tenants
+    # occupied 5000; vacant_sf 5000 (Δ0) but sf_avail 6000 (Δ1000) → suppressed.
+    prop = _property(db_session, sf_avail=6000, vacant_sf=5000.0)
+    _company(db_session, sf_occupied=5000, company_id="CO-VACFAR")
+    matched = _compute_matched_tenants(prop, db_session)
+    assert not any(m.company_id == "CO-VACFAR" for m in matched), (
+        "delta must use available SF (6000), not vacant_sf (5000)"
+    )
+
+
+# ── Reported regression: Human Resources Research (40,000) vs N Pitt St (2,954) ──
+def test_reported_hrr_vs_pitt_st_suppressed(db_session):
+    """Regression for the reported bug: a 40,000 SF tenant must be suppressed against
+    a 2,954 SF available property (Δ37,046 ≫ 800) on BOTH match surfaces."""
+    from app.api.routes.properties import _compute_matched_tenants
+    from app.api.routes.companies import _compute_matched_properties
+
+    # Total/vacant deliberately set near the occupied figure to prove they are
+    # NOT what the delta reads — only sf_avail (2,954) is.
+    prop = _property(
+        db_session, sf_avail=2954, total_sf=40000, vacant_sf=39500.0,
+        property_id="NVA-PITT", submarket="Alexandria (Old Town)",
+    )
+    co = Company(
+        company_id="CO-HRR", name="Human Resources Research", industry="Federal",
+        current_submarket="Alexandria (Old Town)", current_sf_occupied=40000,
+        lease_expiry_months=12, expansion_signal=True,
+    )
+    db_session.add(co)
+    db_session.commit()
+
+    assert not any(
+        m.company_id == "CO-HRR" for m in _compute_matched_tenants(prop, db_session)
+    ), "HRR (40,000) must be suppressed against 2,954 SF available (property surface)"
+    assert not any(
+        p.property_id == "NVA-PITT" for p in _compute_matched_properties(co, db_session)
+    ), "N Pitt St (2,954 avail) must be suppressed for HRR (40,000) (company surface)"
+
+
+def test_company_card_endpoint_suppresses_contacted_mismatch(client, db_session):
+    """End-to-end via the Company-card endpoint (GET /api/companies/{id}): a gross SF
+    mismatch must NOT appear even when the pair has already been contacted.
+
+    This reproduces the reported bug exactly — the contacted exemption used to bypass
+    the SF delta and surface 1240-1250 N Pitt St (2,954 avail) for Human Resources
+    Research (40,000 occupied). The SF delta is now a hard filter on this display.
+    """
+    prop = _property(
+        db_session, sf_avail=2954, total_sf=42000, vacant_sf=2954.0,
+        property_id="NVA-PITT", submarket="Alexandria (Old Town)",
+    )
+    co = Company(
+        company_id="CO-HRR", name="Human Resources Research", industry="Federal",
+        current_submarket="Alexandria (Old Town)", current_sf_occupied=40000,
+        current_rent_psf=40.0, lease_expiry_months=12, expansion_signal=True,
+    )
+    db_session.add(co)
+    db_session.commit()
+    # Mark the exact pair contacted — this is what previously bypassed suppression.
+    db_session.add(OutreachLog(
+        property_id=prop.id, company_id=co.id, outreach_type="tenant_match",
+        marked_contacted=True,
+    ))
+    db_session.commit()
+
+    resp = client.get("/api/companies/CO-HRR")
+    assert resp.status_code == 200, resp.text
+    matched = resp.json().get("matched_properties", [])
+    assert not any(p["property_id"] == "NVA-PITT" for p in matched), (
+        "1240-1250 N Pitt St (2,954 SF avail) must NOT appear on HRR's Company card "
+        f"(Δ37,046 ≫ 800), even when contacted; got: {matched}"
+    )
 
 
 # ── (5) contacted pairs are excluded from the delta filter ──────────────────────

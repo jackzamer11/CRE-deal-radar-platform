@@ -19,7 +19,6 @@ from app.schemas.outreach import OutreachDraft, OutreachLogCreate, OutreachLogOu
 from app.services import signal_engine as se
 from app.services.scoring_model import score_property
 from app.services.match_scoring import medical_mismatch_penalty
-from app.services.opportunity_stage_service import pair_is_contacted as _pair_contacted
 from app.services.rep_classification import classify_rep
 
 router = APIRouter(prefix="/companies", tags=["companies"])
@@ -606,11 +605,14 @@ def _compute_matched_properties(company: Company, db: Session) -> list:
     for prop in candidates:
         # Fix 1: the SF delta filter uses AVAILABLE SF only (never total/vacant).
         avail = prop.sf_avail or 0
-        # Fix 2: suppress pairings whose gap to available SF exceeds MAX_SF_DELTA
-        # (or whose available SF is null), unless this exact pair is already
-        # contacted (contacted history is untouched).
-        if (sf_match_suppressed(sf_occupied, avail)
-                and not _pair_contacted(db, prop.id, company.id)):
+        # Bug fix: on the Company-card matched-properties display the SF delta is a
+        # HARD data-quality filter — a pairing whose occupied-vs-available gap exceeds
+        # MAX_SF_DELTA (e.g. 40,000 SF occupied vs 2,954 SF available) is never a real
+        # match and must be suppressed regardless of contacted history. (The
+        # contacted exemption that previously bypassed this is what surfaced the
+        # 1240-1250 N Pitt St mismatch.) Suppression runs BEFORE any scoring so a
+        # cached score can never re-admit a suppressed pair.
+        if sf_match_suppressed(sf_occupied, avail):
             continue
         reasons: list = []
         score = 0.0
