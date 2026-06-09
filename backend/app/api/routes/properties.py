@@ -536,7 +536,6 @@ def _compute_matched_tenants(prop: Property, db: Session) -> list:
     from app.models.company import Company
     from app.schemas.property import MatchedTenant
     from app.services.match_scoring import sf_match_suppressed
-    from app.services.opportunity_stage_service import pair_is_contacted
 
     # Fix 1: the SF delta filter compares against AVAILABLE SF only — never total
     # or vacant SF. If available SF is null/zero the property cannot host a sized
@@ -554,10 +553,10 @@ def _compute_matched_tenants(prop: Property, db: Session) -> list:
     for co in candidates:
         sf_occupied = co.current_sf_occupied or 0
         # Fix 2: when the gap to AVAILABLE SF exceeds MAX_SF_DELTA, suppress the
-        # pairing entirely — no card, no outreach — UNLESS this exact pair has
-        # already been contacted (contacted history is never disturbed).
-        if (sf_match_suppressed(sf_occupied, avail_sf)
-                and not pair_is_contacted(db, prop.id, co.id)):
+        # pairing entirely — no card, no outreach. This is a HARD data-quality
+        # filter: contacted status does NOT exempt a gross SF mismatch on any
+        # match surface.
+        if sf_match_suppressed(sf_occupied, avail_sf):
             continue
         reasons: list = []
         score = 0.0

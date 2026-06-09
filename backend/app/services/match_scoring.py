@@ -33,8 +33,9 @@ def medical_mismatch_penalty(prop, company) -> float:
 # ── SF match tolerance (Fix 2) ──────────────────────────────────────────────────
 # Hard ceiling on the absolute gap between a tenant's real occupied SF
 # (current_sf_occupied) and a property's AVAILABLE SF. A pairing whose gap exceeds
-# this is suppressed entirely — no match card, no outreach — UNLESS one side of the
-# pair has already been marked contacted (contacted history is never disturbed).
+# this is suppressed entirely — no match card, no outreach — on every match
+# surface. This is a HARD data-quality filter: contacted status grants no
+# exemption, so a gross SF mismatch stays suppressed even once a pair is contacted.
 MAX_SF_DELTA = 800
 
 

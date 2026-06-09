@@ -194,9 +194,10 @@ def _compute_tenant_actions(db: Session, snoozed: bool = False) -> list:
             sf_needed = co.current_sf_occupied or 0
             if sf_needed <= 0:
                 continue
-            # Fix 2: suppress pairings whose SF gap exceeds MAX_SF_DELTA, unless the
-            # pair is already contacted (contacted pairs are never disturbed).
-            if sf_match_suppressed(sf_needed, avail_sf) and (prop.id, co.id) not in contacted:
+            # Fix 2: suppress pairings whose SF gap exceeds MAX_SF_DELTA. This is a
+            # HARD data-quality filter on every match surface — contacted status
+            # does not exempt a gross SF mismatch from suppression.
+            if sf_match_suppressed(sf_needed, avail_sf):
                 continue
             score = 0.0
             ratio = sf_needed / avail_sf if avail_sf > 0 else 0

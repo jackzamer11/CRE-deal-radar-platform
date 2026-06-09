@@ -7,7 +7,8 @@ Required coverage:
   (2) a 799 SF delta passes (within tolerance).
   (3) an 801 SF delta is suppressed (no card, no outreach).
   (4) an exact SF match passes.
-  (5) contacted pairs are excluded from the delta filter (never suppressed).
+  (5) the SF delta is a HARD filter on every surface — contacted status grants
+      no exemption (a gross mismatch stays suppressed even once contacted).
   (6) no headcount-based SF calculation exists anywhere in the codebase.
 
 Offline: no live LLM / network. An in-memory SQLite DB is used where a DB is
@@ -255,14 +256,14 @@ def test_company_card_endpoint_suppresses_contacted_mismatch(client, db_session)
     )
 
 
-# ── (5) contacted pairs are excluded from the delta filter ──────────────────────
-def test_contacted_pair_excluded_from_delta_filter(db_session):
-    """A pair whose SF gap exceeds MAX_SF_DELTA is normally suppressed — but if the
-    pair is already marked contacted, suppression must NOT apply (contacted history
-    is never disturbed)."""
+# ── (5) SF delta is a HARD filter — contacted status grants no exemption ────────
+def test_sf_delta_hard_filter_ignores_contacted_status(db_session):
+    """The SF delta is a HARD data-quality filter on every match surface. A pair
+    whose SF gap exceeds MAX_SF_DELTA stays suppressed even when the pair is already
+    marked contacted — contacted status must NOT bypass suppression."""
     from app.api.routes.properties import _compute_matched_tenants
     prop = _property(db_session, sf_avail=5000)
-    co = _company(db_session, sf_occupied=9000, company_id="CO-CONTACTED")  # 4000 over
+    co = _company(db_session, sf_occupied=9000, company_id="CO-CONTACTED")  # Δ4000 > 800
 
     # Sanity: without contact, this pair is suppressed.
     assert not any(
@@ -277,8 +278,9 @@ def test_contacted_pair_excluded_from_delta_filter(db_session):
     db_session.commit()
 
     matched = _compute_matched_tenants(prop, db_session)
-    assert any(m.company_id == "CO-CONTACTED" for m in matched), (
-        "a contacted pair must be excluded from the delta filter (still shown)"
+    assert not any(m.company_id == "CO-CONTACTED" for m in matched), (
+        "SF delta is a hard filter — contacted status must not bypass suppression "
+        "on the tenant-card surface"
     )
 
 
