@@ -29,22 +29,30 @@ def medical_mismatch_penalty(prop, company) -> float:
 
 # ── SF match tolerance (Fix 2) ──────────────────────────────────────────────────
 # Hard ceiling on the absolute gap between a tenant's real occupied SF
-# (current_sf_occupied) and a property's available SF. A pairing whose gap exceeds
+# (current_sf_occupied) and a property's AVAILABLE SF. A pairing whose gap exceeds
 # this is suppressed entirely — no match card, no outreach — UNLESS one side of the
 # pair has already been marked contacted (contacted history is never disturbed).
 MAX_SF_DELTA = 800
 
 
 def sf_match_suppressed(company_sf_occupied, property_available_sf) -> bool:
-    """True when an SF gap is large enough to suppress the pairing.
+    """True when a pairing must be suppressed on square-footage grounds.
 
-    Both figures must be real (non-null, non-zero) for the delta to apply: when the
-    tenant's occupied SF is unknown the delta cannot be computed, so this returns
-    False and the SF check is simply skipped (the match is governed elsewhere).
+    The comparison is against the property's AVAILABLE SF (sf_avail) only — never
+    total or vacant SF.
 
-    Suppression rule: abs(company_sf_occupied - property_available_sf) > MAX_SF_DELTA.
+    Null handling is asymmetric:
+      * Unknown tenant occupied SF -> returns False. The pairing is NOT suppressed
+        here; that case is handled elsewhere (the card is kept, outreach blocked).
+      * Unknown / zero AVAILABLE SF -> returns True (suppress). A pairing cannot be
+        sized without the available figure, so it is filtered out entirely.
+
+    Otherwise suppress when
+        abs(company_sf_occupied - property_available_sf) > MAX_SF_DELTA.
     """
-    if not company_sf_occupied or not property_available_sf:
+    if not company_sf_occupied:
         return False
+    if not property_available_sf:
+        return True
     return abs(int(company_sf_occupied) - int(property_available_sf)) > MAX_SF_DELTA
 
