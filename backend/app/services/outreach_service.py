@@ -37,7 +37,10 @@ _SIGNATURE_INSTRUCTION = (
 
 # Sentences containing rent-PSF figures or jargon the standalone tenant outreach
 # must never deliver: flight-to-quality, sublease supply, TI allowances, free rent,
-# NoVA average comparisons, or any dollar-per-SF figure.
+# NoVA average comparisons, or any dollar-per-SF figure.  Also strips the canned
+# self-description ("I work exclusively in the Northern Virginia office market")
+# and recipient-directed probe phrasings ("biggest pressure", "space planning",
+# "hybrid model") that the closing paragraph must never carry.
 # Uses (?:[^.!?\n]|\.\d)* so decimal numbers like $34.20 inside a sentence do not
 # create a false sentence boundary before the terminal [.!?].
 _STANDALONE_OUTREACH_STRIP_PATTERN = re.compile(
@@ -49,6 +52,10 @@ _STANDALONE_OUTREACH_STRIP_PATTERN = re.compile(
     r'|\bfree\s+rent\b'
     r'|\$\d+(?:\.\d+)?/SF'
     r'|\bpsf\b'
+    r'|I\s+work\s+exclusively\s+in\s+the\s+Northern\s+Virginia\s+office\s+market'
+    r'|\bbiggest\s+pressure\b'
+    r'|\bspace\s+planning\b'
+    r'|\bhybrid\s+model\b'
     r')(?:[^.!?\n]|\.\d)*[.!?]\s*',
     re.IGNORECASE,
 )
@@ -300,7 +307,9 @@ def generate_outreach(company: dict) -> dict:
             "Open with the tenant's lease timing "
             "(e.g. 'With your lease expiring in X months...'). "
             "Warm, credible tone — write like a trusted market expert, not a salesperson. "
-            "The single ask at the end: invite a brief call. "
+            "STRICT: the email body is AT MOST 3 paragraphs. "
+            "The CLOSING paragraph must be ONLY the single call ask — exactly one sentence, "
+            "no questions to the recipient, no additional sentences after it. "
             "Every sentence must contain a specific fact, timeline, or location. "
             "FORBIDDEN from email body: rent PSF figures, NoVA averages, TI allowances, "
             "free rent, 'flight-to-quality', 'sublease supply', 'at-market', "

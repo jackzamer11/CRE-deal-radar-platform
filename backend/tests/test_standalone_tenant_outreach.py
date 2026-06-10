@@ -87,6 +87,38 @@ def test_standalone_outreach_no_psf_no_jargon():
         )
 
 
+def test_standalone_outreach_strips_canned_and_probe_sentences():
+    """The self-description boilerplate and recipient-directed probe phrasings are
+    stripped from the email body."""
+    dirty = (
+        "Hi Jane,\n\n"
+        "With your lease expiring in 14 months at 2,400 SF in Tysons, I wanted to reach out. "
+        "I work exclusively in the Northern Virginia office market. "
+        "What's the biggest pressure on your space planning this cycle? "
+        "Is a hybrid model reshaping your footprint?\n\n"
+        "I'd welcome a brief call at your convenience.\n\n"
+        "Thank you,\n\nJack Zamer\nVice President, The Commercial Real Estate Group\n571-205-6228"
+    )
+    with (
+        patch("openai.OpenAI", return_value=_make_mock_client(dirty)),
+        patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}),
+        patch.object(svc, "_web_search_company_intel", return_value=""),
+    ):
+        body = svc.generate_outreach(_COMPANY)["email"]["body"]
+
+    for term in (
+        "I work exclusively in the Northern Virginia office market",
+        "biggest pressure",
+        "space planning",
+        "hybrid model",
+    ):
+        assert term.lower() not in body.lower(), (
+            f"{term!r} must be stripped from the email body:\n{body}"
+        )
+    assert "14 months" in body, "lease timing fact must survive"
+    assert "brief call at your convenience" in body, "the single call ask must survive"
+
+
 def test_standalone_outreach_fact_sentences_survive():
     """Fact-bearing sentences that contain none of the banned terms are preserved."""
     clean_body = (
