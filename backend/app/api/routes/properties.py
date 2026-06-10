@@ -381,6 +381,7 @@ class PropertyUpdate(BaseModel):
     estimated_loan_maturity_year: Optional[int]   = None
     notes:                        Optional[str]   = None
     owner_confirmed_leasing:      Optional[bool]  = None  # hard trigger for tenant-match outreach
+    is_medical:                   Optional[bool]  = None
 
 
 class TenantOutreachResult(BaseModel):
@@ -1297,6 +1298,8 @@ def update_property(property_id: str, payload: PropertyUpdate, db: Session = Dep
                 prop.owner_confirmed_leasing_date = date.today()
         else:
             prop.owner_confirmed_leasing_date = None
+    if payload.is_medical is not None:
+        prop.is_medical = payload.is_medical
 
     # ── Submarket: also refresh market benchmarks ───────────────────────────
     if payload.submarket is not None:

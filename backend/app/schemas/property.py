@@ -192,6 +192,7 @@ class PropertyListOut(BaseModel):
     returned_from_snooze: Optional[bool] = None
     owner_confirmed_leasing:      bool          = False
     owner_confirmed_leasing_date: Optional[date] = None
+    is_medical:                   bool          = False
 
     @model_validator(mode="after")
     def _derive_listed_for_lease(self) -> "PropertyListOut":

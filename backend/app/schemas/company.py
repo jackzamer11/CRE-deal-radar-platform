@@ -151,6 +151,7 @@ class CompanyListOut(BaseModel):
     snoozed_until:        Optional[date] = None
     snooze_reason:        Optional[str]  = None
     returned_from_snooze: Optional[bool] = None
+    is_medical:           bool           = False
 
     # Computed from tenant_representative — not stored in DB
     rep_class: str = "BLANK"
