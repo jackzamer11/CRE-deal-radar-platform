@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { X, Users, ChevronRight } from 'lucide-react'
-import { createCompany, updateCompanyMedical } from '../api/client'
+import { createCompany, updateCompanyMedical, updateCompanySfOccupied, updateCompanyLease } from '../api/client'
 import type { CompanyOut } from '../types'
 
 const SUBMARKETS = [
@@ -64,7 +64,7 @@ function companyToForm(data: CompanyOut): FormState {
     open_positions:        data.open_positions != null ? String(data.open_positions) : '',
     current_address:       data.current_address ?? '',
     current_submarket:     data.current_submarket ?? '',
-    current_sf_occupied:   data.current_sf != null ? String(data.current_sf) : '',
+    current_sf_occupied:   data.current_sf_occupied != null ? String(data.current_sf_occupied) : '',
     lease_expiry_months:   data.lease_expiry_months != null ? String(data.lease_expiry_months) : '',
     primary_contact_name:  data.primary_contact_name ?? '',
     primary_contact_title: data.primary_contact_title ?? '',
@@ -139,6 +139,16 @@ export default function AddCompanyModal({ onClose, onSaved, editCompanyId, initi
     try {
       let result: CompanyOut
       if (isEdit) {
+        // Save each patchable field via its own endpoint, then use the final
+        // response (medical) as the returned record so the caller gets fresh data.
+        const sfVal = form.current_sf_occupied ? parseInt(form.current_sf_occupied) : null
+        await updateCompanySfOccupied(editCompanyId!, sfVal)
+        if (form.lease_expiry_months) {
+          await updateCompanyLease(editCompanyId!, {
+            lease_expiry_months: parseInt(form.lease_expiry_months),
+            lease_expiry_source: 'manual',
+          })
+        }
         result = await updateCompanyMedical(editCompanyId!, form.is_medical)
       } else {
         const payload = {

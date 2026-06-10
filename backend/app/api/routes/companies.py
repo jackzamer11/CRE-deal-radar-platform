@@ -860,6 +860,27 @@ def update_sf_occupied(
     return company
 
 
+class MedicalUpdate(BaseModel):
+    is_medical: bool
+
+
+@router.patch("/{company_id}/medical", response_model=CompanyOut)
+def update_medical(
+    company_id: str,
+    payload: MedicalUpdate,
+    db: Session = Depends(get_db),
+):
+    """Set or clear the Medical Tenant flag for a company."""
+    company = db.query(Company).filter(Company.company_id == company_id).first()
+    if not company:
+        raise HTTPException(status_code=404, detail="Company not found")
+    company.is_medical = payload.is_medical
+    company.last_modified_by_user = datetime.utcnow()
+    db.commit()
+    db.refresh(company)
+    return company
+
+
 @router.post("/refresh-signals", response_model=dict)
 def refresh_all_signals(db: Session = Depends(get_db)):
     companies = db.query(Company).all()
