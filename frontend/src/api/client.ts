@@ -125,6 +125,12 @@ export const updateCompanySfOccupied = (
 ): Promise<CompanyOut> =>
   api.patch(`/companies/${companyId}/sf-occupied`, { current_sf_occupied }).then(r => r.data)
 
+export const updateCompanyMedical = (
+  companyId: string,
+  is_medical: boolean,
+): Promise<CompanyOut> =>
+  api.patch(`/companies/${companyId}/medical`, { is_medical }).then(r => r.data)
+
 export const draftOutreach = (companyId: string): Promise<OutreachDraft> =>
   api.post(`/companies/${companyId}/draft-outreach`).then(r => r.data)
 

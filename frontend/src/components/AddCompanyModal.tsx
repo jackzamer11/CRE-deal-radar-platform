@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { X, Users, ChevronRight } from 'lucide-react'
-import { createCompany } from '../api/client'
+import { createCompany, updateCompanyMedical } from '../api/client'
 import type { CompanyOut } from '../types'
 
 const SUBMARKETS = [
@@ -20,6 +20,8 @@ const SUBMARKETS = [
 interface Props {
   onClose: () => void
   onSaved: (company: CompanyOut) => void
+  editCompanyId?: string   // if set → edit mode (PATCH)
+  initialData?: CompanyOut // pre-populate form in edit mode
 }
 
 type Step = 'company' | 'size' | 'location' | 'contact'
@@ -47,9 +49,31 @@ const defaultForm = {
   primary_contact_phone: '',
   linkedin_url:          '',
   website:               '',
+  is_medical:            false,
 }
 
 type FormState = typeof defaultForm
+
+function companyToForm(data: CompanyOut): FormState {
+  return {
+    name:                  data.name ?? '',
+    industry:              data.industry ?? '',
+    description:           data.description ?? '',
+    current_headcount:     data.current_headcount != null ? String(data.current_headcount) : '',
+    headcount_12mo_ago:    '',
+    open_positions:        data.open_positions != null ? String(data.open_positions) : '',
+    current_address:       data.current_address ?? '',
+    current_submarket:     data.current_submarket ?? '',
+    current_sf_occupied:   data.current_sf != null ? String(data.current_sf) : '',
+    lease_expiry_months:   data.lease_expiry_months != null ? String(data.lease_expiry_months) : '',
+    primary_contact_name:  data.primary_contact_name ?? '',
+    primary_contact_title: data.primary_contact_title ?? '',
+    primary_contact_phone: data.primary_contact_phone ?? '',
+    linkedin_url:          data.linkedin_url ?? '',
+    website:               data.website ?? '',
+    is_medical:            data.is_medical ?? false,
+  }
+}
 
 function Field({
   label, required, hint, children,
@@ -77,15 +101,19 @@ const inputCls = `w-full bg-surface border border-surface-border text-ink-primar
 const selectCls = `w-full bg-surface border border-surface-border text-ink-primary text-sm
   rounded-lg px-3 py-2 outline-none focus:border-accent-blue transition-colors`
 
-export default function AddCompanyModal({ onClose, onSaved }: Props) {
+export default function AddCompanyModal({ onClose, onSaved, editCompanyId, initialData }: Props) {
+  const isEdit = !!editCompanyId
   const [step, setStep] = useState<Step>('company')
-  const [form, setForm] = useState<FormState>(defaultForm)
+  const [form, setForm] = useState<FormState>(initialData ? companyToForm(initialData) : defaultForm)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const set = (field: keyof FormState) => (
     e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>
   ) => setForm(f => ({ ...f, [field]: e.target.value }))
+
+  const setCheck = (field: keyof FormState) => (e: React.ChangeEvent<HTMLInputElement>) =>
+    setForm(f => ({ ...f, [field]: e.target.checked }))
 
   const currentStepIndex = STEPS.findIndex(s => s.key === step)
   const isLast = currentStepIndex === STEPS.length - 1
@@ -109,24 +137,30 @@ export default function AddCompanyModal({ onClose, onSaved }: Props) {
     setSaving(true)
     setError(null)
     try {
-      const payload = {
-        name:                  form.name,
-        industry:              form.industry,
-        description:           form.description || undefined,
-        current_headcount:     parseInt(form.current_headcount),
-        headcount_12mo_ago:    form.headcount_12mo_ago ? parseInt(form.headcount_12mo_ago) : undefined,
-        open_positions:        form.open_positions ? parseInt(form.open_positions) : 0,
-        current_address:       form.current_address || undefined,
-        current_submarket:     form.current_submarket || undefined,
-        current_sf_occupied:   form.current_sf_occupied ? parseInt(form.current_sf_occupied) : undefined,
-        lease_expiry_months:   form.lease_expiry_months ? parseInt(form.lease_expiry_months) : undefined,
-        primary_contact_name:  form.primary_contact_name || undefined,
-        primary_contact_title: form.primary_contact_title || undefined,
-        primary_contact_phone: form.primary_contact_phone || undefined,
-        linkedin_url:          form.linkedin_url || undefined,
-        website:               form.website || undefined,
+      let result: CompanyOut
+      if (isEdit) {
+        result = await updateCompanyMedical(editCompanyId!, form.is_medical)
+      } else {
+        const payload = {
+          name:                  form.name,
+          industry:              form.industry,
+          description:           form.description || undefined,
+          current_headcount:     parseInt(form.current_headcount),
+          headcount_12mo_ago:    form.headcount_12mo_ago ? parseInt(form.headcount_12mo_ago) : undefined,
+          open_positions:        form.open_positions ? parseInt(form.open_positions) : 0,
+          current_address:       form.current_address || undefined,
+          current_submarket:     form.current_submarket || undefined,
+          current_sf_occupied:   form.current_sf_occupied ? parseInt(form.current_sf_occupied) : undefined,
+          lease_expiry_months:   form.lease_expiry_months ? parseInt(form.lease_expiry_months) : undefined,
+          primary_contact_name:  form.primary_contact_name || undefined,
+          primary_contact_title: form.primary_contact_title || undefined,
+          primary_contact_phone: form.primary_contact_phone || undefined,
+          linkedin_url:          form.linkedin_url || undefined,
+          website:               form.website || undefined,
+          is_medical:            form.is_medical,
+        }
+        result = await createCompany(payload)
       }
-      const result = await createCompany(payload)
       onSaved(result)
     } catch (e: any) {
       setError(e?.response?.data?.detail || 'Failed to save company')
@@ -146,7 +180,7 @@ export default function AddCompanyModal({ onClose, onSaved }: Props) {
               <Users size={15} className="text-emerald-400" />
             </div>
             <div>
-              <div className="font-semibold text-ink-primary">Add Company</div>
+              <div className="font-semibold text-ink-primary">{isEdit ? 'Edit Company' : 'Add Company'}</div>
               <div className="text-[11px] text-ink-muted">Tenant signals scored automatically after save</div>
             </div>
           </div>
@@ -205,6 +239,13 @@ export default function AddCompanyModal({ onClose, onSaved }: Props) {
                 <input className={inputCls} placeholder="https://example.com"
                   value={form.website} onChange={set('website')} />
               </Field>
+              <div className="flex items-center gap-3 p-3 bg-surface-muted rounded-lg border border-surface-border">
+                <input type="checkbox" id="is_medical" checked={form.is_medical}
+                  onChange={setCheck('is_medical')} className="accent-blue-500 w-4 h-4" />
+                <label htmlFor="is_medical" className="text-sm text-ink-secondary cursor-pointer">
+                  Medical Tenant
+                </label>
+              </div>
             </div>
           )}
 
@@ -352,7 +393,7 @@ export default function AddCompanyModal({ onClose, onSaved }: Props) {
               className="px-5 py-2 rounded-lg bg-emerald-600 text-white text-sm font-semibold
                          hover:bg-emerald-700 transition-colors disabled:opacity-50"
             >
-              {saving ? 'Saving & Scoring...' : 'Save Company'}
+              {saving ? 'Saving…' : isEdit ? 'Save Changes' : 'Save Company'}
             </button>
           )}
         </div>
