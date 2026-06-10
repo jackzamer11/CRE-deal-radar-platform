@@ -9,7 +9,6 @@ import type { CompanyListOut, CompanyOut, RepClass } from '../types'
 import { PriorityBadge, MedicalBadge } from '../components/PriorityBadge'
 import ScoreBadge from '../components/ScoreBadge'
 import AddCompanyModal from '../components/AddCompanyModal'
-import EditCompanyModal from '../components/EditCompanyModal'
 import CoStarTenantImportModal from '../components/CoStarTenantImportModal'
 import OutreachDraftModal from '../components/OutreachDraftModal'
 import CompanySnoozeModal from '../components/CompanySnoozeModal'
@@ -97,7 +96,7 @@ export default function Companies() {
   const [showTenantImportModal, setShowTenantImportModal] = useState(false)
   const [showOutreachModal, setShowOutreachModal]   = useState(false)
   const [showSnoozeModal, setShowSnoozeModal]       = useState(false)
-  const [showEditModal, setShowEditModal]           = useState(false)
+  const [editCompanyTarget, setEditCompanyTarget]   = useState<CompanyOut | null>(null)
   const [showSnoozedOnly, setShowSnoozedOnly]       = useState(false)
 
   // Lease expiry inline edit state
@@ -534,11 +533,12 @@ export default function Companies() {
           onSnoozed={handleSnoozed}
         />
       )}
-      {showEditModal && selected && (
-        <EditCompanyModal
-          company={selected}
-          onClose={() => setShowEditModal(false)}
-          onSaved={(updated) => { setSelected(updated); setShowEditModal(false); load() }}
+      {editCompanyTarget && (
+        <AddCompanyModal
+          editCompanyId={editCompanyTarget.company_id}
+          initialData={editCompanyTarget}
+          onClose={() => setEditCompanyTarget(null)}
+          onSaved={(updated) => { setSelected(updated); setEditCompanyTarget(null); load() }}
         />
       )}
 
@@ -553,7 +553,7 @@ export default function Companies() {
               </div>
               <div className="flex items-center gap-1">
                 <button
-                  onClick={() => setShowEditModal(true)}
+                  onClick={() => setEditCompanyTarget(selected)}
                   title="Edit company"
                   className="text-ink-muted hover:text-accent-blue p-1 rounded-lg hover:bg-surface-muted"
                 >
