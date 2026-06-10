@@ -809,6 +809,9 @@ def _apply_update(prop: Property, row: dict) -> None:
     def iv(f): return _int_val(row, f)
     def bv(f): return _bool_val(row, f)
 
+    # Submarket is validated against VALID_SUBMARKETS in _parse_row before this
+    # runs, so a re-upload updates the stored value (e.g. to "Herndon").
+    if sv("submarket"):        prop.submarket = sv("submarket")
     if sv("owner_name"):       prop.owner_name = sv("owner_name")
     if sv("owner_phone"):      prop.owner_phone = sv("owner_phone")
     if sv("owner_email"):      prop.owner_email = sv("owner_email")
@@ -1126,6 +1129,10 @@ async def costar_import(
         if dedupe_key in existing:
             prop = existing[dedupe_key]
             # Update with CoStar data
+            # Submarket: a re-import must update the existing property's submarket
+            # to the freshly-mapped platform value (e.g. a row remapped to
+            # "Herndon" updates the stored record rather than leaving a stale value).
+            prop.submarket    = payload.submarket
             prop.owner_name   = payload.owner_name
             prop.owner_phone  = payload.owner_phone or prop.owner_phone
             prop.total_sf     = payload.total_sf
