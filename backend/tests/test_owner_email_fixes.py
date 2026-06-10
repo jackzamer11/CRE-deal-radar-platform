@@ -160,6 +160,78 @@ def test_owner_prompt_rounds_available_sf():
     assert "3,000" in combined, "rounded available SF (3,000) expected in the prompt"
 
 
+@pytest.mark.parametrize("raw_sf,expected", [
+    (3470, 3500),
+    (3512, 3500),
+    (2954, 3000),
+    (4975, 5000),
+])
+def test_owner_prompt_rounds_tenant_sf(raw_sf, expected):
+    """The tenant's required SF in the owner email is rounded to the nearest 100;
+    the raw figure never reaches the prompt and the value shown is a multiple of 100."""
+    tenant = _tenant()
+    tenant["current_sf_occupied"] = raw_sf
+    prompt = svc._build_tenant_match(_property(), None, "owner", tenant_dict=tenant)
+    combined = prompt["system"] + prompt["user"]
+    assert f"{raw_sf:,}" not in combined and str(raw_sf) not in combined, (
+        f"raw tenant SF {raw_sf} must never reach the owner email prompt"
+    )
+    assert f"{expected:,} SF" in combined, (
+        f"rounded tenant SF {expected:,} expected in the owner email prompt"
+    )
+    assert expected % 100 == 0
+
+
+def test_owner_email_tenant_sf_is_multiple_of_100():
+    """End-to-end: the tenant SF the builder injects into the owner email is a
+    multiple of 100 (the mock echoes whatever SF the prompt carried)."""
+    tenant = _tenant()
+    tenant["current_sf_occupied"] = 3470  # rounds to 3,500
+
+    def _mock_chat(system, user, **kw):
+        m = _re.search(r"looking for ([\d,]+) SF", system + user)
+        sf_text = m.group(1) if m else "3,500"
+        sal = _re.search(r"Open the email with exactly '([^']+)'", system)
+        salutation = sal.group(1) if sal else "Dear Property Owner,"
+        return (
+            "SUBJECT: Opportunity\n"
+            "EMAIL:\n"
+            f"{salutation}\n\n"
+            f"I'm working with a qualified tenant looking for {sf_text} SF in Tysons.\n\n"
+            "I'd welcome a brief call at your convenience.\n\n"
+            "Thank you,\n\nJack Zamer\n571-205-6228\n"
+            "OPENING:\no\nCORE:\nc\nPAIN_PROBE:\np\nCLOSE:\nx"
+        )
+
+    with patch.object(svc, "_chat", side_effect=_mock_chat):
+        body = svc.generate_property_outreach(
+            property_dict=_property(),
+            outreach_type="tenant_match",
+            direction="property_side",
+            tenant_dict=tenant,
+        )["email_body"]
+    assert "3,470" not in body, "raw tenant SF must never appear in the owner email"
+    for figure in _re.findall(r"([\d,]+)\s+SF", body):
+        val = int(figure.replace(",", ""))
+        assert val % 100 == 0, f"tenant SF {val} in owner email is not a multiple of 100"
+
+
+# ── Fix 1: Herndon CoStar import mappings → Herndon (no Reston fallback) ─────────
+@pytest.mark.parametrize("key", ["herndon", "herndon/dulles", "route 28 corridor north"])
+def test_costar_herndon_mappings(key):
+    from app.api.routes.properties import COSTAR_SUBMARKET_MAP
+    assert COSTAR_SUBMARKET_MAP[key] == "Herndon", (
+        f"CoStar key {key!r} must map to Herndon, not Reston or Dulles Corridor"
+    )
+
+
+def test_costar_herndon_not_mapped_to_reston():
+    """No Herndon/Dulles CoStar key may fall back to Reston."""
+    from app.api.routes.properties import COSTAR_SUBMARKET_MAP
+    for key in ("herndon", "herndon/dulles", "route 28 corridor north"):
+        assert COSTAR_SUBMARKET_MAP.get(key) != "Reston"
+
+
 # ── Fix 3: Herndon is enumerated everywhere ─────────────────────────────────────
 def test_herndon_in_submarket_enums():
     from app.api.routes.properties import VALID_SUBMARKETS, COSTAR_SUBMARKET_MAP
@@ -226,7 +298,50 @@ def test_tenant_side_filler_line_removed():
 
 
 def test_tenant_side_prompt_forbids_filler():
+    """The strengthened rule: every sentence must carry a specific fact, and the
+    named generic-claim variants are explicitly forbidden."""
     prompt = svc._build_tenant_side(_property(), _tenant())
-    assert "compelling mix of amenities and accessibility" in prompt["system"], (
-        "tenant-side system prompt must name the forbidden filler pattern"
-    )
+    system = prompt["system"]
+    assert "Every sentence must contain a specific fact" in system
+    for forbidden in (
+        "this could be a great fit",
+        "providing flexibility and location",
+        "compelling mix of amenities",
+    ):
+        assert forbidden in system, f"prompt must name the forbidden variant: {forbidden!r}"
+    assert "strictly forbidden" in system
+
+
+@pytest.mark.parametrize("filler", [
+    "This could be a great fit for your team.",
+    "It would be a perfect fit for what you need.",
+    "The building offers a compelling mix of amenities and accessibility.",
+    "It is a great location with amenities your team will appreciate.",
+    "The space sits in a vibrant business community.",
+])
+def test_tenant_side_broadened_filler_stripped(filler):
+    """Each generic-claim variant (no number/date) is stripped from the rendered
+    tenant-side email; the surrounding fact-bearing sentences survive."""
+    def _mock_chat(system, user, **kw):
+        return (
+            "SUBJECT: Tysons opportunity\n"
+            "EMAIL:\n"
+            "Hi Jane Smith,\n\n"
+            f"With your lease expiring in 12 months, I wanted to flag 5,000 SF in Tysons. {filler} "
+            "Happy to walk you through it.\n\n"
+            "I'd welcome a brief call at your convenience.\n\n"
+            "Thank you,\n\nJack Zamer\n571-205-6228\n"
+            "OPENING:\no\nCORE:\nc\nPAIN_PROBE:\np\nCLOSE:\nx"
+        )
+
+    with patch.object(svc, "_chat", side_effect=_mock_chat):
+        body = svc.generate_property_outreach(
+            property_dict=_property(),
+            outreach_type="tenant_match",
+            direction="tenant_side",
+            tenant_dict=_tenant(),
+        )["email_body"]
+    assert filler not in body, f"generic filler must be stripped: {filler!r}"
+    # Fact-bearing neighbours survive.
+    assert "5,000 SF in Tysons" in body
+    assert "Happy to walk you through it." in body

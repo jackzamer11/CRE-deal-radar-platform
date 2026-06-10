@@ -33,6 +33,8 @@ COSTAR_SUBMARKET_MAP: dict = {
     "falls church":         "Falls Church",
     "reston":               "Reston",
     "herndon":              "Herndon",
+    "herndon/dulles":       "Herndon",
+    "route 28 corridor north": "Herndon",
     "tysons":               "Tysons",
     "tysons corner":        "Tysons",
     "clarendon":            "Arlington (Clarendon)",

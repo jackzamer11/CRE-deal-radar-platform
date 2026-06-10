@@ -212,10 +212,22 @@ def _round_sf_to_hundred(sf):
 
 
 # Generic market-description filler the LLM tends to produce on tenant-side copy
-# ("The Tysons market offers a compelling mix of amenities and accessibility.").
-# Such sentences say nothing about this tenant or this property — strip them.
+# ("The Tysons market offers a compelling mix of amenities and accessibility.",
+# "This could be a great fit.", "...providing flexibility and location."). Such
+# sentences make a positive claim without a specific fact — strip them. Each
+# alternative below targets a distinct generic-claim phrasing; a sentence matching
+# ANY of them (and carrying no number/date) is removed before delivery.
 _MARKET_FILLER_PATTERN = re.compile(
-    r'[^.!?\n]*\b(?:offers?\s+a\s+compelling\s+mix|amenities\s+and\s+accessibility)\b[^.!?\n]*[.!?]\s*',
+    r'[^.!?\n]*\b(?:'
+    r'offers?\s+a\s+compelling\s+mix'
+    r'|compelling\s+mix\s+of\s+amenities'
+    r'|amenities\s+and\s+accessibility'
+    r'|(?:could|would|might)\s+be\s+a\s+(?:great|perfect|strong|good|wonderful|ideal)\s+fit'
+    r'|provid\w*\s+(?:flexibility|convenience)\b[^.!?\n]*\b(?:and\s+)?(?:location|accessibility|amenities)'
+    r'|(?:great|prime|ideal|excellent|prestigious)\s+location\s+(?:and|with)\s+(?:amenities|accessibility|flexibility)'
+    r'|vibrant\s+(?:business\s+)?community'
+    r'|mix\s+of\s+amenities\s+and'
+    r')\b[^.!?\n]*[.!?]\s*',
     re.IGNORECASE,
 )
 
@@ -556,7 +568,10 @@ def _build_tenant_match(
     # Fix 2: the owner does not need sector detail — the matched tenant is referred
     # to ONLY as "a qualified tenant". Industry / sector is never passed to the model.
     if tenant_dict is not None:
-        sf       = tenant_dict.get("current_sf_occupied")
+        # Owner email Fix 2: the tenant's required SF is rounded to the nearest 100
+        # (same rule as available SF) — the precise raw figure is never shown to the
+        # owner or fed to the model.
+        sf       = _round_sf_to_hundred(tenant_dict.get("current_sf_occupied")) or None
         exp      = tenant_dict.get("lease_expiry_months")
         sf_str   = f"{sf:,} SF" if sf else None
         exp_str  = (f"approximately {exp} {'month' if exp == 1 else 'months'}" if exp is not None else None)
@@ -940,9 +955,11 @@ def _build_tenant_side(p: dict, tenant_dict: dict) -> dict:
         f"\n- Do NOT describe the tenant company back to themselves; do NOT reference their headcount or team size."
         + sf_fit_constraint
         + f"\n- {tenant_proof_rule}"
-        f"\n- Do NOT include generic market-description filler (e.g. 'The {submarket} market offers a "
-        f"compelling mix of amenities and accessibility') — every sentence must be specific to this "
-        f"tenant's situation or this property."
+        f"\n- Do not write any sentence that describes the space or market in generic terms. Every "
+        f"sentence must contain a specific fact — a number, a timeline, or a named location. Sentences "
+        f"like 'this could be a great fit', 'providing flexibility and location', 'compelling mix of "
+        f"amenities', or any variant that makes a generic positive claim without a specific fact are "
+        f"strictly forbidden."
         f"\n- Tone: knowledgeable and consultative — a trusted market expert, not a salesperson."
         f"\n- Do NOT reveal that any web search or platform tool was used; do NOT mention other tenants or properties."
         f"\n- NEVER suggest specific days of the week."

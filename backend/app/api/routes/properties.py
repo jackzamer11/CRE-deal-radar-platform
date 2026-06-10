@@ -101,6 +101,7 @@ COSTAR_SUBMARKET_MAP: dict = {
     "falls church":              "Falls Church",
     "reston":                    "Reston",
     "herndon":                   "Herndon",
+    "herndon/dulles":            "Herndon",
     "tysons":                    "Tysons",
     "tysons corner":             "Tysons",
     "clarendon":                 "Arlington (Clarendon)",
@@ -114,7 +115,7 @@ COSTAR_SUBMARKET_MAP: dict = {
     "fairfax city":              "Fairfax City",
     "fairfax":                   "Fairfax City",
     "springfield/burke":         "Springfield",
-    "route 28 corridor north":   "Dulles Corridor",
+    "route 28 corridor north":   "Herndon",
     "route 28 corridor south":   "Dulles Corridor",
     # ── Additional CoStar submarkets (12) — case-insensitive lookup ──────────
     "annandale":                 "Annandale",
