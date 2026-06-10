@@ -6,7 +6,7 @@ import {
 } from 'lucide-react'
 import { getCompanies, getCompany, updateCompanyLease, unsnoozeCompany, deleteCompany } from '../api/client'
 import type { CompanyListOut, CompanyOut, RepClass } from '../types'
-import { PriorityBadge } from '../components/PriorityBadge'
+import { PriorityBadge, MedicalBadge } from '../components/PriorityBadge'
 import ScoreBadge from '../components/ScoreBadge'
 import AddCompanyModal from '../components/AddCompanyModal'
 import EditCompanyModal from '../components/EditCompanyModal'
@@ -440,6 +440,7 @@ export default function Companies() {
                   </span>
                 )}
                 {isLeaseExpired(c) && <ExpiredBadge />}
+                {c.is_medical && <MedicalBadge />}
                 <PriorityBadge priority={c.priority} />
               </div>
             </div>
@@ -747,6 +748,7 @@ export default function Companies() {
                               <div className="flex items-center gap-1.5 mb-0.5">
                                 <Building2 size={10} className="text-ink-muted flex-shrink-0" />
                                 <div className="text-xs font-semibold text-ink-primary truncate">{p.address}</div>
+                                {p.is_medical && <MedicalBadge />}
                               </div>
                               <div className="text-[10px] text-ink-muted">
                                 {p.submarket}{p.sf_avail ? ` · ${p.sf_avail.toLocaleString()} SF avail` : ''}{p.vacancy_pct != null ? ` · ${p.vacancy_pct.toFixed(0)}% vac` : ''}

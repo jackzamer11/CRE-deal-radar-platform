@@ -38,6 +38,7 @@ export interface MatchedTenant {
   submarket: string | null
   match_score: number
   match_reasons: string[]
+  is_medical: boolean
 }
 
 export interface PropertyListOut {
@@ -79,6 +80,7 @@ export interface PropertyListOut {
   // Owner confirmed open to leasing while listed
   owner_confirmed_leasing: boolean
   owner_confirmed_leasing_date: string | null
+  is_medical: boolean
 }
 
 export interface TenantOutreachDraft {
@@ -157,6 +159,7 @@ export interface CompanyListOut {
   future_move_type: string | null
   expansion_signal: boolean
   contraction_signal: boolean
+  is_medical: boolean
   opportunity_score: number
   priority: Priority
   signals_scored_count: number
@@ -223,6 +226,7 @@ export interface MatchedProperty {
   listed_for_sale: boolean
   match_score: number
   match_reasons: string[]
+  is_medical: boolean
 }
 
 export interface CompanyOut extends CompanyListOut {
@@ -368,6 +372,8 @@ export interface TenantMatchAction {
   match_score: number
   lease_expiry_months: number | null
   contact_status: string
+  property_is_medical: boolean
+  tenant_is_medical: boolean
 }
 
 export interface AcquisitionTarget {
@@ -385,6 +391,7 @@ export interface AcquisitionTarget {
   owner_name: string
   sales_contact: string | null
   contact_status: string
+  is_medical: boolean
 }
 
 export interface ExpiredLease {

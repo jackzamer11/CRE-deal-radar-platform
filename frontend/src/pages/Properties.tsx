@@ -6,7 +6,7 @@ import {
   unsnoozeProperty, deleteProperty,
 } from '../api/client'
 import type { PropertyListOut, PropertyOut, OutreachLog } from '../types'
-import { PriorityBadge } from '../components/PriorityBadge'
+import { PriorityBadge, MedicalBadge } from '../components/PriorityBadge'
 import ScoreBadge from '../components/ScoreBadge'
 import AddPropertyModal from '../components/AddPropertyModal'
 import LeaseCompsModal from '../components/LeaseCompsModal'
@@ -506,7 +506,10 @@ export default function Properties() {
                   <td className="mono text-xs text-accent-blue">{p.property_id}</td>
                   <td className="max-w-xs">
                     <div className="truncate text-ink-primary font-medium" title={p.address}>{p.address}</div>
-                    <div className="text-[10px] text-ink-muted">{p.asset_class}</div>
+                    <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
+                      <div className="text-[10px] text-ink-muted">{p.asset_class}</div>
+                      {p.is_medical && <MedicalBadge />}
+                    </div>
                     {showSnoozedOnly && p.snooze_reason && (
                       <div className="text-[10px] text-amber-400 truncate">{p.snooze_reason}</div>
                     )}
@@ -896,7 +899,10 @@ export default function Properties() {
                                   <div className="min-w-0 flex-1">
                                     {/* Phase 1: hide company name; Phase 2: show it */}
                                     {!isPhase1 && (
-                                      <div className="text-xs font-semibold text-ink-primary truncate">{t.name}</div>
+                                      <div className="flex items-center gap-1.5">
+                                        <div className="text-xs font-semibold text-ink-primary truncate">{t.name}</div>
+                                        {t.is_medical && <MedicalBadge />}
+                                      </div>
                                     )}
                                     <div className="text-[10px] text-ink-muted">
                                       {t.industry}

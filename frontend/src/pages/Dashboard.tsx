@@ -12,6 +12,7 @@ import type {
   PropertyOut, MatchedTenant, ActivityLog, ActivityStage,
 } from '../types'
 import SnoozeModal from '../components/SnoozeModal'
+import { MedicalBadge } from '../components/PriorityBadge'
 import ScoreBadge from '../components/ScoreBadge'
 import AddPropertyModal from '../components/AddPropertyModal'
 import LeaseCompsModal from '../components/LeaseCompsModal'
@@ -112,11 +113,14 @@ function TenantActionRow({
             </span>
           )}
         </div>
-        <div className="text-sm font-semibold text-ink-primary truncate">
-          {action.address}
+        <div className="flex items-center gap-1.5">
+          <div className="text-sm font-semibold text-ink-primary truncate">{action.address}</div>
+          {action.property_is_medical && <MedicalBadge />}
         </div>
-        <div className="text-[11px] text-emerald-400 mt-0.5 truncate">
-          ↔ {action.tenant_name} <span className="text-ink-muted">· {action.tenant_industry}</span>
+        <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
+          <span className="text-[11px] text-emerald-400 truncate">↔ {action.tenant_name}</span>
+          {action.tenant_is_medical && <MedicalBadge />}
+          <span className="text-ink-muted text-[11px]">· {action.tenant_industry}</span>
         </div>
         <div className="flex items-center gap-3 mt-1.5 text-[11px] text-ink-secondary flex-wrap">
           <span>{action.submarket}</span>
@@ -207,7 +211,10 @@ function AcquisitionRow({
             </span>
           )}
         </div>
-        <div className="text-sm font-semibold text-ink-primary truncate">{target.address}</div>
+        <div className="flex items-center gap-1.5">
+          <div className="text-sm font-semibold text-ink-primary truncate">{target.address}</div>
+          {target.is_medical && <MedicalBadge />}
+        </div>
         <div className="text-[11px] text-ink-muted">
           {target.submarket} · {(target.total_sf / 1000).toFixed(0)}K SF
           {target.year_built ? ` · Built ${target.year_built}` : ''}

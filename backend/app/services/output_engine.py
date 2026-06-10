@@ -247,6 +247,8 @@ def _compute_tenant_actions(db: Session, snoozed: bool = False) -> list:
                 match_score=round(score, 1),
                 lease_expiry_months=co.lease_expiry_months,
                 contact_status=contact_status,
+                property_is_medical=bool(prop.is_medical),
+                tenant_is_medical=bool(co.is_medical),
             ))
 
     # Deduplicate: keep only the highest-scoring tenant per property so each
@@ -308,6 +310,7 @@ def _compute_acquisition_targets(db: Session, snoozed: bool = False) -> list:
             owner_name=prop.owner_name or "",
             sales_contact=prop.sales_contact,
             contact_status=contact_status,
+            is_medical=bool(prop.is_medical),
         ))
     return targets
 
