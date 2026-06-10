@@ -51,6 +51,15 @@ const CONF_CONFIG: Record<Confidence, { label: string; classes: string }> = {
   LOW:    { label: 'LOW CONF',    classes: 'text-slate-500' },
 }
 
+export function MedicalBadge() {
+  return (
+    <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-semibold tracking-wide bg-teal-500/15 text-teal-400 border border-teal-500/30">
+      Medical
+    </span>
+  )
+}
+
+
 export function ConfidenceBadge({ confidence }: ConfidenceBadgeProps) {
   const cfg = CONF_CONFIG[confidence]
   return (

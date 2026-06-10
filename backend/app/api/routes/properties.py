@@ -601,6 +601,7 @@ def _compute_matched_tenants(prop: Property, db: Session) -> list:
             submarket=co.current_submarket,
             match_score=round(score, 1),
             match_reasons=reasons,
+            is_medical=bool(co.is_medical),
         )
         for score, co, reasons in scored[:3]
     ]

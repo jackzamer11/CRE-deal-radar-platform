@@ -663,6 +663,7 @@ def _compute_matched_properties(company: Company, db: Session) -> list:
             listed_for_sale=bool(prop.listed_for_sale or False),
             match_score=round(score, 1),
             match_reasons=reasons,
+            is_medical=bool(prop.is_medical),
         )
         for score, prop, reasons in scored[:3]
     ]

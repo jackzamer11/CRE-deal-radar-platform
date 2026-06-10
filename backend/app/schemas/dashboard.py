@@ -72,6 +72,9 @@ class TenantMatchAction(BaseModel):
     lease_expiry_months: Optional[int]
     # UI state
     contact_status: str  # NOT_CONTACTED | CONTACTED | FOLLOW_UP
+    # Medical flags
+    property_is_medical: bool = False
+    tenant_is_medical:   bool = False
 
 
 class AcquisitionTarget(BaseModel):
@@ -90,6 +93,7 @@ class AcquisitionTarget(BaseModel):
     owner_name:   str
     sales_contact: Optional[str]
     contact_status: str  # NOT_CONTACTED | CONTACTED | FOLLOW_UP
+    is_medical:   bool = False
 
 
 class ExpiredLease(BaseModel):

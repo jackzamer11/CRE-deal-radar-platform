@@ -69,6 +69,7 @@ class MatchedProperty(BaseModel):
     listed_for_sale: bool
     match_score: float
     match_reasons: list[str]
+    is_medical: bool = False
 
 
 class CompanyOut(CompanyBase):

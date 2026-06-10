@@ -98,6 +98,7 @@ class MatchedTenant(BaseModel):
     submarket: Optional[str]
     match_score: float
     match_reasons: list[str]
+    is_medical: bool = False
 
 
 class MatchedProperty(BaseModel):
@@ -111,6 +112,7 @@ class MatchedProperty(BaseModel):
     landlord_rep_contact: Optional[str]
     sales_contact: Optional[str]
     listed_for_sale: bool
+    is_medical: bool = False
 
 
 class PropertyOut(PropertyBase):
