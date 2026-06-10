@@ -32,6 +32,7 @@ COSTAR_SUBMARKET_MAP: dict = {
     "alexandria/old town":  "Alexandria (Old Town)",
     "falls church":         "Falls Church",
     "reston":               "Reston",
+    "herndon":              "Herndon",
     "tysons":               "Tysons",
     "tysons corner":        "Tysons",
     "clarendon":            "Arlington (Clarendon)",
@@ -574,11 +575,12 @@ def _adjacent_submarkets(submarket: Optional[str]) -> set:
         "Arlington (Columbia Pike)":  {"Arlington (Ballston)", "Alexandria (Old Town)"},
         "Alexandria (Old Town)":      {"Arlington (Columbia Pike)"},
         "Tysons":                     {"McLean", "Vienna", "Reston", "Falls Church"},
-        "Reston":                     {"Tysons", "Vienna"},
+        "Reston":                     {"Tysons", "Vienna", "Herndon"},
         "Falls Church":               {"Arlington (Clarendon)", "Arlington (Ballston)", "Tysons"},
         "McLean":                     {"Arlington (Rosslyn)", "Tysons"},
         "Vienna":                     {"Tysons", "Reston", "Fairfax City"},
         "Fairfax City":               {"Vienna"},
+        "Herndon":                    {"Reston"},
     }
     return adjacency.get(submarket, set())
 

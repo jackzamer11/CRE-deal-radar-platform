@@ -10,6 +10,7 @@ export const SUBMARKETS = [
   'McLean',
   'Vienna',
   'Fairfax City',
+  'Herndon',
   'Annandale',
   'Crystal City',
   'Merrifield',

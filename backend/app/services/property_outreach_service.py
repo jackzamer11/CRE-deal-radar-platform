@@ -13,6 +13,7 @@ target_type (optional, used by 'tenant_match'):
 Requires OPENAI_API_KEY in the environment.
 """
 import os
+import re
 from datetime import datetime
 from typing import Optional
 
@@ -201,6 +202,42 @@ def _clean_owner_name(raw: str) -> str:
     return "" if (raw or "").strip().lower() in _UNKNOWN_OWNER_VALUES else (raw or "").strip()
 
 
+def _round_sf_to_hundred(sf):
+    """Round a square-footage figure to the nearest 100. None/0-safe (returns 0).
+
+    The single rounding rule for every SF figure shown in outreach copy — tenant
+    email and owner email alike. Precise raw figures are never shown.
+    """
+    return round(sf / 100) * 100 if sf else 0
+
+
+# Generic market-description filler the LLM tends to produce on tenant-side copy
+# ("The Tysons market offers a compelling mix of amenities and accessibility.").
+# Such sentences say nothing about this tenant or this property — strip them.
+_MARKET_FILLER_PATTERN = re.compile(
+    r'[^.!?\n]*\b(?:offers?\s+a\s+compelling\s+mix|amenities\s+and\s+accessibility)\b[^.!?\n]*[.!?]\s*',
+    re.IGNORECASE,
+)
+
+# Owner-email body sentences that mention the vacancy rate or CBRE data. The body
+# must never carry market statistics — the one permitted market sentence is the
+# dedicated standalone sentence injected post-LLM (_owner_vacancy_sentence).
+_OWNER_MARKET_STAT_PATTERN = re.compile(
+    r'[^.!?\n]*\b(?:vacanc\w*|CBRE)\b[^.!?\n]*[.!?]\s*',
+    re.IGNORECASE,
+)
+
+
+def _strip_sentences(body: str, pattern) -> str:
+    """Remove every sentence matching `pattern`, then collapse the whitespace and
+    empty paragraphs the removal leaves behind."""
+    if not body:
+        return body
+    body = pattern.sub("", body)
+    body = re.sub(r"[ \t]{2,}", " ", body)
+    return "\n\n".join(p.strip() for p in body.split("\n\n") if p.strip())
+
+
 def _sanitize_bracket_placeholders(body: str, property_dict: dict) -> str:
     """Replace LLM-echoed bracket placeholders with correct values or remove them.
 
@@ -272,6 +309,9 @@ CBRE_2026_BENCHMARKS = {
     "McLean":                     {"rent": 39.21, "vacancy": 7.4},
     "Vienna":                     {"rent": 24.16, "vacancy": 5.2},
     "Fairfax City":               {"rent": 26.23, "vacancy": 8.5},
+    # PROVISIONAL — approximating the Dulles Corridor (Reston proxy) until a
+    # measured Herndon figure is available from CBRE.
+    "Herndon":                    {"rent": 37.84, "vacancy": 22.9},
 }
 
 
@@ -446,15 +486,17 @@ def _addr(p: dict) -> str:
     return ", ".join(x for x in parts if x)
 
 
-def _prop_context(p: dict) -> str:
+def _prop_context(p: dict, include_market_stats: bool = True) -> str:
     # Minimum fields only — reduces input tokens by ~200–300 per call.
     # Fields accessed directly from `p` in builders (owner_name, landlord_representative,
     # days_on_market, years_owned, dominant_score_type, etc.) are NOT duplicated here.
+    # include_market_stats=False (owner-side tenant_match) withholds the vacancy %
+    # and CBRE benchmark so the model cannot echo market statistics into the body.
     lines = [
         f"Address: {p.get('address', 'N/A')}",
         f"Submarket: {p.get('submarket', 'N/A')}",
         f"SF Available: {p.get('sf_avail', 'N/A')}",
-        f"Occupancy/Vacancy %: {p.get('vacancy_pct', 'N/A')}",
+        f"Occupancy/Vacancy %: {p.get('vacancy_pct', 'N/A')}" if include_market_stats else "",
         f"In-Place Rent: ${p['in_place_rent_psf']:.2f}/SF" if p.get("in_place_rent_psf") else "In-Place Rent: N/A",
         f"Listed For Sale: {'Yes' if p.get('listed_for_sale') else 'No'}",
     ]
@@ -462,9 +504,10 @@ def _prop_context(p: dict) -> str:
         lines.append(f"Loan Maturity Year: {p.get('loan_maturity_year')}")
     if p.get("days_on_market"):
         lines.append(f"Days on Market: {p.get('days_on_market')}")
-    bm = _submarket_context(p.get("submarket"))
-    if bm:
-        lines.append(f"Submarket Benchmark: {bm}")
+    if include_market_stats:
+        bm = _submarket_context(p.get("submarket"))
+        if bm:
+            lines.append(f"Submarket Benchmark: {bm}")
     return "\n".join(l for l in lines if l)
 
 
@@ -477,31 +520,36 @@ def _build_tenant_match(
     has_secondary_demand: bool = False,
     tenant_dict: Optional[dict] = None,
 ) -> dict:
-    ctx = _prop_context(p)
-    benchmark = _submarket_context(p.get("submarket"))
     submarket = p.get("submarket") or "Northern Virginia"
+
+    # Owner email Fix 2: available SF is always rounded to the nearest 100 (same
+    # rounding rule as the tenant email) — the precise raw figure is never shown
+    # to the owner or fed to the model.
+    sf_avail = _round_sf_to_hundred(p.get("sf_avail"))
+    p_ctx = dict(p)
+    p_ctx["sf_avail"] = sf_avail if sf_avail else "N/A"
+    # Owner email Fix 1: the model never sees the vacancy % or CBRE benchmark —
+    # market statistics belong only in the dedicated standalone sentence injected
+    # post-LLM (_owner_vacancy_sentence).
+    ctx = _prop_context(p_ctx, include_market_stats=False)
 
     # Fix 3: property-side always uses full street address
     address_display = p.get("address") or p.get("submarket") or "Northern Virginia"
     owner_raw  = _clean_owner_name(p.get("owner_name") or "")
     salutation = f"Dear {owner_raw}," if owner_raw else "Dear Property Owner,"
 
-    # Fix 4: build urgency signal from vacancy / DOM / years_owned
-    vacancy_pct = p.get("vacancy_pct")
-    sf_avail    = p.get("sf_avail") or 0
+    # Fix 4: build urgency signal from open space / DOM / years_owned. Never
+    # phrased as a vacancy rate — the body must carry no vacancy statistic.
     dom         = p.get("days_on_market")
     years_owned = p.get("years_owned")
-    if vacancy_pct and float(vacancy_pct) > 0:
-        urgency_signal = (
-            f"{float(vacancy_pct):.0f}% vacancy ({sf_avail:,} SF available)"
-            if sf_avail else f"{float(vacancy_pct):.0f}% vacancy"
-        )
+    if sf_avail:
+        urgency_signal = f"approximately {sf_avail:,} SF available"
     elif dom:
         urgency_signal = f"on market {dom} days"
     elif years_owned:
-        urgency_signal = f"held {years_owned} years with current vacancy"
+        urgency_signal = f"held {years_owned} years with space currently open"
     else:
-        urgency_signal = "current vacancy levels"
+        urgency_signal = "currently open space"
 
     # When tenant_dict is available, build a null-safe natural-language hint so GPT
     # never sees bare "N/A" tokens in the profile (which produce awkward output).
@@ -560,10 +608,11 @@ def _build_tenant_match(
     secondary_clause = ""
     if has_secondary_demand:
         secondary_clause = (
-            "\nAfter introducing the primary tenant, include exactly ONE sentence "
-            "referencing secondary demand generally: 'Additionally, we have seen "
-            "interest from other qualified tenants in this submarket with similar "
-            "space requirements.' Do NOT describe secondary tenants specifically."
+            "\nInclude exactly ONE sentence referencing secondary demand generally: "
+            "'Additionally, we have seen interest from other qualified tenants in this "
+            "submarket with similar space requirements.' This sentence belongs INSIDE "
+            "the close paragraph — it does NOT count as a separate paragraph. Do NOT "
+            "describe secondary tenants specifically."
         )
 
     sale_clause = ""
@@ -575,21 +624,15 @@ def _build_tenant_match(
             "tenant in place to a longer marketing window."
         )
 
-    # Fix 5: explicit instruction to cite one benchmark data point (omit if no data)
-    benchmark_clause = (
-        f" Include exactly ONE submarket data point from the CBRE Q1 2026 benchmark "
-        f"mid-body (either vacancy rate or avg asking rent for {p.get('submarket', 'the submarket')})."
-        if benchmark else ""
-    )
-
-    # Fix 3: CBRE data is optional and must earn its place against the hook.
-    # Null-safe: with no benchmark, instruct OMISSION rather than inventing a number.
+    # Owner email Fix 1: the body must carry NO market statistics of any kind.
+    # The single permitted market line (the CBRE vacancy sentence, when warranted)
+    # is injected post-LLM as a dedicated standalone sentence — never written by
+    # the model.
     proof_step = (
-        f"You MAY cite exactly ONE CBRE Q1 2026 {submarket} number (vacancy rate or avg asking rent), "
-        f"and only if it directly sharpens the vacancy hook in the same sentence — if it does not earn "
-        f"its place, cut it entirely. "
-        if benchmark else
-        "Omit any market-statistic sentence; do NOT invent or cite a number you were not given. "
+        "Omit any market-statistic sentence from the body: the body paragraph must NEVER "
+        "mention the vacancy rate, CBRE data, or any market statistics — the one permitted "
+        "market sentence is added separately as a dedicated standalone sentence. Do NOT "
+        "invent or cite a number you were not given. "
     )
 
     system = (
@@ -600,7 +643,7 @@ def _build_tenant_match(
         f"Open the email with exactly '{salutation}' on its own line. "
         f"Use the full property address once in the body: 'your property at {address_display}'. "
         f"HUMANIZATION RULES — follow ALL: "
-        f"(1) No more than 3 short paragraphs. No bullet points. No data dumps. "
+        f"(1) Maximum 3 paragraphs total — intro, body pitch, close. No bullet points. No data dumps. "
         f"(2) ONE hook only — this property's open space ({urgency_signal}). Build the note around it; "
         f"do NOT also lean on the tenant's lease timing as a second hook. "
         f"(3) Lead with the matched tenant referred to ONLY as 'a qualified tenant' with an approximate "
@@ -614,17 +657,17 @@ def _build_tenant_match(
         f"{sale_clause}{secondary_clause}"
     )
     user = (
-        f"Property details:\n{ctx}{tenant_hint}\n"
-        f"\nMarket benchmark: {benchmark or 'N/A'}\n\n"
+        f"Property details:\n{ctx}{tenant_hint}\n\n"
         "Write:\n"
         "1. Email subject line (one line — short and human, no platform jargon)\n"
-        "2. Email body — maximum 150 words (excluding signature block); no more than 3 short paragraphs; "
+        "2. Email body — maximum 150 words (excluding signature block); maximum 3 paragraphs total "
+        "   (intro, body pitch, close); "
         "   no bullet points; sound like a real broker dashing off a quick note; "
         "   use the salutation from the system prompt exactly as written — do NOT use bracket placeholders; "
         "   describe the matched tenant ONLY as 'a qualified tenant' with approximate SF and the submarket — "
         "   never the company name and never the industry/sector; "
-        "   build the note around the single vacancy hook; at most ONE CBRE data point and only if it "
-        "   supports that hook; ONE closing ask: 'I'd welcome a brief call at your convenience.'\n"
+        "   build the note around the single open-space hook; the body must NOT mention the vacancy rate, "
+        "   CBRE data, or any market statistics; ONE closing ask: 'I'd welcome a brief call at your convenience.'\n"
         "3. Call script: Opening\n"
         "4. Call script: Core message\n"
         "5. Call script: Information-gathering questions\n"
@@ -803,8 +846,7 @@ def _build_tenant_side(p: dict, tenant_dict: dict) -> dict:
     asset_class = p.get("asset_class") or "office"
     # Fix 1: round the property's available SF to the nearest 100 before it is ever
     # injected into tenant-side copy. The raw figure is never shown to the tenant.
-    raw_sf_avail = p.get("sf_avail") or 0
-    sf_avail = round(raw_sf_avail / 100) * 100 if raw_sf_avail else 0
+    sf_avail = _round_sf_to_hundred(p.get("sf_avail"))
     in_place_rent = p.get("in_place_rent_psf")
     asking_rent = in_place_rent if in_place_rent and in_place_rent > 0 else None
 
@@ -837,7 +879,7 @@ def _build_tenant_side(p: dict, tenant_dict: dict) -> dict:
         f" with approximately {sf_avail:,} SF available" if sf_avail else ""
     )
 
-    sf_needed_rounded = round(sf_needed / 100) * 100 if sf_needed else None
+    sf_needed_rounded = _round_sf_to_hundred(sf_needed) or None
     sf_display  = f"approximately {sf_needed_rounded:,} SF" if sf_needed_rounded else None
     exp_display = (f"{lease_expiry_m} {'month' if lease_expiry_m == 1 else 'months'}" if lease_expiry_m is not None else None)
 
@@ -898,6 +940,9 @@ def _build_tenant_side(p: dict, tenant_dict: dict) -> dict:
         f"\n- Do NOT describe the tenant company back to themselves; do NOT reference their headcount or team size."
         + sf_fit_constraint
         + f"\n- {tenant_proof_rule}"
+        f"\n- Do NOT include generic market-description filler (e.g. 'The {submarket} market offers a "
+        f"compelling mix of amenities and accessibility') — every sentence must be specific to this "
+        f"tenant's situation or this property."
         f"\n- Tone: knowledgeable and consultative — a trusted market expert, not a salesperson."
         f"\n- Do NOT reveal that any web search or platform tool was used; do NOT mention other tenants or properties."
         f"\n- NEVER suggest specific days of the week."
@@ -1257,10 +1302,20 @@ def generate_property_outreach(
 
     submarket = property_dict.get("submarket")
     if is_tenant_side:
+        # Strip generic market-description filler ("...offers a compelling mix of
+        # amenities and accessibility") the model sometimes produces despite the
+        # prompt rule. Removed with no replacement.
+        email_body = _strip_sentences(email_body, _MARKET_FILLER_PATTERN)
         # Fix 2: cite vacancy only when it is BELOW 10% (scarcity); else omit and
         # let the lease-timing hook carry the urgency.
         email_body = _insert_before_ask(email_body, _tenant_vacancy_sentence(submarket))
     elif outreach_type in ("tenant_match", "for_sale_vacancy"):
+        if outreach_type == "tenant_match":
+            # Owner email Fix 1: the body must never carry the vacancy rate, CBRE
+            # data, or any market statistic — strip anything the model wrote so the
+            # dedicated standalone sentence injected below is the ONLY place the
+            # vacancy rate can appear (exactly once).
+            email_body = _strip_sentences(email_body, _OWNER_MARKET_STAT_PATTERN)
         # Fix 3: owner-side cites vacancy only when it is ABOVE 15% (tenant
         # scarcity); otherwise substitute a lease-timeline urgency line.
         owner_line = _owner_vacancy_sentence(submarket) or _owner_lease_timeline_sentence(tenant_dict)
