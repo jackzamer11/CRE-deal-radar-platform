@@ -41,6 +41,7 @@ const defaultForm = {
   current_address:       '',
   current_submarket:     '',
   current_sf:            '',
+  current_building_class: '',
   lease_expiry_months:   '',
   primary_contact_name:  '',
   primary_contact_title: '',
@@ -120,6 +121,7 @@ export default function AddCompanyModal({ onClose, onSaved }: Props) {
         current_address:       form.current_address || undefined,
         current_submarket:     form.current_submarket || undefined,
         current_sf:            form.current_sf ? parseInt(form.current_sf) : undefined,
+        current_building_class: form.current_building_class || undefined,
         lease_expiry_months:   form.lease_expiry_months ? parseInt(form.lease_expiry_months) : undefined,
         primary_contact_name:  form.primary_contact_name || undefined,
         primary_contact_title: form.primary_contact_title || undefined,
@@ -276,6 +278,14 @@ export default function AddCompanyModal({ onClose, onSaved }: Props) {
                     value={form.current_sf} onChange={set('current_sf')} />
                 </Field>
               </div>
+              <Field label="Current Building Class" hint="drives class-fit factor — leave blank if unknown">
+                <select className={selectCls} value={form.current_building_class} onChange={set('current_building_class')}>
+                  <option value="">Unknown</option>
+                  <option value="Class A">Class A</option>
+                  <option value="Class B">Class B</option>
+                  <option value="Class C">Class C</option>
+                </select>
+              </Field>
               <Field label="Months Until Lease Expiry" hint="most important signal — be precise">
                 <input className={inputCls} type="number" placeholder="e.g. 14"
                   value={form.lease_expiry_months} onChange={set('lease_expiry_months')} />

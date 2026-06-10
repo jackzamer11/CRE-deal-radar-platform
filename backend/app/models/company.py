@@ -28,6 +28,7 @@ class Company(Base):
     current_submarket = Column(String, nullable=True)
     current_sf = Column(Integer, nullable=True)
     sf_per_head = Column(Float, nullable=True)            # current_sf / headcount
+    current_building_class = Column(String, nullable=True)  # Class A / B / C — drives class-fit factor
 
     # Lease
     lease_expiry_date = Column(Date, nullable=True)

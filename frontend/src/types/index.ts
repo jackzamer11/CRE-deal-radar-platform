@@ -30,6 +30,7 @@ export interface MatchedTenant {
   submarket: string | null
   match_score: number
   match_reasons: string[]
+  adjacent_submarket?: boolean
 }
 
 export interface PropertyListOut {
@@ -214,6 +215,7 @@ export interface MatchedProperty {
   listed_for_sale: boolean
   match_score: number
   match_reasons: string[]
+  adjacent_submarket?: boolean
 }
 
 export interface CompanyOut extends CompanyListOut {
@@ -354,6 +356,7 @@ export interface TenantMatchAction {
   tenant_headcount: number | null
   tenant_sf_needed: number
   match_score: number
+  adjacent_submarket?: boolean
   lease_expiry_months: number | null
   contact_status: string
 }

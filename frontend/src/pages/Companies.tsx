@@ -701,6 +701,11 @@ export default function Companies() {
                                 {p.in_place_rent_psf != null ? `$${p.in_place_rent_psf.toFixed(0)}/SF in-place` : ''}
                                 {p.listed_for_sale ? <span className="ml-1 text-amber-400 font-semibold">FOR SALE</span> : null}
                               </div>
+                              {p.adjacent_submarket && (
+                                <span className="inline-block mt-1 text-[9px] px-1.5 py-0.5 rounded border font-bold bg-sky-500/15 text-sky-400 border-sky-500/30">
+                                  Adjacent Submarket
+                                </span>
+                              )}
                               {p.match_reasons.length > 0 && (
                                 <div className="flex flex-wrap gap-1 mt-1">
                                   {p.match_reasons.map((r, i) => (

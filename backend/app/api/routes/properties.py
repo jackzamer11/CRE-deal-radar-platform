@@ -509,26 +509,10 @@ def _enrich(prop: Property) -> PropertyOut:
 
 # ── Matched-tenant helper ──────────────────────────────────────────────────
 
-def _adjacent_submarkets(submarket: Optional[str]) -> set:
-    adjacency = {
-        "Arlington (Clarendon)":      {"Arlington (Rosslyn)", "Arlington (Ballston)", "Falls Church"},
-        "Arlington (Rosslyn)":        {"Arlington (Clarendon)", "McLean"},
-        "Arlington (Ballston)":       {"Arlington (Clarendon)", "Arlington (Columbia Pike)", "Falls Church"},
-        "Arlington (Columbia Pike)":  {"Arlington (Ballston)", "Alexandria (Old Town)"},
-        "Alexandria (Old Town)":      {"Arlington (Columbia Pike)"},
-        "Tysons":                     {"McLean", "Vienna", "Reston", "Falls Church"},
-        "Reston":                     {"Tysons", "Vienna"},
-        "Falls Church":               {"Arlington (Clarendon)", "Arlington (Ballston)", "Tysons"},
-        "McLean":                     {"Arlington (Rosslyn)", "Tysons"},
-        "Vienna":                     {"Tysons", "Reston", "Fairfax City"},
-        "Fairfax City":               {"Vienna"},
-    }
-    return adjacency.get(submarket, set())
-
-
 def _compute_matched_tenants(prop: Property, db: Session) -> list:
     from app.models.company import Company
     from app.schemas.property import MatchedTenant
+    from app.services.match_scoring import compute_match
 
     avail_sf = prop.sf_avail or (int(prop.vacant_sf) if prop.vacant_sf else 0)
     if avail_sf <= 0:
@@ -542,32 +526,30 @@ def _compute_matched_tenants(prop: Property, db: Session) -> list:
     scored = []
     for co in candidates:
         sf_needed = co.estimated_sf_needed or 0
-        reasons: list = []
-        score = 0.0
-        if sf_needed > 0 and avail_sf > 0:
-            ratio = sf_needed / avail_sf
-            if 0.6 <= ratio <= 1.4:
-                pct = abs(1.0 - ratio) * 100
-                score += 40.0
-                reasons.append(f"SF fit ±{pct:.0f}% ({sf_needed:,} needed vs {avail_sf:,} avail)")
-        if co.current_submarket == prop.submarket:
-            score += 30.0
-            reasons.append(f"Same submarket ({prop.submarket})")
-        elif co.current_submarket:
-            adjacent = _adjacent_submarkets(prop.submarket)
-            if co.current_submarket in adjacent:
-                score += 15.0
-                reasons.append(f"Adjacent submarket ({co.current_submarket})")
+        match = compute_match(
+            tenant_submarket=co.current_submarket,
+            property_submarket=prop.submarket,
+            tenant_class=getattr(co, "current_building_class", None),
+            property_class=prop.asset_class,
+            sf_needed=sf_needed,
+            sf_avail=avail_sf,
+        )
+        if match is None:
+            continue
+
+        reasons = [
+            f"SF fit {match['sf_fit_score']:.0f}/100 ({sf_needed:,} needed vs {avail_sf:,} avail)",
+            (f"Adjacent submarket ({co.current_submarket})" if match["adjacent"]
+             else f"Same submarket ({prop.submarket})"),
+            f"Class fit {match['class_score']:.0f}/100",
+        ]
         if co.expansion_signal:
-            score += 20.0
             reasons.append("Expansion signal active")
         if co.lease_expiry_months is not None and co.lease_expiry_months <= 18:
-            score += 10.0
             reasons.append(f"Lease expiry in {co.lease_expiry_months}mo")
-        if score > 0:
-            scored.append((score, co, reasons))
+        scored.append((match, co, reasons))
 
-    scored.sort(key=lambda x: x[0], reverse=True)
+    scored.sort(key=lambda x: x[0]["score"], reverse=True)
     return [
         MatchedTenant(
             company_id=co.company_id,
@@ -576,10 +558,11 @@ def _compute_matched_tenants(prop: Property, db: Session) -> list:
             headcount=co.current_headcount,
             sf_needed=co.estimated_sf_needed or 0,
             submarket=co.current_submarket,
-            match_score=round(score, 1),
+            match_score=match["score"],
             match_reasons=reasons,
+            adjacent_submarket=match["adjacent"],
         )
-        for score, co, reasons in scored[:3]
+        for match, co, reasons in scored[:3]
     ]
 
 
