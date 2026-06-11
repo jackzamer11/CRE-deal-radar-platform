@@ -13,13 +13,14 @@ Daily output:
 from datetime import date
 from typing import List, Optional
 
+from sqlalchemy import and_
 from sqlalchemy.orm import Session
 
 from app.models.opportunity import Opportunity
 from app.models.property import Property
 from app.models.company import Company
 from app.models.outreach_log import OutreachLog
-from app.services.match_scoring import compute_match
+from app.services.match_scoring import compute_match, medical_mismatch_penalty
 from app.schemas.dashboard import (
     DailyBriefing, DashboardStats, CallTarget, TenantMatchTarget,
     TenantMatchAction, AcquisitionTarget, ExpiredLease,
@@ -112,17 +113,32 @@ def _process_company_snooze_returns(db: Session) -> list:
     return company_ids
 
 
-def _compute_tenant_actions(db: Session) -> list:
-    """Compute Section A: property+tenant match pairs for the briefing."""
+def _property_snooze_clause(snoozed: bool):
+    """Filter clause selecting active (default) vs snoozed properties.
+
+    Active  : snoozed_until IS NULL (expired snoozes are auto-cleared to NULL on
+              briefing load, so NULL == active).
+    Snoozed : snoozed_until set and still in the future.
+    """
+    if snoozed:
+        return and_(Property.snoozed_until.isnot(None), Property.snoozed_until > date.today())
+    return (Property.snoozed_until == None)
+
+
+def _compute_tenant_actions(db: Session, snoozed: bool = False) -> list:
+    """Compute Section A: property+tenant match pairs for the briefing.
+
+    snoozed=False → active properties only (default queue).
+    snoozed=True  → only snoozed properties (the "Snoozed" toggle view).
+    """
+    snooze_clause = _property_snooze_clause(snoozed)
     # Properties with sf_avail > 0 and dominant_score_type == tenant_match
-    # Snoozed properties are excluded regardless of urgency.
     props = (
         db.query(Property)
         .filter(
             Property.dominant_score_type == "tenant_match",
             Property.sf_avail > 0,
-            # Active snooze: snoozed_until IS NULL or snoozed_until <= today (already processed)
-            (Property.snoozed_until == None),
+            snooze_clause,
         )
         .all()
     )
@@ -132,7 +148,7 @@ def _compute_tenant_actions(db: Session) -> list:
         .filter(
             Property.listed_for_sale == True,
             Property.sf_avail > 0,
-            (Property.snoozed_until == None),
+            snooze_clause,
         )
         .all()
     )
@@ -144,8 +160,8 @@ def _compute_tenant_actions(db: Session) -> list:
     # Active snooze: snoozed_until IS NULL or <= today (expired snoozes already
     # auto-cleared to NULL on briefing load). Null-safe: NULL = active.
     companies = db.query(Company).filter(
-        Company.estimated_sf_needed.isnot(None),
-        Company.estimated_sf_needed > 0,
+        Company.current_sf_occupied.isnot(None),
+        Company.current_sf_occupied > 0,
         (Company.snoozed_until == None),
     ).all()
 
@@ -164,9 +180,12 @@ def _compute_tenant_actions(db: Session) -> list:
         if avail_sf <= 0:
             continue
         for co in companies:
-            sf_needed = co.estimated_sf_needed or 0
+            sf_needed = co.current_sf_occupied or 0
             if sf_needed <= 0:
                 continue
+            # Composite Match Score gates (submarket -> class -> SF). The SF hard
+            # gate is bypassed for already-contacted pairs (contacted history is
+            # never disturbed): those score SF at the gate floor instead.
             match = compute_match(
                 tenant_submarket=co.current_submarket,
                 property_submarket=prop.submarket,
@@ -174,10 +193,15 @@ def _compute_tenant_actions(db: Session) -> list:
                 property_class=prop.asset_class,
                 sf_needed=sf_needed,
                 sf_avail=avail_sf,
+                sf_gate_exempt=(prop.id, co.id) in contacted,
             )
             if match is None:
                 continue
             score = match["score"]
+
+            # Soft penalty for medical/non-medical mismatch — applied after the
+            # qualification gate so the match still appears, just scored lower.
+            score += medical_mismatch_penalty(prop, co)
 
             # Determine outreach type + target
             if prop.listed_for_sale:
@@ -210,6 +234,8 @@ def _compute_tenant_actions(db: Session) -> list:
                 adjacent_submarket=match["adjacent"],
                 lease_expiry_months=co.lease_expiry_months,
                 contact_status=contact_status,
+                property_is_medical=bool(prop.is_medical),
+                tenant_is_medical=bool(co.is_medical),
             ))
 
     # Deduplicate: keep only the highest-scoring tenant per property so each
@@ -226,14 +252,18 @@ def _compute_tenant_actions(db: Session) -> list:
     return actions
 
 
-def _compute_acquisition_targets(db: Session) -> list:
-    """Compute Section B: acquisition target properties. Excludes snoozed properties."""
+def _compute_acquisition_targets(db: Session, snoozed: bool = False) -> list:
+    """Compute Section B: acquisition target properties.
+
+    snoozed=False → active properties only (default).
+    snoozed=True  → only snoozed properties (the "Snoozed" toggle view).
+    """
     props = (
         db.query(Property)
         .filter(
             Property.signal_score >= 40,
             Property.dominant_score_type == "acquisition",
-            (Property.snoozed_until == None),
+            _property_snooze_clause(snoozed),
         )
         .order_by(Property.signal_score.desc())
         .all()
@@ -267,6 +297,7 @@ def _compute_acquisition_targets(db: Session) -> list:
             owner_name=prop.owner_name or "",
             sales_contact=prop.sales_contact,
             contact_status=contact_status,
+            is_medical=bool(prop.is_medical),
         ))
     return targets
 
@@ -290,7 +321,7 @@ def _compute_expired_leases(db: Session) -> list:
             company_id=co.company_id,
             name=co.name,
             industry=co.industry,
-            sf_needed=co.estimated_sf_needed,
+            sf_needed=co.current_sf_occupied,
             submarket=co.current_submarket,
             headcount=co.current_headcount,
         )
@@ -433,6 +464,9 @@ def generate_daily_briefing(db: Session) -> DailyBriefing:
     tenant_match_actions = _compute_tenant_actions(db)
     acquisition_targets  = _compute_acquisition_targets(db)
     expired_leases       = _compute_expired_leases(db)
+    # Snoozed variants power the "Snoozed" toggle bubbles (hidden by default).
+    snoozed_tenant_match_actions = _compute_tenant_actions(db, snoozed=True)
+    snoozed_acquisition_targets  = _compute_acquisition_targets(db, snoozed=True)
 
     return DailyBriefing(
         briefing_date=date.today(),
@@ -444,6 +478,8 @@ def generate_daily_briefing(db: Session) -> DailyBriefing:
         tenant_match_properties=tenant_match_targets,
         tenant_match_actions=tenant_match_actions,
         acquisition_targets=acquisition_targets,
+        snoozed_tenant_match_actions=snoozed_tenant_match_actions,
+        snoozed_acquisition_targets=snoozed_acquisition_targets,
         expired_leases=expired_leases,
         returned_from_snooze_property_ids=returned_from_snooze_ids,
         signal_refresh_timestamp=str(date.today()),

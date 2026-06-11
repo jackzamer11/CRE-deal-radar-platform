@@ -542,7 +542,11 @@ def compute_expiry_priority_override(
 
 def sig_space_utilization(current_sf: Optional[int], current_headcount: Optional[int]) -> Optional[float]:
     """
-    Space utilization: SF per employee vs. modern standard (175 SF/head).
+    Space utilization: SF per employee vs. modern office density bands.
+
+    NOTE: this reads the company's real occupied SF and divides by headcount to
+    derive a SF/head RATIO for a utilization score. It never multiplies headcount
+    to derive a square-footage figure — SF is only ever the real occupied value.
 
     Cramped (<130 SF/head): urgent need for more space — relocation demand
     Oversized (>230 SF/head): likely to downsize — landlord exit signal
@@ -594,7 +598,6 @@ def sig_geo_clustering(
 
 CURRENT_YEAR = 2026
 NOVA_AVG_HOLD_YEARS = 7.0
-MODERN_SF_PER_HEAD = 175
 
 
 # ===========================================================================

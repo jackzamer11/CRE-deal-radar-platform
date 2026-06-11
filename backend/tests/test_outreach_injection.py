@@ -62,7 +62,7 @@ def _minimal_tenant(lease_expiry_months=12):
         "name": "Test Co",
         "industry": "Technology",
         "current_submarket": "Tysons",
-        "estimated_sf_needed": 4000,
+        "current_sf_occupied": 4000,
         "lease_expiry_months": lease_expiry_months,
         "opportunity_score": 80,
         "priority": "HIGH",
@@ -119,7 +119,9 @@ def test_social_proof_absent_on_property_side(outreach_type):
     )
 
 
-def test_social_proof_present_on_tenant_side():
+def test_social_proof_absent_on_tenant_side():
+    """Fix 3: the 'I work exclusively… before they hit the open listings' social-proof
+    line is no longer injected on tenant-side emails (it read like a platform output)."""
     import app.services.property_outreach_service as svc
 
     with patch.object(svc, "_chat", side_effect=lambda s, u, **kw: _structured_llm_response()):
@@ -130,8 +132,8 @@ def test_social_proof_present_on_tenant_side():
             tenant_dict=_minimal_tenant(),
         )
 
-    assert svc._HARDCODED_SOCIAL_PROOF in result["email_body"], (
-        "tenant_match/tenant_side must contain the social-proof sentence"
+    assert svc._HARDCODED_SOCIAL_PROOF not in result["email_body"], (
+        "tenant_match/tenant_side must NOT contain the social-proof sentence (Fix 3)"
     )
 
 

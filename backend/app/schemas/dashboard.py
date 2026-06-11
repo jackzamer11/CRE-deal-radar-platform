@@ -73,6 +73,9 @@ class TenantMatchAction(BaseModel):
     lease_expiry_months: Optional[int]
     # UI state
     contact_status: str  # NOT_CONTACTED | CONTACTED | FOLLOW_UP
+    # Medical flags
+    property_is_medical: bool = False
+    tenant_is_medical:   bool = False
 
 
 class AcquisitionTarget(BaseModel):
@@ -91,6 +94,7 @@ class AcquisitionTarget(BaseModel):
     owner_name:   str
     sales_contact: Optional[str]
     contact_status: str  # NOT_CONTACTED | CONTACTED | FOLLOW_UP
+    is_medical:   bool = False
 
 
 class ExpiredLease(BaseModel):
@@ -113,6 +117,9 @@ class DailyBriefing(BaseModel):
     tenant_match_properties: List[TenantMatchTarget]
     tenant_match_actions: List[TenantMatchAction] = []
     acquisition_targets:  List[AcquisitionTarget] = []
+    # Snoozed variants — surfaced behind the "Snoozed" toggle bubbles, hidden by default.
+    snoozed_tenant_match_actions: List[TenantMatchAction] = []
+    snoozed_acquisition_targets:  List[AcquisitionTarget] = []
     expired_leases: List[ExpiredLease] = []
     # property_ids whose snooze expired on this briefing load — show "Returned from Snooze" badge
     returned_from_snooze_property_ids: List[str] = []

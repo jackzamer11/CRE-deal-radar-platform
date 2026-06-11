@@ -248,7 +248,7 @@ def save_to_google_doc(docs_svc, drive_svc, company: dict, draft: dict) -> str:
     title  = f"Outreach — {company['name']} — {datetime.date.today()}"
     script = draft["call_script"]
 
-    projected_sf_str = f"{draft['projected_sf']:,} SF" if draft.get("projected_sf") else "N/A"
+    projected_sf_str = f"{draft['projected_sf']:,} SF" if draft.get("projected_sf") else "Unknown"
     headcount_line = (
         f"Headcount: {company['current_headcount']} | Growth: {company.get('headcount_growth_pct', 'N/A')}%\n"
         if company.get("current_headcount") else ""
@@ -261,7 +261,7 @@ Generated: {datetime.date.today()} | Agent: {AGENT_NAME} | {FIRM_NAME}
 COMPANY SNAPSHOT
 Priority: {company['priority']} | Score: {company['opportunity_score']:.0f}/100
 {headcount_line}Submarket: {company.get('current_submarket', 'N/A')} | Lease Expiry: {company.get('lease_expiry_months', 'N/A')} months
-Projected SF needed: {projected_sf_str}
+SF needed: {projected_sf_str}
 
 {'='*60}
 TENANT CALL SCRIPT

@@ -39,7 +39,7 @@ FAKE_PROPERTY = {
 FAKE_TENANT = {
     "name":                  TENANT_NAME,
     "industry":              "Technology",
-    "estimated_sf_needed":   5000,
+    "current_sf_occupied":   5000,
     "lease_expiry_months":   12,
     "current_submarket":     "Arlington (Rosslyn)",
     "primary_contact_name":  "Jane Smith",

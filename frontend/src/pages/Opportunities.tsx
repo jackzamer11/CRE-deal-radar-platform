@@ -286,7 +286,7 @@ export default function Opportunities() {
                       <div className="text-xs font-semibold text-ink-primary mb-0.5">{selectedCompany.industry}</div>
                       <div className="text-[10px] text-ink-muted">
                         {selectedCompany.current_headcount != null ? `${selectedCompany.current_headcount} HC` : '—'}
-                        {selectedCompany.estimated_sf_needed ? ` · ${selectedCompany.estimated_sf_needed.toLocaleString()} SF needed` : ''}
+                        {selectedCompany.current_sf_occupied ? ` · ${selectedCompany.current_sf_occupied.toLocaleString()} SF occupied` : ''}
                       </div>
                       {selectedCompany.lease_expiry_months != null && (
                         <div className="text-[10px] text-amber-400 mt-1">Lease: {selectedCompany.lease_expiry_months}mo</div>

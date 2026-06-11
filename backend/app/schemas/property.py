@@ -93,11 +93,13 @@ class MatchedTenant(BaseModel):
     name: str
     industry: str
     headcount: Optional[int]
-    sf_needed: int
+    sf_needed: Optional[int]          # real occupied SF; None when unknown
+    sf_display: str                   # "11,000 SF" when known, else "Unknown"
     submarket: Optional[str]
     match_score: float
     match_reasons: list[str]
     adjacent_submarket: bool = False
+    is_medical: bool = False
 
 
 class MatchedProperty(BaseModel):
@@ -111,6 +113,7 @@ class MatchedProperty(BaseModel):
     landlord_rep_contact: Optional[str]
     sales_contact: Optional[str]
     listed_for_sale: bool
+    is_medical: bool = False
 
 
 class PropertyOut(PropertyBase):
@@ -132,6 +135,7 @@ class PropertyOut(PropertyBase):
     created_at: datetime
     updated_at: datetime
     matched_tenants: list[MatchedTenant] = []
+    is_medical: bool = False
 
     @model_validator(mode='before')
     @classmethod
@@ -189,6 +193,7 @@ class PropertyListOut(BaseModel):
     returned_from_snooze: Optional[bool] = None
     owner_confirmed_leasing:      bool          = False
     owner_confirmed_leasing_date: Optional[date] = None
+    is_medical:                   bool          = False
 
     @model_validator(mode="after")
     def _derive_listed_for_lease(self) -> "PropertyListOut":

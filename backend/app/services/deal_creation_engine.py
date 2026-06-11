@@ -64,13 +64,18 @@ def _is_nearby(prop_submarket: str, company_submarket: Optional[str]) -> bool:
     return are_adjacent(company_submarket, prop_submarket)
 
 
-def _estimated_sf_needed(company: Company) -> int:
-    """Project the company's SF need at 12-18mo growth horizon."""
-    growth_factor = 1.0
-    if company.headcount_growth_pct:
-        growth_factor = 1 + (company.headcount_growth_pct / 100.0) * 1.25  # 15-mo projection
-    projected_heads = int((company.current_headcount or 1) * growth_factor)
-    return projected_heads * 175   # Modern standard SF/head
+def _estimated_sf_needed(company: Company) -> Optional[int]:
+    """SF needed = the company's real occupied SF (sf_occupied).
+
+    Returns None when no real value exists — we never estimate space need from
+    headcount, growth rate, or a SF/person assumption.
+    """
+    return company.current_sf_occupied if company.current_sf_occupied else None
+
+
+def _sf_phrase(sf_needed: Optional[int]) -> str:
+    """Render SF for prose: the real number when known, else a neutral phrase."""
+    return f"{sf_needed:,} SF" if sf_needed else "right-sized space"
 
 
 def _generate_call_script(
@@ -92,6 +97,7 @@ def _generate_call_script(
 
     if deal_type == "TENANT_DRIVEN" and company:
         sf_needed = _estimated_sf_needed(company)
+        sf_phrase = _sf_phrase(sf_needed)
         months = company.lease_expiry_months or 0
         expiry_urgency = "immediately" if months <= 6 else f"in {months} months"
 
@@ -107,9 +113,8 @@ OPENING:
 expansion. Do you have 3 minutes?"
 
 CORE MESSAGE:
-"Based on your current footprint of ~{company.sf_per_head or 0:.0f} SF per
-person and your growth rate, my models show you'll need approximately
-{sf_needed:,} SF within the next 12-18 months. Your lease comes up
+"Based on your current footprint, you'll be evaluating roughly
+{sf_phrase} for your next move. Your lease comes up
 {expiry_urgency}. I want to get you positioned BEFORE you're in
 negotiation under a deadline."
 
@@ -134,7 +139,7 @@ actively looking in your building's submarket."
 CORE MESSAGE:
 "The company is in the {company.industry} sector, {company.current_headcount}
 employees and growing at {company.headcount_growth_pct or 0:.0f}% per year.
-They need {sf_needed:,} SF and their lease expires in {months} months —
+They need {sf_phrase} and their lease expires in {months} months —
 they're motivated to move quickly. Your {prop.vacant_sf or 0:,.0f} SF of
 vacancy at {prop.address} matches their requirements."
 
@@ -144,7 +149,7 @@ vacancy without an extended marketing campaign."
 
 DEAL STATS:
   • Tenant: {company.name} | {company.current_headcount} heads +{company.headcount_growth_pct or 0:.0f}%/yr
-  • Space needed: {sf_needed:,} SF | Lease expiry: {months}mo
+  • Space needed: {sf_phrase} | Lease expiry: {months}mo
   • Building: {prop.address} | {prop.vacancy_pct or 0:.0f}% vacant ({prop.vacant_sf or 0:,.0f} SF)
   • Est. deal value: ${estimated_deal_value:,.0f} | Est. commission: ${estimated_commission:,.0f}
   • Your Signal Score: {score:.0f}/100"""
@@ -237,9 +242,9 @@ def _build_thesis(
         sf_needed = _estimated_sf_needed(company)
         return (
             f"{company.name} ({company.industry}) has grown {company.headcount_growth_pct or 0:.0f}% YoY to "
-            f"{company.current_headcount} employees, is operating at {company.sf_per_head or 0:.0f} SF/head "
-            f"(vs 175 SF standard), and their lease expires in {company.lease_expiry_months or 'unknown'} months. "
-            f"They need ~{sf_needed:,} SF. {prop.address} has {prop.vacant_sf or 0:,.0f} SF of vacancy at "
+            f"{company.current_headcount} employees, is operating at {company.sf_per_head or 0:.0f} SF/head, "
+            f"and their lease expires in {company.lease_expiry_months or 'unknown'} months. "
+            f"They need ~{_sf_phrase(sf_needed)}. {prop.address} has {prop.vacant_sf or 0:,.0f} SF of vacancy at "
             f"${prop.in_place_rent_psf or 0:.2f}/SF — {rent_gap_pct:.0f}% below the "
             f"{prop.submarket} market. Dual-side opportunity: tenant rep + landlord introduction. "
             f"Score: {score:.0f}/100."
@@ -310,10 +315,12 @@ def create_opportunity_from_match(
             deal_value = in_place_noi / (prop.market_cap_rate / 100.0) if in_place_noi > 0 else 0
 
     if deal_type == "TENANT_DRIVEN" and company:
-        # Lease TLV
+        # Lease TLV — only when we have a real SF figure; otherwise fall back to
+        # the property-based deal-value estimate computed above.
         sf_needed = _estimated_sf_needed(company)
-        annual_rent = sf_needed * (prop.in_place_rent_psf or 0)
-        deal_value = annual_rent * AVG_LEASE_TERM_YEARS
+        if sf_needed:
+            annual_rent = sf_needed * (prop.in_place_rent_psf or 0)
+            deal_value = annual_rent * AVG_LEASE_TERM_YEARS
         commission = deal_value * LEASE_COMMISSION_RATE
     else:
         commission = deal_value * SALE_COMMISSION_RATE

@@ -26,8 +26,11 @@ class Company(Base):
     # Location & Space
     current_address = Column(String, nullable=True)
     current_submarket = Column(String, nullable=True)
-    current_sf = Column(Integer, nullable=True)
-    sf_per_head = Column(Float, nullable=True)            # current_sf / headcount
+    # The company's ACTUAL occupied square footage, sourced from CoStar ("SF
+    # Occupied") or entered manually. This is the single SF field for a company:
+    # it is NEVER calculated from headcount. Null means "SF unknown".
+    current_sf_occupied = Column(Integer, nullable=True)
+    sf_per_head = Column(Float, nullable=True)            # current_sf_occupied / headcount
     current_building_class = Column(String, nullable=True)  # Class A / B / C — drives class-fit factor
 
     # Lease
@@ -35,7 +38,6 @@ class Company(Base):
     lease_expiry_months = Column(Integer, nullable=True)  # Months until expiry
     lease_expiry_source = Column(String, nullable=True)   # costar | manual | sec_filing | landlord_confirmed | public_record
     lease_expiry_last_verified = Column(Date, nullable=True)
-    estimated_sf_needed = Column(Integer, nullable=True)  # Projected space need
 
     # Behavioral Signals
     expansion_signal = Column(Boolean, default=False)
@@ -69,6 +71,9 @@ class Company(Base):
     future_move_flag = Column(Boolean, nullable=True)
     future_move_type = Column(String, nullable=True)
     linked_property_id = Column(Integer, nullable=True)
+    # Medical/non-medical classification — drives a soft match-score penalty when
+    # a non-medical tenant is matched to a medical property (or vice versa).
+    is_medical = Column(Boolean, nullable=False, default=False, server_default="0")
 
     # Lease trajectory — manually set by broker; drives SF projection in outreach agent
     # Values: AUTO | CONTRACTING | FLAT | GROWING

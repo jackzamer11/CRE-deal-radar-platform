@@ -1,5 +1,5 @@
 """
-Tenant ↔ Property composite Match Score.
+Tenant ↔ Property composite Match Score + shared match adjustments.
 
 Single source of truth for the pairing logic used by:
   - GET /api/properties/{id}        → matched_tenants cards
@@ -8,16 +8,22 @@ Single source of truth for the pairing logic used by:
   - run_deal_creation pipeline      → submarket proximity filter
 
 Contract (all point values / weights live in app.config):
-  1. SF-fit HARD GATE first: |sf_needed − sf_avail| must be ≤ MAX_SF_DELTA,
-     otherwise the pair is excluded before any scoring happens.
-  2. Submarket factor: exact = 100, adjacent = 60, non-adjacent = excluded.
+  1. Submarket factor: exact = 100, adjacent = 60, non-adjacent = excluded.
      A submarket string unknown to both the adjacency map and the platform
      dropdown degrades to exact-match-only (never crashes, never matches all).
-  3. Building-class factor: same = 100, tenant up one class = 70, down one = 55,
+  2. Building-class factor: same = 100, tenant up one class = 70, down one = 55,
      two classes apart = excluded, null/unparseable on either side = neutral 50.
+  3. SF-fit HARD GATE: |sf_needed − sf_avail| must be ≤ MAX_SF_DELTA,
+     otherwise the pair is excluded before SF scoring happens. SF source is the
+     tenant's real occupied SF (current_sf_occupied) vs the property's
+     AVAILABLE SF — never total or vacant SF.
   4. Composite = 0.40·submarket + 0.30·class + 0.30·sf_fit (0–100).
      The score is informational — it never blocks outreach generation.
+  5. Medical soft penalty: when exactly one side of a pair is medical the
+     composite drops by MEDICAL_MISMATCH_PENALTY — the match still appears,
+     it just ranks lower. Never a hard filter.
 """
+import logging
 from typing import Optional
 
 from app.config import (
@@ -35,10 +41,70 @@ from app.config import (
     SF_FIT_MIN_POINTS,
 )
 
+logger = logging.getLogger(__name__)
+
 _KNOWN_SUBMARKETS = set(SUBMARKET_ADJACENCY.keys()) | set(PLATFORM_SUBMARKETS)
 
 # Class rank: A=3, B=2, C=1 (higher = better building)
 _CLASS_RANK = {"A": 3, "B": 2, "C": 1}
+
+# Soft penalty applied when exactly one side of a match is medical (a medical
+# property matched to a non-medical tenant, or vice versa). It is a SOFT signal:
+# the match is still produced and displayed — it just scores lower so cleaner
+# fits rank above it. Never use this to hard-filter a match out.
+MEDICAL_MISMATCH_PENALTY = -20.0
+
+
+def medical_mismatch_penalty(prop, company) -> float:
+    """Return the medical/non-medical mismatch penalty for a property↔tenant pair.
+
+    Returns MEDICAL_MISMATCH_PENALTY when exactly one side is medical, else 0.0.
+    Accepts either ORM objects or anything exposing an ``is_medical`` attribute;
+    a missing/None flag is treated as non-medical (the default for all records).
+    """
+    prop_medical = bool(getattr(prop, "is_medical", False))
+    company_medical = bool(getattr(company, "is_medical", False))
+    if prop_medical != company_medical:
+        return MEDICAL_MISMATCH_PENALTY
+    return 0.0
+
+
+def sf_match_suppressed(company_sf_occupied, property_available_sf) -> bool:
+    """True when a pairing must be suppressed on square-footage grounds.
+
+    The comparison is against the property's AVAILABLE SF (sf_avail) only — never
+    total or vacant SF.
+
+    Null handling is asymmetric:
+      * Unknown tenant occupied SF -> returns False. The pairing is NOT suppressed
+        here; that case is handled elsewhere (the card is kept, outreach blocked).
+      * Unknown / zero AVAILABLE SF -> returns True (suppress). A pairing cannot be
+        sized without the available figure, so it is filtered out entirely.
+
+    Otherwise suppress when
+        abs(company_sf_occupied - property_available_sf) > MAX_SF_DELTA.
+    """
+    if not company_sf_occupied:
+        logger.debug(
+            "sf_match_suppressed: occupied=%r available=%r -> False "
+            "(tenant occupied SF unknown; handled elsewhere)",
+            company_sf_occupied, property_available_sf,
+        )
+        return False
+    if not property_available_sf:
+        logger.debug(
+            "sf_match_suppressed: occupied=%r available=%r -> True "
+            "(available SF unknown; cannot size the pairing)",
+            company_sf_occupied, property_available_sf,
+        )
+        return True
+    delta = abs(int(company_sf_occupied) - int(property_available_sf))
+    suppressed = delta > MAX_SF_DELTA
+    logger.debug(
+        "sf_match_suppressed: occupied=%s available=%s delta=%s threshold=%s -> %s",
+        int(company_sf_occupied), int(property_available_sf), delta, MAX_SF_DELTA, suppressed,
+    )
+    return suppressed
 
 
 def are_adjacent(submarket_a: Optional[str], submarket_b: Optional[str]) -> bool:
@@ -116,6 +182,7 @@ def compute_match(
     property_class: Optional[str],
     sf_needed: Optional[int],
     sf_avail: Optional[int],
+    sf_gate_exempt: bool = False,
 ) -> Optional[dict]:
     """Full pairing evaluation. Returns None when the pair is excluded
     (non-adjacent submarket, two-class gap, or SF gate); otherwise a dict:
@@ -147,9 +214,14 @@ def compute_match(
         return None
 
     # Gate 3 — SF delta hard gate, then the gradient for survivors.
+    # sf_gate_exempt=True (already-contacted pairs: contacted history is never
+    # disturbed) keeps the pair alive at the SF-fit gate floor instead.
     if not sf_delta_passes_gate(sf_needed, sf_avail):
-        return None
-    sf = sf_fit_score(sf_needed, sf_avail)
+        if not sf_gate_exempt:
+            return None
+        sf = SF_FIT_MIN_POINTS
+    else:
+        sf = sf_fit_score(sf_needed, sf_avail)
 
     w = MATCH_SCORE_WEIGHTS
     composite = w["submarket"] * sub + w["class"] * cls + w["sf_fit"] * sf

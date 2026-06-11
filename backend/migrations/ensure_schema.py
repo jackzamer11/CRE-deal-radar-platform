@@ -114,6 +114,14 @@ def ensure_properties(cur: sqlite3.Cursor) -> int:
     added += _add_column(cur, "properties", "owner_confirmed_leasing",      "BOOLEAN DEFAULT 0")
     added += _add_column(cur, "properties", "owner_confirmed_leasing_date", "DATE")
 
+    # ── Medical/non-medical classification (soft match penalty) ────────────
+    # Defaults to 0 (false) for all existing rows. Guarded so a partially-migrated
+    # DB can never abort startup on this single column.
+    try:
+        added += _add_column(cur, "properties", "is_medical", "BOOLEAN NOT NULL DEFAULT 0")
+    except Exception as _exc:
+        print(f"  ! properties.is_medical add skipped: {_exc}")
+
     return added
 
 
@@ -179,14 +187,49 @@ def ensure_outreach_log(cur: sqlite3.Cursor) -> int:
     return added
 
 
+def _add_activity_column(cur: sqlite3.Cursor, col: str, col_def: str) -> int:
+    """Add an activity_logs column, guarded against duplicate-column errors.
+
+    Belt-and-suspenders: a PRAGMA check skips columns that already exist, and the
+    ALTER is additionally wrapped in try/except so a concurrent/duplicate add
+    (e.g. column created between the check and the ALTER) never aborts startup.
+    """
+    if _has_column(cur, "activity_logs", col):
+        return 0
+    try:
+        cur.execute(f"ALTER TABLE activity_logs ADD COLUMN {col} {col_def}")
+        print(f"  + activity_logs.{col}")
+        return 1
+    except sqlite3.OperationalError as exc:
+        if "duplicate column name" in str(exc).lower():
+            return 0
+        raise
+
+
 def ensure_activity_logs(cur: sqlite3.Cursor) -> int:
-    """Add outreach-specific columns to activity_logs if missing."""
+    """Add outreach + stage-tracking columns to activity_logs if missing."""
     added = 0
     added += _add_column(cur, "activity_logs", "outreach_type",  "TEXT")
     added += _add_column(cur, "activity_logs", "target_type",    "TEXT")
     added += _add_column(cur, "activity_logs", "contact_method", "TEXT")
     added += _add_column(cur, "activity_logs", "subject",        "TEXT")
     added += _add_column(cur, "activity_logs", "notes",          "TEXT")
+
+    # ── Stage pipeline (current state) + revisit reminder ──────────────────────
+    # 'stage' defaults to 'Sent', which backfills every existing row on ADD COLUMN.
+    # 'next_touch_date' is the optional revisit date (Dormant / Not Interested).
+    added += _add_activity_column(cur, "stage", "TEXT DEFAULT 'Sent'")
+    added += _add_activity_column(cur, "next_touch_date", "DATE")
+
+    # Backfill any legacy rows whose stage is still NULL/empty → 'Sent'.
+    try:
+        cur.execute(
+            "UPDATE activity_logs SET stage = 'Sent' "
+            "WHERE stage IS NULL OR stage = ''"
+        )
+    except sqlite3.OperationalError:
+        pass
+
     return added
 
 
@@ -356,6 +399,33 @@ def ensure_companies(cur: sqlite3.Cursor) -> int:
     added += _add_column(cur, "companies", "expiry_priority_override", "BOOLEAN DEFAULT 0")
     # ── Building class (composite Match Score class-fit factor) ───────────────
     added += _add_column(cur, "companies", "current_building_class", "TEXT")
+
+    # ── Medical/non-medical classification (soft match penalty) ────────────
+    # Defaults to 0 (false) for all existing rows. Guarded so a partially-migrated
+    # DB can never abort startup on this single column.
+    try:
+        added += _add_column(cur, "companies", "is_medical", "BOOLEAN NOT NULL DEFAULT 0")
+    except Exception as _exc:
+        print(f"  ! companies.is_medical add skipped: {_exc}")
+
+    # ── Single SF field: current_sf_occupied (real occupied SF, never calculated) ──
+    # Replaces the legacy current_sf / estimated_sf_needed pair. Add idempotently,
+    # then port any existing legacy value across so no real SF data is lost on the
+    # live DB. The whole block is guarded so a partially-migrated DB never aborts
+    # startup. Backfill copies the IDENTICAL CoStar value under the new name — it
+    # changes no business state (contacted records keep their SF unchanged).
+    try:
+        added += _add_column(cur, "companies", "current_sf_occupied", "INTEGER")
+        # Backfill from legacy columns only where the new field is still empty.
+        for legacy in ("current_sf", "estimated_sf_needed"):
+            if _has_column(cur, "companies", legacy):
+                cur.execute(
+                    f"UPDATE companies SET current_sf_occupied = {legacy} "
+                    f"WHERE current_sf_occupied IS NULL AND {legacy} IS NOT NULL"
+                )
+    except Exception as _exc:
+        print(f"  ! companies.current_sf_occupied add/backfill skipped: {_exc}")
+
     return added
 
 

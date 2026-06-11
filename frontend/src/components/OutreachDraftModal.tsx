@@ -619,7 +619,7 @@ export default function OutreachDraftModal(props: Props) {
                 <span>·</span>
                 <span>{activeTabTenant.industry}</span>
                 <span>·</span>
-                <span>{activeTabTenant.sf_needed.toLocaleString()} SF needed</span>
+                <span>SF: {activeTabTenant.sf_display}</span>
               </div>
             )}
 
@@ -735,7 +735,9 @@ export default function OutreachDraftModal(props: Props) {
                     {draft.projected_sf && (
                       <>
                         <span>·</span>
-                        <span>Projected {draft.projected_sf.toLocaleString()} SF</span>
+                        {/* SF now sources from the tenant's real current_sf, so it
+                            is the current footprint — not a projected estimate. */}
+                        <span>Current {draft.projected_sf.toLocaleString()} SF</span>
                       </>
                     )}
                   </div>
@@ -898,7 +900,7 @@ export default function OutreachDraftModal(props: Props) {
                       {t.industry} · {t.headcount ?? '—'} HC
                     </div>
                     <div className="text-[10px] text-ink-secondary mt-0.5">
-                      {t.sf_needed.toLocaleString()} SF needed
+                      SF: {t.sf_display}
                     </div>
                     <div className="text-[10px] text-violet-400 mt-1">
                       Match {t.match_score.toFixed(0)}

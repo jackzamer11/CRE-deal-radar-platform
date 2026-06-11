@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { X, Users, ChevronRight } from 'lucide-react'
-import { createCompany } from '../api/client'
+import { createCompany, updateCompanyMedical, updateCompanySfOccupied, updateCompanyBuildingClass, updateCompanyLease } from '../api/client'
 import type { CompanyOut } from '../types'
 
 const SUBMARKETS = [
@@ -20,6 +20,8 @@ const SUBMARKETS = [
 interface Props {
   onClose: () => void
   onSaved: (company: CompanyOut) => void
+  editCompanyId?: string   // if set → edit mode (PATCH)
+  initialData?: CompanyOut // pre-populate form in edit mode
 }
 
 type Step = 'company' | 'size' | 'location' | 'contact'
@@ -40,7 +42,7 @@ const defaultForm = {
   open_positions:        '',
   current_address:       '',
   current_submarket:     '',
-  current_sf:            '',
+  current_sf_occupied:   '',
   current_building_class: '',
   lease_expiry_months:   '',
   primary_contact_name:  '',
@@ -48,9 +50,32 @@ const defaultForm = {
   primary_contact_phone: '',
   linkedin_url:          '',
   website:               '',
+  is_medical:            false,
 }
 
 type FormState = typeof defaultForm
+
+function companyToForm(data: CompanyOut): FormState {
+  return {
+    name:                  data.name ?? '',
+    industry:              data.industry ?? '',
+    description:           data.description ?? '',
+    current_headcount:     data.current_headcount != null ? String(data.current_headcount) : '',
+    headcount_12mo_ago:    '',
+    open_positions:        data.open_positions != null ? String(data.open_positions) : '',
+    current_address:       data.current_address ?? '',
+    current_submarket:     data.current_submarket ?? '',
+    current_sf_occupied:   data.current_sf_occupied != null ? String(data.current_sf_occupied) : '',
+    current_building_class: data.current_building_class ?? '',
+    lease_expiry_months:   data.lease_expiry_months != null ? String(data.lease_expiry_months) : '',
+    primary_contact_name:  data.primary_contact_name ?? '',
+    primary_contact_title: data.primary_contact_title ?? '',
+    primary_contact_phone: data.primary_contact_phone ?? '',
+    linkedin_url:          data.linkedin_url ?? '',
+    website:               data.website ?? '',
+    is_medical:            data.is_medical ?? false,
+  }
+}
 
 function Field({
   label, required, hint, children,
@@ -78,15 +103,19 @@ const inputCls = `w-full bg-surface border border-surface-border text-ink-primar
 const selectCls = `w-full bg-surface border border-surface-border text-ink-primary text-sm
   rounded-lg px-3 py-2 outline-none focus:border-accent-blue transition-colors`
 
-export default function AddCompanyModal({ onClose, onSaved }: Props) {
+export default function AddCompanyModal({ onClose, onSaved, editCompanyId, initialData }: Props) {
+  const isEdit = !!editCompanyId
   const [step, setStep] = useState<Step>('company')
-  const [form, setForm] = useState<FormState>(defaultForm)
+  const [form, setForm] = useState<FormState>(initialData ? companyToForm(initialData) : defaultForm)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const set = (field: keyof FormState) => (
     e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>
   ) => setForm(f => ({ ...f, [field]: e.target.value }))
+
+  const setCheck = (field: keyof FormState) => (e: React.ChangeEvent<HTMLInputElement>) =>
+    setForm(f => ({ ...f, [field]: e.target.checked }))
 
   const currentStepIndex = STEPS.findIndex(s => s.key === step)
   const isLast = currentStepIndex === STEPS.length - 1
@@ -101,35 +130,51 @@ export default function AddCompanyModal({ onClose, onSaved }: Props) {
   const headcount    = parseInt(form.current_headcount) || 0
   const prev         = parseInt(form.headcount_12mo_ago) || 0
   const growthPct    = prev > 0 ? ((headcount - prev) / prev * 100).toFixed(0) : null
-  const sfPerHead    = form.current_sf && headcount > 0
-    ? (parseInt(form.current_sf) / headcount).toFixed(0) : null
-  const sfNeeded     = headcount > 0 && growthPct
-    ? Math.round(headcount * (1 + parseFloat(growthPct) / 100 * 1.25) * 175)
-    : headcount > 0 ? headcount * 175 : 0
+  const sfPerHead    = form.current_sf_occupied && headcount > 0
+    ? (parseInt(form.current_sf_occupied) / headcount).toFixed(0) : null
+  // SF = the company's real occupied SF (current_sf_occupied). Never estimated.
+  const sfNeeded     = form.current_sf_occupied ? parseInt(form.current_sf_occupied) : null
 
   const handleSubmit = async () => {
     setSaving(true)
     setError(null)
     try {
-      const payload = {
-        name:                  form.name,
-        industry:              form.industry,
-        description:           form.description || undefined,
-        current_headcount:     parseInt(form.current_headcount),
-        headcount_12mo_ago:    form.headcount_12mo_ago ? parseInt(form.headcount_12mo_ago) : undefined,
-        open_positions:        form.open_positions ? parseInt(form.open_positions) : 0,
-        current_address:       form.current_address || undefined,
-        current_submarket:     form.current_submarket || undefined,
-        current_sf:            form.current_sf ? parseInt(form.current_sf) : undefined,
-        current_building_class: form.current_building_class || undefined,
-        lease_expiry_months:   form.lease_expiry_months ? parseInt(form.lease_expiry_months) : undefined,
-        primary_contact_name:  form.primary_contact_name || undefined,
-        primary_contact_title: form.primary_contact_title || undefined,
-        primary_contact_phone: form.primary_contact_phone || undefined,
-        linkedin_url:          form.linkedin_url || undefined,
-        website:               form.website || undefined,
+      let result: CompanyOut
+      if (isEdit) {
+        // Save each patchable field via its own endpoint, then use the final
+        // response (medical) as the returned record so the caller gets fresh data.
+        const sfVal = form.current_sf_occupied ? parseInt(form.current_sf_occupied) : null
+        await updateCompanySfOccupied(editCompanyId!, sfVal)
+        await updateCompanyBuildingClass(editCompanyId!, form.current_building_class || null)
+        if (form.lease_expiry_months) {
+          await updateCompanyLease(editCompanyId!, {
+            lease_expiry_months: parseInt(form.lease_expiry_months),
+            lease_expiry_source: 'manual',
+          })
+        }
+        result = await updateCompanyMedical(editCompanyId!, form.is_medical)
+      } else {
+        const payload = {
+          name:                  form.name,
+          industry:              form.industry,
+          description:           form.description || undefined,
+          current_headcount:     parseInt(form.current_headcount),
+          headcount_12mo_ago:    form.headcount_12mo_ago ? parseInt(form.headcount_12mo_ago) : undefined,
+          open_positions:        form.open_positions ? parseInt(form.open_positions) : 0,
+          current_address:       form.current_address || undefined,
+          current_submarket:     form.current_submarket || undefined,
+          current_sf_occupied:   form.current_sf_occupied ? parseInt(form.current_sf_occupied) : undefined,
+          current_building_class: form.current_building_class || undefined,
+          lease_expiry_months:   form.lease_expiry_months ? parseInt(form.lease_expiry_months) : undefined,
+          primary_contact_name:  form.primary_contact_name || undefined,
+          primary_contact_title: form.primary_contact_title || undefined,
+          primary_contact_phone: form.primary_contact_phone || undefined,
+          linkedin_url:          form.linkedin_url || undefined,
+          website:               form.website || undefined,
+          is_medical:            form.is_medical,
+        }
+        result = await createCompany(payload)
       }
-      const result = await createCompany(payload)
       onSaved(result)
     } catch (e: any) {
       setError(e?.response?.data?.detail || 'Failed to save company')
@@ -149,7 +194,7 @@ export default function AddCompanyModal({ onClose, onSaved }: Props) {
               <Users size={15} className="text-emerald-400" />
             </div>
             <div>
-              <div className="font-semibold text-ink-primary">Add Company</div>
+              <div className="font-semibold text-ink-primary">{isEdit ? 'Edit Company' : 'Add Company'}</div>
               <div className="text-[11px] text-ink-muted">Tenant signals scored automatically after save</div>
             </div>
           </div>
@@ -208,6 +253,13 @@ export default function AddCompanyModal({ onClose, onSaved }: Props) {
                 <input className={inputCls} placeholder="https://example.com"
                   value={form.website} onChange={set('website')} />
               </Field>
+              <div className="flex items-center gap-3 p-3 bg-surface-muted rounded-lg border border-surface-border">
+                <input type="checkbox" id="is_medical" checked={form.is_medical}
+                  onChange={setCheck('is_medical')} className="accent-blue-500 w-4 h-4" />
+                <label htmlFor="is_medical" className="text-sm text-ink-secondary cursor-pointer">
+                  Medical Tenant
+                </label>
+              </div>
             </div>
           )}
 
@@ -228,20 +280,14 @@ export default function AddCompanyModal({ onClose, onSaved }: Props) {
                 <input className={inputCls} type="number" placeholder="e.g. 12"
                   value={form.open_positions} onChange={set('open_positions')} />
               </Field>
-              <div className="grid grid-cols-2 gap-4">
-                <Field label="Current SF Leased">
-                  <input className={inputCls} type="number" placeholder="e.g. 5500"
-                    value={form.current_sf} onChange={set('current_sf')} />
-                </Field>
-                <Field label="Current Building Class" hint="drives class-fit factor">
-                  <select className={selectCls} value={form.current_building_class} onChange={set('current_building_class')}>
-                    <option value="">Unknown</option>
-                    <option value="Class A">Class A</option>
-                    <option value="Class B">Class B</option>
-                    <option value="Class C">Class C</option>
-                  </select>
-                </Field>
-              </div>
+              <Field label="Current Building Class" hint="drives class-fit factor">
+                <select className={selectCls} value={form.current_building_class} onChange={set('current_building_class')}>
+                  <option value="">Unknown</option>
+                  <option value="Class A">Class A</option>
+                  <option value="Class B">Class B</option>
+                  <option value="Class C">Class C</option>
+                </select>
+              </Field>
 
               {/* Live signal preview */}
               {headcount > 0 && (
@@ -256,8 +302,8 @@ export default function AddCompanyModal({ onClose, onSaved }: Props) {
                     </span>
                   </div>
                   <div className="flex justify-between text-xs">
-                    <span className="text-ink-muted">Estimated SF Needed (18mo)</span>
-                    <span className="text-ink-primary mono">{sfNeeded.toLocaleString()} SF</span>
+                    <span className="text-ink-muted">SF Needed</span>
+                    <span className="text-ink-primary mono">{sfNeeded ? `${sfNeeded.toLocaleString()} SF` : 'Unknown'}</span>
                   </div>
                   {sfPerHead && (
                     <div className="flex justify-between text-xs">
@@ -280,12 +326,18 @@ export default function AddCompanyModal({ onClose, onSaved }: Props) {
                 <input className={inputCls} placeholder="e.g. 4075 Wilson Blvd, Arlington, VA 22203"
                   value={form.current_address} onChange={set('current_address')} />
               </Field>
-              <Field label="Current Submarket" hint="drives geo matching">
-                <select className={selectCls} value={form.current_submarket} onChange={set('current_submarket')}>
-                  <option value="">Select submarket...</option>
-                  {SUBMARKETS.map(s => <option key={s} value={s}>{s}</option>)}
-                </select>
-              </Field>
+              <div className="grid grid-cols-2 gap-4">
+                <Field label="Current Submarket" hint="drives geo matching">
+                  <select className={selectCls} value={form.current_submarket} onChange={set('current_submarket')}>
+                    <option value="">Select submarket...</option>
+                    {SUBMARKETS.map(s => <option key={s} value={s}>{s}</option>)}
+                  </select>
+                </Field>
+                <Field label="SF Occupied (CoStar)" hint="real occupied SF — never estimated; leave blank if unknown">
+                  <input className={inputCls} type="number" placeholder="e.g. 5500"
+                    value={form.current_sf_occupied} onChange={set('current_sf_occupied')} />
+                </Field>
+              </div>
               <Field label="Months Until Lease Expiry" hint="most important signal — be precise">
                 <input className={inputCls} type="number" placeholder="e.g. 14"
                   value={form.lease_expiry_months} onChange={set('lease_expiry_months')} />
@@ -363,7 +415,7 @@ export default function AddCompanyModal({ onClose, onSaved }: Props) {
               className="px-5 py-2 rounded-lg bg-emerald-600 text-white text-sm font-semibold
                          hover:bg-emerald-700 transition-colors disabled:opacity-50"
             >
-              {saving ? 'Saving & Scoring...' : 'Save Company'}
+              {saving ? 'Saving…' : isEdit ? 'Save Changes' : 'Save Company'}
             </button>
           )}
         </div>

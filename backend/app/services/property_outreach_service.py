@@ -51,6 +51,107 @@ _PHASE1_FSV_CLOSING = (
     "in a conversation."
 )
 
+# Fix 3: SF-needed fallback. When a matched tenant has no real occupied SF
+# (sf_occupied null/zero → estimated_sf_needed None), property-side copy must
+# NEVER show a blank, placeholder, or estimated number. Instead it states the
+# requirement qualitatively with this exact wording.
+def _tenant_sf_fallback_sentence(submarket: Optional[str], lease_expiry_months) -> str:
+    sub = submarket or "submarket"
+    if lease_expiry_months is not None:
+        mo = "month" if int(lease_expiry_months) == 1 else "months"
+        timing = f"around {lease_expiry_months} {mo}"
+    else:
+        timing = "the coming months"
+    return (
+        f"A qualified tenant is looking for right-sized office space in the "
+        f"{sub}, with a lease commencement in {timing}."
+    )
+
+
+# ── Fix 4: two distinct call scripts keyed by call target (OWNER | TENANT) ──────
+# The information-extraction questions and the 48-hour close are VERBATIM per spec.
+# These are built deterministically in code (not via the LLM) so the ordered
+# questions and the close string are guaranteed on every draft.
+OWNER_CALL_QUESTIONS = (
+    "What's your current thinking on the vacancy — are you working with anyone, or is it still open?",
+    "What would the right tenant profile look like for you — any restrictions on use or build-out?",
+    "Has anything changed on your end with the property — ownership, financing, timeline?",
+)
+OWNER_CALL_CLOSE = (
+    "I want to move on this quickly — I'll take what you've told me, confirm a few things on my end, "
+    "and get back to you within 48 hours. Does that work?"
+)
+
+TENANT_CALL_QUESTIONS = (
+    "Where are you in your decision process right now — have you started looking, or are you still in planning mode?",
+    "What's driving the move — is it the space itself, the location, the economics, or something else?",
+    "Who else is involved in the final call on this?",
+)
+TENANT_CALL_CLOSE = (
+    "I'm going to take this back, match it against what I'm seeing in the submarket, and get back to you "
+    "within 48 hours with something specific. That work for you?"
+)
+
+
+def build_call_script(call_target: str, property_dict: dict, tenant_dict: Optional[dict] = None) -> dict:
+    """Return a deterministic call script for the given call target.
+
+    call_target: 'OWNER' or 'TENANT'.
+      OWNER  — opening references the property + vacancy by SUBMARKET only (never the
+               street address); core message frames a qualified tenant whose timeline
+               aligns with the owner's vacancy.
+      TENANT — opening leads with the tenant's lease-timing pain (not the property);
+               core message frames submarket-exclusive deal flow moving off-market.
+
+    The three information-extraction questions appear in order; the close carries the
+    verbatim 48-hour commitment. Returns opening / core / questions / pain_probe / close.
+    """
+    target = (call_target or "OWNER").upper()
+    submarket = property_dict.get("submarket") or "Northern Virginia"
+
+    if target == "TENANT":
+        exp = (tenant_dict or {}).get("lease_expiry_months")
+        if exp is not None:
+            timing = f"about {exp} {'month' if int(exp) == 1 else 'months'}"
+            opening = (
+                f"Hi — I know your lease is coming up in {timing}, and a decision like that has a way "
+                f"of sneaking up on people, so I wanted to get ahead of it with you."
+            )
+        else:
+            opening = (
+                "Hi — I know your lease is coming up before long, and a decision like that has a way "
+                "of sneaking up on people, so I wanted to get ahead of it with you."
+            )
+        core = (
+            f"I work {submarket} exclusively, and right now I'm seeing good space get spoken for before "
+            f"it ever hits the open market — which is exactly why I wanted to reach you early rather than late."
+        )
+        questions = TENANT_CALL_QUESTIONS
+        close = TENANT_CALL_CLOSE
+    else:  # OWNER
+        vac = property_dict.get("vacancy_pct")
+        vac_str = f", and I see you're showing roughly {float(vac):.0f}% vacancy" if vac else ""
+        opening = (
+            f"Hi — I'm calling about the unleased office space at your property in {submarket}{vac_str}. "
+            f"I'll keep this quick."
+        )
+        core = (
+            f"I'm working with a qualified tenant whose timeline lines up with your availability in "
+            f"{submarket}, and I'd rather bring them to you directly than watch good space sit while the "
+            f"right fit is already out there looking."
+        )
+        questions = OWNER_CALL_QUESTIONS
+        close = OWNER_CALL_CLOSE
+
+    return {
+        "opening": opening,
+        "core": core,
+        "questions": list(questions),
+        # Existing pipeline carries a single pain_probe field — pack the ordered
+        # questions into it so nothing downstream (schema / DB / frontend) changes.
+        "pain_probe": "\n".join(questions),
+        "close": close,
+    }
 
 
 def _inject_hardcoded_sentences(email_body: str, inject_social_proof: bool = True) -> str:
@@ -192,6 +293,64 @@ def _submarket_context(submarket: Optional[str], side: str = "all") -> str:
     return f"{rent_part}, vacancy {vacancy}%" if include_vacancy else rent_part
 
 
+def _submarket_vacancy(submarket: Optional[str]) -> Optional[float]:
+    """Return the CBRE Q1 2026 vacancy rate (as a percent, e.g. 7.4) for a
+    submarket, or None if unknown."""
+    if not submarket:
+        return None
+    b = CBRE_2026_BENCHMARKS.get(submarket)
+    return b["vacancy"] if b else None
+
+
+# Vacancy-rate thresholds (as fractions of 1.0) that gate the CBRE urgency line.
+#   Tenant: a LOW-vacancy submarket creates scarcity urgency  → cite only below 10%.
+#   Owner:  a HIGH-vacancy submarket makes tenants scarce      → cite only above 15%.
+TENANT_VACANCY_URGENCY_THRESHOLD = 0.10
+OWNER_VACANCY_URGENCY_THRESHOLD  = 0.15
+
+
+def _tenant_vacancy_sentence(submarket: Optional[str]) -> Optional[str]:
+    """Fix 2: tenant-side CBRE vacancy line — only when submarket vacancy is BELOW
+    10% (scarcity urgency). At/above 10%, return None and rely on lease timing.
+    Vacancy only — never rent PSF.
+    """
+    vac = _submarket_vacancy(submarket)
+    if vac is None or (vac / 100.0) >= TENANT_VACANCY_URGENCY_THRESHOLD:
+        return None
+    return f"With {submarket}'s vacancy rate at {vac:.1f}%, quality options are limited."
+
+
+def _owner_vacancy_sentence(submarket: Optional[str]) -> Optional[str]:
+    """Fix 3: owner-side CBRE vacancy line — only when submarket vacancy is ABOVE
+    15% (tenant scarcity). At/below 15%, return None so the caller substitutes a
+    lease-timeline urgency line instead. Vacancy only — never rent PSF.
+    """
+    vac = _submarket_vacancy(submarket)
+    if vac is None or (vac / 100.0) <= OWNER_VACANCY_URGENCY_THRESHOLD:
+        return None
+    return (
+        f"With {submarket}'s vacancy rate at {vac:.1f}%, qualified tenants are harder "
+        f"to come by — this is one worth moving on."
+    )
+
+
+def _owner_lease_timeline_sentence(tenant_dict: Optional[dict]) -> str:
+    """Owner-side urgency fallback when the vacancy line is omitted: lean on the
+    matched tenant's lease timeline as the reason to move now. Never names the
+    tenant or its industry."""
+    exp = (tenant_dict or {}).get("lease_expiry_months")
+    if exp is not None:
+        mo = "month" if int(exp) == 1 else "months"
+        return (
+            f"With the tenant's lease expiring in approximately {exp} {mo}, the timing is the "
+            f"urgency here — this is one worth moving on while it lines up."
+        )
+    return (
+        "With the tenant's lease timeline already in motion, the timing is the urgency "
+        "here — this is one worth moving on while it lines up."
+    )
+
+
 def search_property_intelligence(property_dict: dict) -> list:
     """Run two Anthropic web searches on the property+owner and return structured findings.
 
@@ -329,6 +488,7 @@ def _build_tenant_match(
 ) -> dict:
     ctx = _prop_context(p)
     benchmark = _submarket_context(p.get("submarket"), side="owner")
+    submarket = p.get("submarket") or "Northern Virginia"
 
     # Fix 3: property-side always uses full street address
     address_display = p.get("address") or p.get("submarket") or "Northern Virginia"
@@ -354,21 +514,27 @@ def _build_tenant_match(
 
     # When tenant_dict is available, build a null-safe natural-language hint so GPT
     # never sees bare "N/A" tokens in the profile (which produce awkward output).
+    # Fix 2: the owner does not need sector detail — the matched tenant is referred
+    # to ONLY as "a qualified tenant". Industry / sector is never passed to the model.
     if tenant_dict is not None:
-        industry = tenant_dict.get("industry") or "professional services firm"
-        sf       = tenant_dict.get("estimated_sf_needed")
+        sf       = tenant_dict.get("current_sf_occupied")
         exp      = tenant_dict.get("lease_expiry_months")
         sf_str   = f"{sf:,} SF" if sf else None
         exp_str  = (f"approximately {exp} {'month' if exp == 1 else 'months'}" if exp is not None else None)
-        sf_part  = f" seeking {sf_str}" if sf_str else ""
+        # Fix 3 / Fix 5: only reference a real SF number; otherwise use the
+        # qualitative "right-sized office space" framing (never a placeholder).
+        sf_part  = f" looking for {sf_str}" if sf_str else " looking for right-sized office space"
         exp_part = f" with a lease expiring {exp_str}" if exp_str else ""
         tenant_hint = (
-            f"\nPrimary matched tenant profile (do NOT reveal tenant name): "
-            f"a {industry} firm{sf_part} in "
-            f"{p.get('submarket', 'Northern Virginia')}{exp_part}"
+            f"\nPrimary matched tenant profile (refer to them ONLY as 'a qualified tenant'; "
+            f"do NOT reveal the tenant's name, industry, or sector): "
+            f"a qualified tenant{sf_part} in {submarket}{exp_part}"
         )
     elif tenant_context:
-        tenant_hint = f"\nPrimary matched tenant profile (do NOT reveal tenant name): {tenant_context}"
+        tenant_hint = (
+            f"\nPrimary matched tenant profile (refer to them ONLY as 'a qualified tenant'; "
+            f"do NOT reveal the tenant's name, industry, or sector)."
+        )
     else:
         tenant_hint = ""
 
@@ -379,24 +545,25 @@ def _build_tenant_match(
     if target_type == "broker" and landlord_rep:
         addressee     = f"the landlord representative ({landlord_rep})"
         framing       = (
-            "Write broker-to-broker, peer to peer. Lead with the PRIMARY tenant "
-            "profile (industry, SF range, submarket, approximate lease "
-            "expiry months) — but never reveal the tenant company's name."
+            "Write broker-to-broker, peer to peer. Lead with the matched tenant referred to "
+            "ONLY as 'a qualified tenant' (SF range, submarket, approximate lease expiry) — "
+            "never reveal the tenant's company name, industry, or sector."
         )
     elif target_type == "owner":
         addressee = "the property owner"
         framing   = (
-            "Write broker-to-owner. Lead with the PRIMARY tenant profile (industry, "
-            "SF range, submarket, approximate lease expiry months) without "
-            "revealing the tenant company's name. Position the call as bringing them a "
-            "credible prospect for the vacancy."
+            "Write broker-to-owner. Lead with the matched tenant referred to ONLY as "
+            "'a qualified tenant' (SF range and submarket) — never reveal the tenant's "
+            "company name, industry, or sector. Position the note as bringing them a credible "
+            "prospect for the vacancy."
         )
     else:
         addressee = "the property owner" if not landlord_rep else f"the landlord representative ({landlord_rep})"
         framing   = (
             "Choose tone based on whether the recipient is the owner or a listing "
-            "broker. Lead with the PRIMARY tenant profile; never reveal the tenant "
-            "company's name; refer to them by industry / size / timing. "
+            "broker. Lead with the matched tenant referred to ONLY as 'a qualified tenant'; "
+            "never reveal the tenant's company name, industry, or sector — describe them by "
+            "size and submarket only. "
         )
 
     secondary_clause = ""
@@ -424,36 +591,34 @@ def _build_tenant_match(
         if benchmark else ""
     )
 
-    # Restructured body sequence (hook → why-now → one proof point → single ask).
-    # Proof step is null-safe: when no benchmark exists, instruct the model to omit
-    # the statistic sentence entirely rather than invent a number.
+    # Fix 3: CBRE data is optional and must earn its place against the hook.
+    # Null-safe: with no benchmark, instruct OMISSION rather than inventing a number.
     proof_step = (
-        f"(3) PROOF — cite exactly ONE CBRE Q1 2026 {p.get('submarket', 'submarket')} data point "
-        f"(a single number — vacancy rate or avg asking rent); no filler like 'underscores the opportunity'. "
+        f"You MAY cite exactly ONE CBRE Q1 2026 {submarket} number (vacancy rate or avg asking rent), "
+        f"and only if it directly sharpens the vacancy hook in the same sentence — if it does not earn "
+        f"its place, cut it entirely. "
         if benchmark else
-        "(3) PROOF — omit any market-statistic sentence; do NOT invent or cite a number you were not given. "
+        "Omit any market-statistic sentence; do NOT invent or cite a number you were not given. "
     )
 
     system = (
-        f"You are {AGENT_NAME} at {FIRM_NAME}, a commercial real estate broker "
-        f"specialising in Northern Virginia office. You are addressing {addressee}. "
-        f"{framing} Write like a sharp, concise professional — every sentence earns its place. "
+        f"You are {AGENT_NAME} at {FIRM_NAME}, a commercial real estate broker who knows the "
+        f"Northern Virginia office market cold. You are emailing {addressee}. {framing} "
+        f"Write like a sharp broker who just picked up the phone and typed a quick personal note — "
+        f"NOT a platform output, NOT a mail-merge. "
         f"Open the email with exactly '{salutation}' on its own line. "
         f"Use the full property address once in the body: 'your property at {address_display}'. "
-        f"Structure the body in this EXACT sequence, one tight sentence each: "
-        f"(1) HOOK — lead with the qualified prospect: a credible tenant is interested, described "
-        f"ONLY by industry and approximate target SF (e.g. 'a qualified Health Care firm seeking "
-        f"~3,500 SF'); NEVER reveal the tenant company name. "
-        f"(2) WHY-NOW — one sentence pairing the tenant's lease-expiry timeline with this property's "
-        f"{urgency_signal}, so the fit and the timing are both clear. "
-        f"{proof_step}"
-        f"(4) ASK — close with EXACTLY this sentence and no other call-to-action: "
-        f"'I'd welcome a brief call at your convenience.' "
-        f"Do NOT write 'I propose a short call' or any other phrasing before it. "
-        f"Do NOT stack multiple asks (no separate rent / tour / OM requests — fold them "
-        f"into the call's purpose). "
-        f"Anchor any numerical claim to the CBRE Q1 2026 NoVA benchmark provided. "
-        f"NEVER reveal the tenant company name — describe by industry, size, and timing only. "
+        f"HUMANIZATION RULES — follow ALL: "
+        f"(1) No more than 3 short paragraphs. No bullet points. No data dumps. "
+        f"(2) ONE hook only — this property's open space ({urgency_signal}). Build the note around it; "
+        f"do NOT also lean on the tenant's lease timing as a second hook. "
+        f"(3) Lead with the matched tenant referred to ONLY as 'a qualified tenant' with an approximate "
+        f"size and the submarket (e.g. 'a qualified tenant looking for ~3,500 SF in {submarket}'). "
+        f"NEVER reveal the tenant's company name, industry, or sector — the owner does not need sector detail. "
+        f"(4) {proof_step}"
+        f"(5) End with ONE low-friction ask and nothing else: 'I'd welcome a brief call at your convenience.' "
+        f"Do NOT write 'I propose a short call' or any other call-to-action before it. "
+        f"Do NOT stack asks (no separate rent / tour / OM request). "
         f"NEVER suggest specific days of the week. "
         f"{sale_clause}{secondary_clause}"
     )
@@ -461,17 +626,18 @@ def _build_tenant_match(
         f"Property details:\n{ctx}{tenant_hint}\n"
         f"\nMarket benchmark: {benchmark or 'N/A'}\n\n"
         "Write:\n"
-        "1. Email subject line (one line)\n"
-        "2. Email body — maximum 150 words (excluding signature block); follow the 4-step sequence "
-        "   from the system prompt exactly (hook → why-now → one proof point → single call ask); "
+        "1. Email subject line (one line — short and human, no platform jargon)\n"
+        "2. Email body — maximum 150 words (excluding signature block); no more than 3 short paragraphs; "
+        "   no bullet points; sound like a real broker dashing off a quick note; "
         "   use the salutation from the system prompt exactly as written — do NOT use bracket placeholders; "
-        "   describe the matched tenant ONLY by industry type and approximate SF using the profile above — "
-        "   write the actual values, not placeholders, and never the company name; "
-        "   ONE submarket data point only; ONE closing ask — a short call (do NOT stack rent / tour / OM)\n"
-        "3. Call script: Opening (2 sentences)\n"
-        "4. Call script: Core message (3 sentences)\n"
-        "5. Call script: Pain probe question (1 sentence)\n"
-        "6. Call script: Close / next step (end with 'I'd welcome a brief call at your convenience.')\n\n"
+        "   describe the matched tenant ONLY as 'a qualified tenant' with approximate SF and the submarket — "
+        "   never the company name and never the industry/sector; "
+        "   build the note around the single vacancy hook; at most ONE CBRE data point and only if it "
+        "   supports that hook; ONE closing ask: 'I'd welcome a brief call at your convenience.'\n"
+        "3. Call script: Opening\n"
+        "4. Call script: Core message\n"
+        "5. Call script: Information-gathering questions\n"
+        "6. Call script: Close\n\n"
         "Format EXACTLY as:\n"
         "SUBJECT: <subject>\n"
         "EMAIL:\n<body>\n"
@@ -533,7 +699,7 @@ def _build_for_sale_vacancy(
     # plus SF needed and lease expiry.  No industry label reaches the model.
     # The closing line is injected post-LLM in generate_property_outreach.
     if tenant_dict is not None:
-        sf  = tenant_dict.get("estimated_sf_needed")
+        sf  = tenant_dict.get("current_sf_occupied")
         exp = tenant_dict.get("lease_expiry_months")
         sf_str  = f"{sf:,} SF" if sf else None
         exp_str = (f"approximately {exp} {'month' if exp == 1 else 'months'}" if exp is not None else None)
@@ -644,7 +810,10 @@ def _build_tenant_side(p: dict, tenant_dict: dict) -> dict:
     submarket = p.get("submarket") or "Northern Virginia"
     benchmark = _submarket_context(p.get("submarket"), side="tenant")
     asset_class = p.get("asset_class") or "office"
-    sf_avail = p.get("sf_avail") or 0
+    # Fix 1: round the property's available SF to the nearest 100 before it is ever
+    # injected into tenant-side copy. The raw figure is never shown to the tenant.
+    raw_sf_avail = p.get("sf_avail") or 0
+    sf_avail = round(raw_sf_avail / 100) * 100 if raw_sf_avail else 0
     in_place_rent = p.get("in_place_rent_psf")
     asking_rent = in_place_rent if in_place_rent and in_place_rent > 0 else None
 
@@ -653,7 +822,7 @@ def _build_tenant_side(p: dict, tenant_dict: dict) -> dict:
     industry       = tenant_dict.get("industry") or "professional services firm"
     # Fix 4: headcount is NOT passed to tenant-side copy — SF needed and lease
     # expiry are the permitted identifiers. Never reference headcount in tenant emails.
-    sf_needed      = tenant_dict.get("estimated_sf_needed")
+    sf_needed      = tenant_dict.get("current_sf_occupied")
     lease_expiry_m = tenant_dict.get("lease_expiry_months")
     submarket_pref = tenant_dict.get("current_submarket") or submarket
 
@@ -672,17 +841,19 @@ def _build_tenant_side(p: dict, tenant_dict: dict) -> dict:
     rent_clause = (
         f" at approximately ${asking_rent:.2f}/SF" if asking_rent else ""
     )
+    # Fix 3: SF always displays as approximate, rounded to the nearest 100.
     sf_clause = (
-        f" with {sf_avail:,} square feet available" if sf_avail else ""
+        f" with approximately {sf_avail:,} SF available" if sf_avail else ""
     )
 
-    sf_display  = f"{sf_needed:,} SF" if sf_needed else None
+    sf_needed_rounded = round(sf_needed / 100) * 100 if sf_needed else None
+    sf_display  = f"approximately {sf_needed_rounded:,} SF" if sf_needed_rounded else None
     exp_display = (f"{lease_expiry_m} {'month' if lease_expiry_m == 1 else 'months'}" if lease_expiry_m is not None else None)
 
-    # Space-fit note: reference SF match only — no headcount (Fix 4)
+    # Space-fit note: reference SF match only — no headcount
     space_fit_note = (
-        f"Space-fit note: the property has {sf_avail:,} SF available — "
-        f"reference this as well-matched for a company seeking {sf_display}."
+        f"Space-fit note: the property has approximately {sf_avail:,} SF available — "
+        f"reference this as well-matched for a company needing {sf_display}."
         if sf_avail and sf_needed else ""
     )
 
@@ -703,57 +874,66 @@ def _build_tenant_side(p: dict, tenant_dict: dict) -> dict:
     ]
     property_profile = "\n".join(property_profile_lines)
 
-    # SF-fit constraint for system prompt (no headcount — Fix 4)
+    # SF-fit constraint for system prompt (no headcount). SF stays approximate.
     sf_fit_constraint = (
-        f"\n- The available space ({sf_avail:,} SF) is well-matched for a company "
-        f"seeking approximately {sf_display} — weave this fit naturally into the email body "
-        "without quoting their own data back to them."
-        if sf_avail and sf_needed else ""
+        f"\n- The available space (approximately {sf_avail:,} SF) is a good fit for a company "
+        f"needing {sf_display} — weave this in naturally, and always phrase any SF figure as "
+        f"'approximately X SF'. Never quote their own data back to them."
+        if sf_avail and sf_needed else
+        "\n- Always phrase any square-footage figure as 'approximately X SF' (rounded), never an exact number."
+    )
+
+    # Fix 3: the only market statistic allowed on tenant-side is a single submarket
+    # VACANCY-rate urgency line, injected deterministically post-LLM (see
+    # generate_property_outreach). The model must not add any stats of its own —
+    # especially never rent PSF.
+    tenant_proof_rule = (
+        "Do NOT cite or invent any market statistic, rent figure, or vacancy "
+        "number — a single market line is added separately. Never mention rent PSF."
     )
 
     system = (
-        f"You are {AGENT_NAME} at {FIRM_NAME}, a commercial real estate agent "
-        f"specialising in Northern Virginia office. You are reaching out TO the "
-        f"tenant company's decision maker about a property opportunity that fits "
-        f"their criteria. "
-        f"\n\nHARD CONSTRAINTS:"
+        f"You are {AGENT_NAME} at {FIRM_NAME}, a commercial real estate agent who works the "
+        f"Northern Virginia office market every day. You are emailing the decision maker at a tenant "
+        f"company about space that fits them. "
+        f"Write like a sharp broker who just got off the phone and typed a quick personal note — warm "
+        f"and direct, NEVER a mail-merge or a platform output. "
+        f"\n\nHUMANIZATION RULES — follow ALL:"
+        f"\n- No more than 3 short paragraphs. No bullet points. No data dumps."
+        f"\n- ONE hook only: their lease timing ({lease_clause.lower()}). Open on that pain in your own "
+        f"words and do NOT repeat the lease-expiry phrase later; do NOT also hook on the building's vacancy."
         f"\n- Greet by name if available; otherwise use 'Hi [Company Name] Team,'."
-        f"\n- The second sentence of the email body (immediately after the greeting) must open with: "
-        f"'{lease_clause}, I wanted to reach out about an opportunity in {submarket} "
-        f"that may be a strong fit for your team.' — do NOT repeat the lease expiry later in the email."
-        f"\n- Describe the property GENERALLY as 'a {asset_class} property in {submarket}{sf_clause}{rent_clause}'. NEVER reveal street address."
-        f"\n- Do NOT describe the tenant company to themselves — they know who they are."
-        f"\n- Do NOT reference the tenant's headcount or team size in the email."
+        f"\n- Describe the property GENERALLY as 'a {asset_class} property in {submarket}{sf_clause}{rent_clause}'. NEVER reveal the street address."
+        f"\n- Do NOT describe the tenant company back to themselves; do NOT reference their headcount or team size."
         + sf_fit_constraint
-        + f"\n- Cite ONE CBRE Q1 2026 NoVA submarket data point for {submarket} as market context."
-        f"\n- Tone: knowledgeable, credible, consultative — position yourself as a market expert, not a salesperson."
-        f"\n- Do NOT reveal that any web search or platform tool was used."
-        f"\n- Do NOT reveal other tenants or other properties being considered."
+        + f"\n- {tenant_proof_rule}"
+        f"\n- Tone: knowledgeable and consultative — a trusted market expert, not a salesperson."
+        f"\n- Do NOT reveal that any web search or platform tool was used; do NOT mention other tenants or properties."
         f"\n- NEVER suggest specific days of the week."
-        f"\n- Close with EXACTLY: 'I'd welcome a brief call at your convenience.'"
+        f"\n- End with ONE low-friction ask and nothing else: 'I'd welcome a brief call at your convenience.'"
     )
 
     user = (
-        f"Tenant profile (for your context — do NOT describe the tenant to themselves):\n{tenant_profile}\n\n"
+        f"Tenant profile (your context only — do NOT describe the tenant to themselves):\n{tenant_profile}\n\n"
         f"Property profile (describe generally — NEVER reveal street address):\n{property_profile}\n\n"
         f"Market benchmark: {benchmark or 'N/A'}\n\n"
         f"Greeting to use: {greeting}\n"
-        f"Lease-urgency lead-in (second sentence after greeting, use verbatim): "
-        f"\"{lease_clause}, I wanted to reach out about an opportunity in {submarket} that may be a strong fit for your team.\"\n"
+        f"Lease-timing hook (this is the ONE hook — open the note on it, in your own words, and do not "
+        f"repeat it later): \"{lease_clause}.\"\n"
         + (f"{space_fit_note}\n" if space_fit_note else "")
         + "\nWrite:\n"
-        "1. Email subject line (one line — reference the submarket and the lease timing implicitly, no street address)\n"
-        "2. Email body — maximum 150 words (excluding signature block); start with the greeting, "
-        "   then the lease-urgency lead-in verbatim, "
+        "1. Email subject line (one line — human, reference the submarket and the lease timing, no street address)\n"
+        "2. Email body — maximum 150 words (excluding signature block); no more than 3 short paragraphs; "
+        "   no bullet points; open on the lease-timing hook, then the fit, then the single ask; "
         + (f"   describe the property generally (asset class, submarket, SF available, asking rent ${asking_rent:.2f}/SF), " if asking_rent else
            "   describe the property generally (asset class, submarket, SF available — do NOT include a specific rent figure), ")
-        + (f"   mention that the available {sf_avail:,} SF is well-suited for a company seeking {sf_display}, " if sf_avail and sf_needed else "")
-        + "   weave in one CBRE Q1 2026 submarket data point as market context, end with "
-        "'I'd welcome a brief call at your convenience.'\n"
-        "3. Call script: Opening (2 sentences — knowledgeable, consultative)\n"
-        "4. Call script: Core message (3 sentences — lease urgency, property fit, CBRE market context)\n"
-        "5. Call script: Pain probe question (1 sentence — about current lease decision drivers)\n"
-        "6. Call script: Close (end with 'I'd welcome a brief call at your convenience.')\n\n"
+        + (f"   you may note that the available space (approximately {sf_avail:,} SF) suits a company needing {sf_display}, " if sf_avail and sf_needed else "")
+        + "   always phrase SF as 'approximately X SF'; "
+        + "   end with 'I'd welcome a brief call at your convenience.'\n"
+        "3. Call script: Opening\n"
+        "4. Call script: Core message\n"
+        "5. Call script: Information-gathering questions\n"
+        "6. Call script: Close\n\n"
         "Format EXACTLY as:\n"
         "SUBJECT: <subject>\n"
         "EMAIL:\n<body>\n"
@@ -844,18 +1024,21 @@ def _build_acquisition(p: dict, target_type: str) -> dict:
     salutation      = f"Dear {recipient_raw}," if recipient_raw else "Dear Property Owner,"
     addressee       = f"the sales broker ({sales_contact})" if sales_contact else "the property owner"
 
-    # Fix 4: urgency signal
+    # Context observation for the second sentence — stated as neutral market
+    # context, NEVER as pressure on the owner. Hold period in particular is phrased
+    # as a plain factual observation ("given your long-term ownership"), never as a
+    # reason the owner should feel pressure to sell (Fix 1).
     dom         = p.get("days_on_market")
     vacancy_pct = p.get("vacancy_pct")
     years_owned = p.get("years_owned")
     if dom and int(dom) > 30:
-        urgency_signal = f"on market {dom} days"
+        context_signal = f"on market {dom} days"
     elif vacancy_pct and float(vacancy_pct) > 0:
-        urgency_signal = f"{float(vacancy_pct):.0f}% vacancy"
+        context_signal = f"{float(vacancy_pct):.0f}% vacancy"
     elif years_owned:
-        urgency_signal = f"{years_owned}-year hold period"
+        context_signal = f"given your long-term ownership ({years_owned}-year hold)"
     else:
-        urgency_signal = signal_hint
+        context_signal = signal_hint
 
     # Fix 5: benchmark clause (omit if no data)
     benchmark_clause = (
@@ -863,16 +1046,35 @@ def _build_acquisition(p: dict, target_type: str) -> dict:
         if benchmark else ""
     )
 
+    # Listing-aware framing: a property that is actively marketed for sale must NOT
+    # be approached as an "off-market" opportunity. When listed, acknowledge that
+    # it is on the market; otherwise keep the discreet off-market framing.
+    listed_for_sale = bool(p.get("listed_for_sale"))
+    if listed_for_sale:
+        listing_framing = (
+            f"This property is currently listed and actively marketed for sale — "
+            f"acknowledge that directly in the opening, e.g. 'I saw your {submarket} "
+            f"property is currently on the market'. Do NOT describe this as a quiet, "
+            f"discreet, or unlisted opportunity. "
+        )
+        ask_line = "The ask: 'Are you open to a conversation about a potential acquisition?' "
+        user_ask = "ask about a potential acquisition while the property is on the market"
+    else:
+        listing_framing = ""
+        ask_line = "The ask: 'Are you open to a conversation about a potential off-market sale?' "
+        user_ask = "ask about an off-market conversation"
+
     system = (
         f"You are {AGENT_NAME} at {FIRM_NAME}. "
         f"Write discreet acquisition outreach addressed to {addressee}. "
         f"Open the email with exactly '{salutation}' on its own line. "
         f"Frame as: 'I represent a private buyer actively evaluating office assets in {submarket}.' "
         f"Use the full property address: 'your property at {address_display}'. "
-        f"The second sentence must reference the urgency signal: {urgency_signal}. "
+        f"The second sentence should reference this only as neutral market context, never as pressure on the owner: {context_signal}. "
         f"Do NOT reveal buyer name, buyer capital, or any specific buyer details. "
         f"Reference the dominant signal subtly without revealing platform intelligence: {signal_hint}. "
-        f"The ask: 'Are you open to a conversation about a potential off-market sale?' "
+        f"{listing_framing}"
+        f"{ask_line}"
         f"Cite CBRE Q1 2026 NoVA data: cap rates, vacancy, transaction volume.{benchmark_clause} "
         f"NEVER suggest specific days of the week. "
         f"Close with: 'I'd welcome a brief call at your convenience.' "
@@ -886,7 +1088,7 @@ def _build_acquisition(p: dict, target_type: str) -> dict:
         "2. Email body — maximum 150 words (excluding signature block); "
         "   use full property address; "
         "   frame as representing a private buyer; "
-        "   cite one CBRE Q1 2026 cap rate or vacancy data point; ask about off-market conversation\n"
+        f"   cite one CBRE Q1 2026 cap rate or vacancy data point; {user_ask}\n"
         "3. Call script: Opening (2 sentences)\n"
         "4. Call script: Core message (3 sentences)\n"
         "5. Call script: Pain probe question (1 sentence)\n"
@@ -946,6 +1148,7 @@ def generate_property_outreach(
     direction: str = "property_side",
     tenant_dict: Optional[dict] = None,
     has_secondary_demand: bool = False,
+    call_target: Optional[str] = None,
 ) -> dict:
     """
     Call GPT-4o and return a structured outreach dict.
@@ -954,6 +1157,10 @@ def generate_property_outreach(
       tenant_match: 'broker' if landlord_representative set, else 'owner'
       acquisition:  'sales_broker' if sales_contact set, else 'owner'
       listing_rep:  always 'owner'
+
+    call_target (Fix 4): 'OWNER' or 'TENANT' — selects which deterministic call
+    script is attached for the matched-deal flow (tenant_match / for_sale_vacancy).
+    Defaults to TENANT for tenant_side and OWNER for property_side.
     """
     if outreach_type not in VALID_TYPES:
         raise ValueError(f"outreach_type must be one of {VALID_TYPES}")
@@ -1013,16 +1220,60 @@ def generate_property_outreach(
     parsed = _parse_response(raw)
 
     # ── Post-LLM sentence injection ─────────────────────────────────────────
-    # "agent" title used in all paths (Fix 3 — advisor → agent everywhere).
+    # "agent" title used in all paths. Fix 3: the social-proof line
+    # ("I work exclusively… before they hit the open listings") is no longer
+    # injected on any path — tenant-side included.
     is_tenant_side = (direction == "tenant_side")
-    email_body = _inject_hardcoded_sentences(parsed["email_body"], inject_social_proof=is_tenant_side)
+    email_body = _inject_hardcoded_sentences(parsed["email_body"], inject_social_proof=False)
 
     # Sanitize bracket placeholders (all paths): "Dear [Owner's Name]," etc.
     email_body = _sanitize_bracket_placeholders(email_body, property_dict)
 
+    # Fix 3: property-side tenant-describing copy with NO real SF must state the
+    # requirement qualitatively. Guarantee the exact fallback sentence is present
+    # (the LLM is also instructed to, but this makes it deterministic).
+    if (not is_tenant_side
+            and tenant_dict is not None
+            and outreach_type in ("tenant_match", "for_sale_vacancy")
+            and not tenant_dict.get("current_sf_occupied")):
+        fallback = _tenant_sf_fallback_sentence(
+            property_dict.get("submarket"), tenant_dict.get("lease_expiry_months")
+        )
+        if "right-sized office space" not in email_body:
+            if "Thank you," in email_body:
+                email_body = email_body.replace("Thank you,", f"{fallback}\n\nThank you,", 1)
+            else:
+                email_body = f"{email_body}\n\n{fallback}"
+
     # Remove duplicate lease-expiry phrase on tenant-side copy.
     if is_tenant_side and tenant_dict:
         email_body = _dedup_lease_clause(email_body, tenant_dict.get("lease_expiry_months"))
+
+    # CBRE submarket-vacancy urgency line, injected as a single sentence right
+    # after the property pitch (before the closing ask). Vacancy only — no rent PSF.
+    def _insert_before_ask(body: str, sentence: str) -> str:
+        if not sentence or sentence in body:
+            return body
+        paras = body.split("\n\n")
+        idx = next((i for i, p in enumerate(paras) if "I'd welcome a brief call" in p), None)
+        if idx is None:
+            idx = next((i for i, p in enumerate(paras) if p.strip().startswith("Thank you")), None)
+        if idx is None:
+            paras.append(sentence)
+        else:
+            paras.insert(idx, sentence)
+        return "\n\n".join(paras)
+
+    submarket = property_dict.get("submarket")
+    if is_tenant_side:
+        # Fix 2: cite vacancy only when it is BELOW 10% (scarcity); else omit and
+        # let the lease-timing hook carry the urgency.
+        email_body = _insert_before_ask(email_body, _tenant_vacancy_sentence(submarket))
+    elif outreach_type in ("tenant_match", "for_sale_vacancy"):
+        # Fix 3: owner-side cites vacancy only when it is ABOVE 15% (tenant
+        # scarcity); otherwise substitute a lease-timeline urgency line.
+        owner_line = _owner_vacancy_sentence(submarket) or _owner_lease_timeline_sentence(tenant_dict)
+        email_body = _insert_before_ask(email_body, owner_line)
 
     # Safety strip: property-side copy must never mention headcount,
     # and must never contain a redundant "I propose a short call" sentence.
@@ -1040,30 +1291,34 @@ def generate_property_outreach(
             email_body = _hc_pattern.sub("", email_body)
             email_body = _re.sub(r"  +", " ", email_body).strip()
 
-    # Fix 2: Phase 2 tenant-side → inject confirmed-leasing disclosure.
-    # This applies whenever direction="tenant_side" (the endpoint already guards
-    # for owner_confirmed_leasing=True, so this is always correct).
-    # The get_tenant_outreach endpoint also strips/updates any prior disclosure,
-    # but we inject the canonical wording here so it works from any call site.
-    if is_tenant_side:
-        if _PHASE2_CONFIRMED_DISCLOSURE not in email_body:
-            if "Thank you," in email_body:
-                email_body = email_body.replace(
-                    "Thank you,",
-                    f"{_PHASE2_CONFIRMED_DISCLOSURE}\n\nThank you,",
-                    1,
-                )
-            else:
-                email_body += f"\n\n{_PHASE2_CONFIRMED_DISCLOSURE}"
+    # Fix 3: the confirmed-leasing disclosure ("Please note that the owner has
+    # confirmed openness to leasing discussions…") is NO LONGER injected on
+    # tenant-side emails — it made the note read like a platform output.
+
+    # ── Fix 4: attach the deterministic OWNER / TENANT call script ───────────
+    # For the matched-deal flow (tenant_match / for_sale_vacancy) the call script
+    # is built in code so the ordered information-extraction questions and the
+    # verbatim 48-hour close are guaranteed. Other outreach types (listing_rep,
+    # acquisition) keep the LLM-generated script.
+    resolved_call_target = (call_target or ("TENANT" if is_tenant_side else "OWNER")).upper()
+    if outreach_type in ("tenant_match", "for_sale_vacancy"):
+        cs = build_call_script(resolved_call_target, property_dict, tenant_dict)
+        call_opening, call_core = cs["opening"], cs["core"]
+        call_pain_probe, call_close = cs["pain_probe"], cs["close"]
+    else:
+        resolved_call_target = None
+        call_opening, call_core = parsed["opening"], parsed["core"]
+        call_pain_probe, call_close = parsed["pain_probe"], parsed["close"]
 
     return {
         "email_subject":          parsed["subject"],
         "email_body":             email_body,
-        "call_script_opening":    parsed["opening"],
-        "call_script_core":       parsed["core"],
-        "call_script_pain_probe": parsed["pain_probe"],
-        "call_script_close":      parsed["close"],
+        "call_script_opening":    call_opening,
+        "call_script_core":       call_core,
+        "call_script_pain_probe": call_pain_probe,
+        "call_script_close":      call_close,
         "outreach_type":          outreach_type,
         "target_type":            target_type,
+        "call_target":            resolved_call_target,
         "generated_at":           datetime.utcnow().isoformat(),
     }

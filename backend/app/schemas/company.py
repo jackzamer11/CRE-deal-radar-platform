@@ -14,7 +14,8 @@ class CompanyBase(BaseModel):
     open_positions: int = 0
     current_address: Optional[str] = None
     current_submarket: Optional[str] = None
-    current_sf: Optional[int] = None
+    # Real occupied SF (CoStar "SF Occupied" / manual). Never calculated. Null = unknown.
+    current_sf_occupied: Optional[int] = None
     current_building_class: Optional[str] = None
     lease_expiry_date: Optional[date] = None
     lease_expiry_months: Optional[int] = None
@@ -70,6 +71,7 @@ class MatchedProperty(BaseModel):
     match_score: float
     match_reasons: list[str]
     adjacent_submarket: bool = False
+    is_medical: bool = False
 
 
 class CompanyOut(CompanyBase):
@@ -77,7 +79,6 @@ class CompanyOut(CompanyBase):
     headcount_growth_pct: Optional[float]
     hiring_velocity: Optional[float]
     sf_per_head: Optional[float]
-    estimated_sf_needed: Optional[int]
     sig_headcount_growth: float
     sig_hiring_velocity: float
     sig_lease_expiry: float
@@ -91,6 +92,7 @@ class CompanyOut(CompanyBase):
     updated_at: datetime
     last_modified_by_user: Optional[datetime] = None
     matched_properties: list[MatchedProperty] = []
+    is_medical: bool = False
 
     # Snooze state (null = active)
     snoozed_until:        Optional[date] = None
@@ -114,7 +116,7 @@ class CompanyListOut(BaseModel):
 
     # Space & financials
     current_headcount: Optional[int] = None
-    current_sf: Optional[int] = None             # current_sf_leased
+    current_sf_occupied: Optional[int] = None    # real occupied SF; null = unknown
     current_building_class: Optional[str] = None
     current_rent_psf: Optional[float] = None
     current_submarket: Optional[str] = None
@@ -152,6 +154,7 @@ class CompanyListOut(BaseModel):
     snoozed_until:        Optional[date] = None
     snooze_reason:        Optional[str]  = None
     returned_from_snooze: Optional[bool] = None
+    is_medical:           bool           = False
 
     # Computed from tenant_representative — not stored in DB
     rep_class: str = "BLANK"

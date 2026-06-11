@@ -1,12 +1,12 @@
 import { useEffect, useState, useRef } from 'react'
 import { useSearchParams, useNavigate } from 'react-router-dom'
-import { Building2, Filter, RefreshCw, X, Plus, Upload, Pencil, Check, MessageSquarePlus, Clock } from 'lucide-react'
+import { Building2, Filter, RefreshCw, X, Plus, Upload, Pencil, Check, MessageSquarePlus, Clock, Trash2 } from 'lucide-react'
 import {
   getProperties, getProperty, updatePropertyInPlaceRent, getPropertyOutreachHistory,
-  unsnoozeProperty,
+  unsnoozeProperty, deleteProperty,
 } from '../api/client'
 import type { PropertyListOut, PropertyOut, OutreachLog } from '../types'
-import { PriorityBadge } from '../components/PriorityBadge'
+import { PriorityBadge, MedicalBadge } from '../components/PriorityBadge'
 import ScoreBadge from '../components/ScoreBadge'
 import AddPropertyModal from '../components/AddPropertyModal'
 import LeaseCompsModal from '../components/LeaseCompsModal'
@@ -222,6 +222,17 @@ export default function Properties() {
     }
   }
 
+  const handleDeleteProperty = async (prop: PropertyOut) => {
+    if (!window.confirm('Are you sure? This cannot be undone.')) return
+    try {
+      await deleteProperty(prop.property_id)
+      setProperties(ps => ps.filter(p => p.property_id !== prop.property_id))
+      closePanel()
+    } catch {
+      window.alert('Could not delete this property. Please try again.')
+    }
+  }
+
   // ── Snooze helpers ──────────────────────────────────────────────────────
   const applySnooze = (prop: PropertyOut) => {
     setSnoozeTarget(null)
@@ -338,9 +349,11 @@ export default function Properties() {
   const isSnoozedActive = (p: PropertyListOut) =>
     p.snoozed_until != null && p.snoozed_until > new Date().toISOString().slice(0, 10)
 
+  // Default view hides any property whose snooze is still active (future date).
+  // "Snoozed" toggle flips to a dedicated snoozed-only view.
   const displayedProperties = showSnoozedOnly
     ? properties.filter(isSnoozedActive)
-    : properties
+    : properties.filter(p => !isSnoozedActive(p))
 
   const colCount = 19
 
@@ -484,14 +497,19 @@ export default function Properties() {
             <tbody>
               {loading ? (
                 <tr><td colSpan={colCount} className="text-center py-8 text-ink-muted">Loading...</td></tr>
-              ) : properties.length === 0 ? (
-                <tr><td colSpan={colCount} className="text-center py-8 text-ink-muted">No properties found</td></tr>
+              ) : displayedProperties.length === 0 ? (
+                <tr><td colSpan={colCount} className="text-center py-8 text-ink-muted">
+                  {showSnoozedOnly ? 'No snoozed properties' : 'No properties found'}
+                </td></tr>
               ) : displayedProperties.map(p => (
                 <tr key={p.id} onClick={() => handleSelect(p)}>
                   <td className="mono text-xs text-accent-blue">{p.property_id}</td>
                   <td className="max-w-xs">
                     <div className="truncate text-ink-primary font-medium" title={p.address}>{p.address}</div>
-                    <div className="text-[10px] text-ink-muted">{p.asset_class}</div>
+                    <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
+                      <div className="text-[10px] text-ink-muted">{p.asset_class}</div>
+                      {p.is_medical && <MedicalBadge />}
+                    </div>
                     {showSnoozedOnly && p.snooze_reason && (
                       <div className="text-[10px] text-amber-400 truncate">{p.snooze_reason}</div>
                     )}
@@ -693,6 +711,13 @@ export default function Properties() {
                 >
                   <Clock size={15} />
                 </button>
+                <button
+                  onClick={() => handleDeleteProperty(selected)}
+                  title="Delete property"
+                  className="text-ink-muted hover:text-red-400 p-1 rounded transition-colors"
+                >
+                  <Trash2 size={15} />
+                </button>
                 <button onClick={closePanel} className="text-ink-muted hover:text-ink-primary p-1">
                   <X size={18} />
                 </button>
@@ -765,7 +790,7 @@ export default function Properties() {
                       ? selected.matched_tenants?.[0]
                       : undefined
                     const tCtx = top
-                      ? `Industry: ${top.industry}; Headcount: ${top.headcount ?? 'N/A'}; SF Needed: ${top.sf_needed.toLocaleString()}; Submarket: ${top.submarket ?? 'N/A'}`
+                      ? `Industry: ${top.industry}; Headcount: ${top.headcount ?? 'N/A'}; SF Needed: ${top.sf_display}; Submarket: ${top.submarket ?? 'N/A'}`
                       : undefined
                     setOutreachModal({
                       prop: selected,
@@ -862,7 +887,7 @@ export default function Properties() {
                               targetType = 'broker'
                               label = 'Draft Broker Outreach (Tenant Match)'
                             }
-                            const tCtx = `Industry: ${t.industry}; Headcount: ${t.headcount ?? 'N/A'}; SF Needed: ${t.sf_needed.toLocaleString()}; Submarket: ${t.submarket ?? 'N/A'}`
+                            const tCtx = `Industry: ${t.industry}; Headcount: ${t.headcount ?? 'N/A'}; SF Needed: ${t.sf_display}; Submarket: ${t.submarket ?? 'N/A'}`
                             return (
                               <div
                                 key={t.company_id}
@@ -874,13 +899,16 @@ export default function Properties() {
                                   <div className="min-w-0 flex-1">
                                     {/* Phase 1: hide company name; Phase 2: show it */}
                                     {!isPhase1 && (
-                                      <div className="text-xs font-semibold text-ink-primary truncate">{t.name}</div>
+                                      <div className="flex items-center gap-1.5">
+                                        <div className="text-xs font-semibold text-ink-primary truncate">{t.name}</div>
+                                        {t.is_medical && <MedicalBadge />}
+                                      </div>
                                     )}
                                     <div className="text-[10px] text-ink-muted">
                                       {t.industry}
                                       {isPhase1
-                                        ? ` · ${t.sf_needed.toLocaleString()} SF`
-                                        : ` · ${t.headcount ?? '—'} HC · ${t.sf_needed.toLocaleString()} SF needed`}
+                                        ? ` · SF: ${t.sf_display}`
+                                        : ` · ${t.headcount ?? '—'} HC · SF: ${t.sf_display}`}
                                     </div>
                                     {t.adjacent_submarket && (
                                       <span className="inline-block mt-1 text-[9px] px-1.5 py-0.5 rounded border font-bold bg-sky-500/15 text-sky-400 border-sky-500/30">

@@ -34,6 +34,47 @@ _NON_REGRESS_STAGES = frozenset(
 )
 
 
+def pair_is_contacted(db: Session, property_id=None, company_id=None) -> bool:
+    """True when this property↔company pair has already been contacted.
+
+    Used by the SF-delta suppression (Fix 2) so that an already-contacted pairing
+    is NEVER suppressed or otherwise disturbed. A pair counts as contacted when
+    either an OutreachLog row for the pair is marked contacted, or an Opportunity
+    for the pair has reached CONTACTED or beyond.
+
+    Conservative on missing keys: if either id is None there is no concrete pair
+    to protect, so returns False.
+    """
+    if property_id is None or company_id is None:
+        return False
+
+    from app.models.outreach_log import OutreachLog
+
+    log = (
+        db.query(OutreachLog)
+        .filter(
+            OutreachLog.property_id == property_id,
+            OutreachLog.company_id == company_id,
+            OutreachLog.marked_contacted == True,  # noqa: E712 — SQL boolean compare
+        )
+        .first()
+    )
+    if log is not None:
+        return True
+
+    opp = (
+        db.query(Opportunity)
+        .filter(
+            Opportunity.property_id == property_id,
+            Opportunity.company_id == company_id,
+        )
+        .first()
+    )
+    if opp is not None and (opp.stage or "").strip().upper() in _NON_REGRESS_STAGES:
+        return True
+    return False
+
+
 def advance_opportunity_to_contacted(
     db: Session,
     *,

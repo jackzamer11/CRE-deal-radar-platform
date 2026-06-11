@@ -18,6 +18,7 @@ from app.schemas.property import PropertyOut, PropertyListOut, PropertyCreate, S
 from app.schemas.outreach import OutreachLogCreate, OutreachLogOut, OutreachDraft, CallScript
 from app.services import signal_engine as se
 from app.services.scoring_model import score_property
+from app.services.match_scoring import medical_mismatch_penalty
 from app.services.property_outreach_service import generate_property_outreach
 from app.config import settings
 
@@ -380,13 +381,14 @@ class PropertyUpdate(BaseModel):
     estimated_loan_maturity_year: Optional[int]   = None
     notes:                        Optional[str]   = None
     owner_confirmed_leasing:      Optional[bool]  = None  # hard trigger for tenant-match outreach
+    is_medical:                   Optional[bool]  = None
 
 
 class TenantOutreachResult(BaseModel):
     company_id:         str
     company_name:       str
     contact_name:       Optional[str] = None
-    sf_needed:          int
+    sf_needed:          Optional[int] = None
     lease_expiry_months: Optional[int] = None
     email_draft:        str
     call_script:        str
@@ -509,44 +511,88 @@ def _enrich(prop: Property) -> PropertyOut:
 
 # ── Matched-tenant helper ──────────────────────────────────────────────────
 
+def _sf_needed_display(sf_needed):
+    """Card label for SF needed: the real number when known, else 'Unknown'."""
+    return f"{sf_needed:,} SF" if sf_needed else "Unknown"
+
+
 def _compute_matched_tenants(prop: Property, db: Session) -> list:
     from app.models.company import Company
     from app.schemas.property import MatchedTenant
-    from app.services.match_scoring import compute_match
+    from app.config import MATCH_SCORE_WEIGHTS, CLASS_NEUTRAL_POINTS, SUBMARKET_ADJACENT_POINTS
+    from app.services.match_scoring import compute_match, submarket_score, class_score
+    from app.services.opportunity_stage_service import pair_is_contacted
 
-    avail_sf = prop.sf_avail or (int(prop.vacant_sf) if prop.vacant_sf else 0)
+    # Fix 1: the SF delta filter compares against AVAILABLE SF only — never total
+    # or vacant SF. If available SF is null/zero the property cannot host a sized
+    # match, so suppress entirely (no tenants surface).
+    avail_sf = prop.sf_avail or 0
     if avail_sf <= 0:
         return []
 
-    candidates = db.query(Company).filter(
-        Company.estimated_sf_needed.isnot(None),
-        Company.estimated_sf_needed > 0,
-    ).all()
+    # SF (= real occupied SF) may be unknown; such tenants can still match on
+    # submarket / class / lease timing and are shown with "SF: Unknown"
+    # (outreach for them is blocked separately until the figure is populated).
+    candidates = db.query(Company).all()
 
     scored = []
     for co in candidates:
-        sf_needed = co.estimated_sf_needed or 0
-        match = compute_match(
-            tenant_submarket=co.current_submarket,
-            property_submarket=prop.submarket,
-            tenant_class=getattr(co, "current_building_class", None),
-            property_class=prop.asset_class,
-            sf_needed=sf_needed,
-            sf_avail=avail_sf,
-        )
-        if match is None:
-            continue
-
-        reasons = [
-            f"SF fit {match['sf_fit_score']:.0f}/100 ({sf_needed:,} needed vs {avail_sf:,} avail)",
-            (f"Adjacent submarket ({co.current_submarket})" if match["adjacent"]
-             else f"Same submarket ({prop.submarket})"),
-            f"Class fit {match['class_score']:.0f}/100",
-        ]
+        sf_occupied = co.current_sf_occupied or 0
+        if sf_occupied > 0:
+            # Composite Match Score gates (submarket -> class -> SF). The SF hard
+            # gate is bypassed when this exact pair has already been contacted
+            # (contacted history is never disturbed) — it then scores SF at the
+            # gate floor instead of being excluded.
+            match = compute_match(
+                tenant_submarket=co.current_submarket,
+                property_submarket=prop.submarket,
+                tenant_class=getattr(co, "current_building_class", None),
+                property_class=prop.asset_class,
+                sf_needed=sf_occupied,
+                sf_avail=avail_sf,
+                sf_gate_exempt=pair_is_contacted(db, prop.id, co.id),
+            )
+            if match is None:
+                continue
+            reasons = [
+                f"SF fit {match['sf_fit_score']:.0f}/100 ({sf_occupied:,} occupied vs {avail_sf:,} avail)",
+                (f"Adjacent submarket ({co.current_submarket})" if match["adjacent"]
+                 else f"Same submarket ({prop.submarket})"),
+                f"Class fit {match['class_score']:.0f}/100",
+            ]
+        else:
+            # Unknown occupied SF: the pair cannot be sized, but the card is kept
+            # (main behaviour) — submarket and class gates still apply; the SF
+            # factor scores neutral until the figure is populated.
+            sub = submarket_score(co.current_submarket, prop.submarket)
+            if sub is None:
+                continue
+            cls = class_score(getattr(co, "current_building_class", None), prop.asset_class)
+            if cls is None:
+                continue
+            w = MATCH_SCORE_WEIGHTS
+            composite = w["submarket"] * sub + w["class"] * cls + w["sf_fit"] * CLASS_NEUTRAL_POINTS
+            match = {
+                "score": round(composite, 1),
+                "adjacent": sub == SUBMARKET_ADJACENT_POINTS,
+                "class_score": cls,
+                "sf_fit_score": None,
+            }
+            reasons = [
+                "SF unknown — sized fit pending",
+                (f"Adjacent submarket ({co.current_submarket})" if match["adjacent"]
+                 else f"Same submarket ({prop.submarket})"),
+                f"Class fit {cls:.0f}/100",
+            ]
         if co.expansion_signal:
             reasons.append("Expansion signal active")
         if co.lease_expiry_months is not None and co.lease_expiry_months <= 18:
             reasons.append(f"Lease expiry in {co.lease_expiry_months}mo")
+        # Soft medical/non-medical mismatch penalty — match still appears.
+        penalty = medical_mismatch_penalty(prop, co)
+        if penalty:
+            match["score"] = round(match["score"] + penalty, 1)
+            reasons.append("Medical/non-medical mismatch (−20)")
         scored.append((match, co, reasons))
 
     scored.sort(key=lambda x: x[0]["score"], reverse=True)
@@ -556,14 +602,17 @@ def _compute_matched_tenants(prop: Property, db: Session) -> list:
             name=co.name,
             industry=co.industry,
             headcount=co.current_headcount,
-            sf_needed=co.estimated_sf_needed or 0,
+            sf_needed=co.current_sf_occupied if co.current_sf_occupied else None,
+            sf_display=_sf_needed_display(co.current_sf_occupied),
             submarket=co.current_submarket,
             match_score=match["score"],
             match_reasons=reasons,
             adjacent_submarket=match["adjacent"],
+            is_medical=bool(co.is_medical),
         )
         for match, co, reasons in scored[:3]
     ]
+
 
 
 def _next_property_id(db: Session) -> str:
@@ -1256,6 +1305,8 @@ def update_property(property_id: str, payload: PropertyUpdate, db: Session = Dep
                 prop.owner_confirmed_leasing_date = date.today()
         else:
             prop.owner_confirmed_leasing_date = None
+    if payload.is_medical is not None:
+        prop.is_medical = payload.is_medical
 
     # ── Submarket: also refresh market benchmarks ───────────────────────────
     if payload.submarket is not None:
@@ -1297,6 +1348,21 @@ def update_property(property_id: str, payload: PropertyUpdate, db: Session = Dep
     out = _enrich(prop)
     out.matched_tenants = _compute_matched_tenants(prop, db)
     return out
+
+
+@router.delete("/{property_id}", status_code=200)
+def delete_property(property_id: str, db: Session = Depends(get_db)):
+    """Hard-delete a property (and its cascade-owned opportunities) from the DB.
+
+    No soft delete. Dependent activity/outreach logs have their property_id
+    nulled by the ORM relationship default. Returns 404 if the record is absent.
+    """
+    prop = db.query(Property).filter(Property.property_id == property_id).first()
+    if not prop:
+        raise HTTPException(status_code=404, detail="Property not found")
+    db.delete(prop)
+    db.commit()
+    return {"deleted": property_id}
 
 
 @router.post("/{property_id}/snooze", response_model=PropertyOut)
@@ -1387,12 +1453,18 @@ def get_tenant_outreach(property_id: str, db: Session = Depends(get_db)):
             "years_owned":          prop.years_owned,
             "dominant_score_type":  prop.dominant_score_type,
         }
-        # Fix 4: headcount excluded — tenant-side emails must not reference
-        # headcount; SF needed and lease expiry are the permitted identifiers.
+        # Fix 1: block outreach for a tenant with unknown occupied SF. The tenant
+        # still appears as a match card (with "SF: Unknown") via
+        # _compute_matched_tenants — only the outreach draft is withheld here.
+        if not company.current_sf_occupied:
+            continue
+
+        # headcount excluded — tenant-side emails must not reference headcount;
+        # occupied SF and lease expiry are the permitted identifiers.
         tenant_dict = {
             "name":                 company.name,
             "industry":             company.industry or "professional services",
-            "estimated_sf_needed":  company.estimated_sf_needed or mt.sf_needed,
+            "current_sf_occupied":  company.current_sf_occupied,
             "lease_expiry_months":  company.lease_expiry_months,
             "current_submarket":    company.current_submarket,
             "primary_contact_name": company.primary_contact_name,
@@ -1410,11 +1482,6 @@ def get_tenant_outreach(property_id: str, db: Session = Depends(get_db)):
                 tenant_dict=tenant_dict,
             )
             email_body = draft["email_body"]
-            # Fix 2: The confirmed-leasing disclosure ("Please note that the owner has
-            # confirmed openness…") is now injected at the service layer
-            # (generate_property_outreach) for every tenant_side call, using the exact
-            # canonical wording from _PHASE2_CONFIRMED_DISCLOSURE. No duplicate injection
-            # here — the service handles it idempotently.
 
             call_parts = [
                 f"Opening: {draft.get('call_script_opening', '')}",
@@ -1428,7 +1495,7 @@ def get_tenant_outreach(property_id: str, db: Session = Depends(get_db)):
                 company_id=company.company_id,
                 company_name=company.name,
                 contact_name=company.primary_contact_name,
-                sf_needed=company.estimated_sf_needed or mt.sf_needed,
+                sf_needed=company.current_sf_occupied if company.current_sf_occupied else None,
                 lease_expiry_months=company.lease_expiry_months,
                 email_draft=email_body,
                 call_script=call_script,
@@ -1484,14 +1551,38 @@ def draft_property_outreach(
     if company_id:
         comp = db.query(Company).filter(Company.company_id == company_id).first()
         if comp:
+            # Fix 1 & Fix 2: for a tenant-paired draft, block outreach when the
+            # tenant's occupied SF is unknown, and suppress it when the SF gap to
+            # the property exceeds MAX_SF_DELTA — unless the pair is already
+            # contacted (contacted pairs are never disturbed).
+            if outreach_type in ("tenant_match", "for_sale_vacancy"):
+                from app.services.match_scoring import sf_match_suppressed, MAX_SF_DELTA
+                from app.services.opportunity_stage_service import pair_is_contacted
+                already_contacted = pair_is_contacted(db, prop.id, comp.id)
+                if not already_contacted:
+                    if not comp.current_sf_occupied:
+                        raise HTTPException(
+                            status_code=422,
+                            detail=(
+                                "SF: Unknown — set 'SF Occupied (CoStar)' on this tenant "
+                                "before generating outreach."
+                            ),
+                        )
+                    if sf_match_suppressed(comp.current_sf_occupied, prop.sf_avail):
+                        raise HTTPException(
+                            status_code=422,
+                            detail=(
+                                "SF mismatch — occupied SF and available SF differ by "
+                                f"more than {MAX_SF_DELTA} SF; pairing suppressed."
+                            ),
+                        )
             tenant_dict = {c.key: getattr(comp, c.key) for c in comp.__table__.columns}
             hc  = comp.current_headcount
-            sf  = comp.estimated_sf_needed
+            sf  = comp.current_sf_occupied
             exp = comp.lease_expiry_months
             tenant_context = (
-                f"Industry: {comp.industry or 'N/A'}; "
                 f"Headcount: {hc if hc is not None else 'N/A'}; "
-                f"SF Needed: {f'{int(sf):,}' if sf else 'N/A'}; "
+                f"SF Occupied: {f'{int(sf):,}' if sf else 'N/A'}; "
                 f"Lease Expiry: {f'{exp}mo' if exp is not None else 'N/A'}"
             )
 

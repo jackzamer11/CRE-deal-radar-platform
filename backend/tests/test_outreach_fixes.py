@@ -54,7 +54,7 @@ def _minimal_tenant(lease_expiry_months=12):
         "name": "ZZZ Test Co",
         "industry": "Technology",
         "current_submarket": "Tysons",
-        "estimated_sf_needed": 4000,
+        "current_sf_occupied": 4000,
         "lease_expiry_months": lease_expiry_months,
         "opportunity_score": 80,
         "priority": "HIGH",

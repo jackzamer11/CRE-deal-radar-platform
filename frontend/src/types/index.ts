@@ -4,6 +4,13 @@ export type Confidence = 'HIGH' | 'MEDIUM' | 'LOW'
 export type Stage = 'IDENTIFIED' | 'CONTACTED' | 'ACTIVE' | 'UNDER_LOI' | 'CLOSED' | 'DEAD'
 export type ActionType = 'CALL' | 'EMAIL' | 'MEETING' | 'SIGNAL_UPDATE' | 'RESEARCH' | 'NOTE'
 
+// Activity-log pipeline stage — current state only; can move any direction.
+// (Named ActivityStage to avoid colliding with the opportunity `Stage` above.)
+export type ActivityStage = 'Sent' | 'Replied' | 'Interested' | 'In Play' | 'Not Interested' | 'Dormant'
+export const STAGES: ActivityStage[] = ['Sent', 'Replied', 'Interested', 'In Play', 'Not Interested', 'Dormant']
+// Stages that prompt for a revisit (next_touch_date) when selected.
+export const REVISIT_STAGES: ActivityStage[] = ['Not Interested', 'Dormant']
+
 export interface SignalBreakdown {
   lease_rollover: number
   vacancy_trend: number
@@ -26,11 +33,13 @@ export interface MatchedTenant {
   name: string
   industry: string
   headcount: number | null
-  sf_needed: number
+  sf_needed: number | null        // real occupied SF; null when unknown
+  sf_display: string              // "11,000 SF" when known, else "Unknown"
   submarket: string | null
   match_score: number
   match_reasons: string[]
   adjacent_submarket?: boolean
+  is_medical: boolean
 }
 
 export interface PropertyListOut {
@@ -72,6 +81,7 @@ export interface PropertyListOut {
   // Owner confirmed open to leasing while listed
   owner_confirmed_leasing: boolean
   owner_confirmed_leasing_date: string | null
+  is_medical: boolean
 }
 
 export interface TenantOutreachDraft {
@@ -87,6 +97,7 @@ export interface TenantOutreachDraft {
 export interface PropertyOut extends PropertyListOut {
   year_built: number
   last_renovation_year: number | null
+  is_medical: boolean
   owner_type: string
   owner_phone: string | null
   owner_email: string | null
@@ -134,7 +145,7 @@ export interface CompanyListOut {
   current_headcount: number | null
   headcount_growth_pct: number | null
   current_submarket: string | null
-  current_sf: number | null
+  current_sf_occupied: number | null
   current_rent_psf: number | null
   lease_expiry_months: number | null
   lease_expiry_date: string | null
@@ -149,6 +160,7 @@ export interface CompanyListOut {
   future_move_type: string | null
   expansion_signal: boolean
   contraction_signal: boolean
+  is_medical: boolean
   opportunity_score: number
   priority: Priority
   signals_scored_count: number
@@ -216,16 +228,20 @@ export interface MatchedProperty {
   match_score: number
   match_reasons: string[]
   adjacent_submarket?: boolean
+  is_medical: boolean
 }
 
 export interface CompanyOut extends CompanyListOut {
   description: string | null
+  is_medical: boolean
   open_positions: number
   hiring_velocity: number | null
-  current_sf: number | null
+  current_sf_occupied: number | null
   current_building_class: string | null
+  current_address: string | null
+  linkedin_url: string | null
+  website: string | null
   sf_per_head: number | null
-  estimated_sf_needed: number | null
   sig_headcount_growth: number
   sig_hiring_velocity: number
   sig_lease_expiry: number
@@ -288,9 +304,12 @@ export interface ActivityLog {
   follow_up_date: string | null
   follow_up_action: string | null
   created_by: string
+  stage: ActivityStage
+  next_touch_date: string | null
   property_address: string | null
   company_name: string | null
   opportunity_ref: string | null
+  contact_name: string | null
   outreach_type: string | null
   notes: string | null
 }
@@ -360,6 +379,8 @@ export interface TenantMatchAction {
   adjacent_submarket?: boolean
   lease_expiry_months: number | null
   contact_status: string
+  property_is_medical: boolean
+  tenant_is_medical: boolean
 }
 
 export interface AcquisitionTarget {
@@ -377,6 +398,7 @@ export interface AcquisitionTarget {
   owner_name: string
   sales_contact: string | null
   contact_status: string
+  is_medical: boolean
 }
 
 export interface ExpiredLease {
@@ -398,6 +420,8 @@ export interface DailyBriefing {
   tenant_match_properties: TenantMatchTarget[]
   tenant_match_actions: TenantMatchAction[]
   acquisition_targets: AcquisitionTarget[]
+  snoozed_tenant_match_actions?: TenantMatchAction[]
+  snoozed_acquisition_targets?: AcquisitionTarget[]
   expired_leases: ExpiredLease[]
   returned_from_snooze_property_ids: string[]
   signal_refresh_timestamp: string | null

@@ -91,7 +91,7 @@ def _make_company(session, *, company_id="CO-T1", submarket="Tysons",
         current_headcount=50,
         current_submarket=submarket,
         current_building_class=building_class,
-        estimated_sf_needed=sf_needed,
+        current_sf_occupied=sf_needed,
         lease_expiry_months=10,
         opportunity_score=80.0,
         priority="HIGH",
@@ -450,7 +450,7 @@ def test_tenant_side_email_names_property_submarket_never_address():
     tenant_dict = {
         "name": "Acme Corp",
         "industry": "Technology",
-        "estimated_sf_needed": 5000,
+        "current_sf_occupied": 5000,
         "lease_expiry_months": 10,
         "current_submarket": "Reston",   # adjacent tenant submarket
         "primary_contact_name": "Pat Lee",

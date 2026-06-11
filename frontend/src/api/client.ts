@@ -57,6 +57,9 @@ export const snoozeProperty = (
 export const unsnoozeProperty = (propertyId: string): Promise<PropertyOut> =>
   api.post(`/properties/${propertyId}/unsnooze`).then(r => r.data)
 
+export const deleteProperty = (propertyId: string): Promise<{ deleted: string }> =>
+  api.delete(`/properties/${propertyId}`).then(r => r.data)
+
 export const getTenantOutreach = (propertyId: string): Promise<TenantOutreachDraft[]> =>
   api.get(`/properties/${propertyId}/tenant-outreach`).then(r => r.data)
 
@@ -92,6 +95,9 @@ export const snoozeCompany = (
 export const unsnoozeCompany = (companyId: string): Promise<CompanyOut> =>
   api.post(`/companies/${companyId}/unsnooze`).then(r => r.data)
 
+export const deleteCompany = (companyId: string): Promise<{ deleted: string }> =>
+  api.delete(`/companies/${companyId}`).then(r => r.data)
+
 export const createCompany = (payload: Record<string, unknown>): Promise<CompanyOut> =>
   api.post('/companies/', payload).then(r => r.data)
 
@@ -118,6 +124,18 @@ export const updateCompanyBuildingClass = (
   current_building_class: string | null,
 ): Promise<CompanyOut> =>
   api.patch(`/companies/${companyId}/building-class`, { current_building_class }).then(r => r.data)
+
+export const updateCompanySfOccupied = (
+  companyId: string,
+  current_sf_occupied: number | null,
+): Promise<CompanyOut> =>
+  api.patch(`/companies/${companyId}/sf-occupied`, { current_sf_occupied }).then(r => r.data)
+
+export const updateCompanyMedical = (
+  companyId: string,
+  is_medical: boolean,
+): Promise<CompanyOut> =>
+  api.patch(`/companies/${companyId}/medical`, { is_medical }).then(r => r.data)
 
 export const draftOutreach = (companyId: string): Promise<OutreachDraft> =>
   api.post(`/companies/${companyId}/draft-outreach`).then(r => r.data)
@@ -283,6 +301,15 @@ export const updateActivityNote = (
   notes: string,
 ): Promise<ActivityLog> =>
   api.patch(`/activity/${entryId}/notes`, { notes }).then(r => r.data)
+
+export const updateActivityStage = (
+  entryId: number,
+  payload: { stage: string; next_touch_date?: string | null },
+): Promise<ActivityLog> =>
+  api.patch(`/activity/${entryId}/stage`, payload).then(r => r.data)
+
+export const getReEngage = (): Promise<ActivityLog[]> =>
+  api.get('/activity/re-engage').then(r => r.data)
 
 export const createActivity = (payload: {
   action_type: string

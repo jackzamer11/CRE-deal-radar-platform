@@ -57,7 +57,7 @@ def _create_company(client, **overrides):
         "industry": "Technology",
         "current_headcount": 28,
         "current_submarket": "Reston",
-        "current_sf": 4800,
+        "current_sf_occupied": 4800,
         "lease_expiry_months": 10,
         "current_building_class": "Class B",
     }
@@ -113,7 +113,7 @@ def test_saved_class_feeds_class_fit_factor(client, db_session):
     from app.api.routes.properties import _compute_matched_tenants
 
     created = _create_company(client)  # Class B tenant, Reston, needs ~4,900 SF
-    sf_needed = created["estimated_sf_needed"]
+    sf_needed = created["current_sf_occupied"]
 
     prop = Property(
         property_id="NVA-CLS",
