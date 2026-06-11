@@ -12,7 +12,7 @@ import os
 from typing import Optional
 
 from app.services.rep_classification import classify_rep, MAJOR_BROKER_FIRMS
-from app.config import NOVA_OFFICE_BENCHMARKS, SUBMARKET_BENCHMARKS
+from app.config import NOVA_OFFICE_BENCHMARKS, SUBMARKET_BENCHMARKS, TENANT_VACANCY_CITE_THRESHOLD
 
 SF_PER_PERSON        = 175
 NOVA_AVG_RENT        = NOVA_OFFICE_BENCHMARKS["avg_market_rent_psf"]
@@ -35,6 +35,12 @@ _SIGNATURE_INSTRUCTION = (
     "(after the last paragraph, on a new line):\n\n"
     "Thank you,\n\nJack Zamer\nVice President, The Commercial Real Estate Group\n571-205-6228"
 )
+
+
+def _should_cite_vacancy_tenant_side(avg_vacancy: Optional[float]) -> bool:
+    """Tenant-side emails cite the vacancy line only when submarket vacancy is strictly
+    below TENANT_VACANCY_CITE_THRESHOLD — tight supply is the relevant signal for tenants."""
+    return avg_vacancy is not None and avg_vacancy < TENANT_VACANCY_CITE_THRESHOLD
 
 
 def project_sf(company: dict) -> Optional[int]:
@@ -254,6 +260,7 @@ def generate_outreach(company: dict) -> dict:
 
     market_rent  = SUBMARKET_MARKET_RENT.get(submarket)
     avg_vacancy  = SUBMARKET_AVG_VACANCY.get(submarket)
+    show_vacancy = _should_cite_vacancy_tenant_side(avg_vacancy)
 
     rent_vs_nova    = round(market_rent - NOVA_AVG_RENT, 2)    if market_rent  else None
     vacancy_vs_nova = round(avg_vacancy  - NOVA_AVG_VACANCY, 1) if avg_vacancy else None
@@ -283,10 +290,13 @@ def generate_outreach(company: dict) -> dict:
     elif market_rent:
         rent_line = f"in-place rate unknown; {submarket} market benchmark ${market_rent:.2f}/SF (per CBRE Q1 2026)"
 
-    vacancy_str = f"{avg_vacancy:.1f}%" if avg_vacancy else "unknown"
-    if vacancy_vs_nova is not None:
-        vac_sign = "+" if vacancy_vs_nova >= 0 else ""
-        vacancy_str += f" ({vac_sign}{vacancy_vs_nova:.1f}pp vs {NOVA_AVG_VACANCY:.1f}% NoVA avg, per CBRE Q1 2026)"
+    if show_vacancy:
+        vacancy_str = f"{avg_vacancy:.1f}%"
+        if vacancy_vs_nova is not None:
+            vac_sign = "+" if vacancy_vs_nova >= 0 else ""
+            vacancy_str += f" ({vac_sign}{vacancy_vs_nova:.1f}pp vs {NOVA_AVG_VACANCY:.1f}% NoVA avg, per CBRE Q1 2026)"
+    else:
+        vacancy_str = None
 
     rent_vs_nova_str = ""
     if rent_vs_nova is not None:
@@ -325,6 +335,14 @@ def generate_outreach(company: dict) -> dict:
             "which means landlords have lost negotiating leverage. "
             f"Recent NoVA renewals are seeing {NOVA_AVG_FREE_RENT}+ months free rent "
             f"and ${NOVA_AVG_TI}+/SF TI on average.' "
+            "Never position yourself against a major firm."
+        ) if avg_vacancy and show_vacancy else (
+            f"Tenant is already represented by {tenant_rep} (major brokerage). "
+            "Do NOT pitch direct representation. "
+            f"Pivot to market resource framing: position yourself as a {submarket}-specialist complement. "
+            "REQUIRED: Reference the rent comparison vs. the NoVA average. "
+            f"Example: '{submarket} market rent is ${market_rent:.2f}/SF vs the ${NOVA_AVG_RENT:.2f}/SF NoVA average — "
+            "which creates leverage in renewal negotiations.' "
             "Never position yourself against a major firm."
         ) if avg_vacancy else (
             f"Tenant is already represented by {tenant_rep} (major brokerage). "
@@ -387,15 +405,26 @@ def generate_outreach(company: dict) -> dict:
         (
             f"Email body: MINIMUM 6 sentences, MAXIMUM 150 words (excluding signature block). "
             f"Subject line under 9 words. "
-            f"REQUIRED in email body — both of these comparisons must appear: "
-            f"(i) submarket vacancy vs NoVA average with the specific percentage-point delta; "
-            f"(ii) submarket rent vs NoVA average — pattern: "
-            f"'[Submarket] market rent is {rent_ref} — a [premium/discount] of $X reflecting [reason]'. "
-            f"Both comparisons are mandatory regardless of rep status."
+            + (
+                f"REQUIRED in email body — both of these comparisons must appear: "
+                f"(i) submarket vacancy vs NoVA average with the specific percentage-point delta; "
+                f"(ii) submarket rent vs NoVA average — pattern: "
+                f"'[Submarket] market rent is {rent_ref} — a [premium/discount] of $X reflecting [reason]'. "
+                f"Both comparisons are mandatory regardless of rep status."
+                if show_vacancy else
+                f"REQUIRED in email body: submarket rent vs NoVA average — pattern: "
+                f"'[Submarket] market rent is {rent_ref} — a [premium/discount] of $X reflecting [reason]'. "
+                f"Do NOT cite the submarket vacancy rate — submarket vacancy is above the tenant-side citation threshold."
+            )
         ),
         (
             "Call script OPENING, CORE MESSAGE, and CLOSE: MINIMUM 3 sentences each with specific data. "
-            "CORE MESSAGE must include both submarket rent vs NoVA average and vacancy comparison."
+            + (
+                "CORE MESSAGE must include both submarket rent vs NoVA average and vacancy comparison."
+                if show_vacancy else
+                "CORE MESSAGE must include submarket rent vs NoVA average. "
+                "Do NOT cite the submarket vacancy rate in tenant-side outreach."
+            )
         ),
         pain_probe_rule,
         f'Greeting: use "{greeting}" — format "Hi {greeting},"',
@@ -446,7 +475,8 @@ Return valid JSON only — no markdown fences, no extra text:
     submarket_context = (
         f"SUBMARKET BENCHMARKS — {submarket} (CBRE Q1 2026):\n"
         f"  Market rent:       ${market_rent:.2f}/SF/yr NNN  ({rent_vs_nova_str})\n"
-        f"  Submarket vacancy: {vacancy_str}"
+        + (f"  Submarket vacancy: {vacancy_str}" if show_vacancy else
+           "  [Submarket vacancy is above the tenant-side citation threshold — do not cite in email copy]")
     ) if market_rent else f"SUBMARKET: {submarket} (no benchmark data)"
 
     user_prompt = (

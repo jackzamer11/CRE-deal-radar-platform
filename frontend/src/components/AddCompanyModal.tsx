@@ -228,6 +228,20 @@ export default function AddCompanyModal({ onClose, onSaved }: Props) {
                 <input className={inputCls} type="number" placeholder="e.g. 12"
                   value={form.open_positions} onChange={set('open_positions')} />
               </Field>
+              <div className="grid grid-cols-2 gap-4">
+                <Field label="Current SF Leased">
+                  <input className={inputCls} type="number" placeholder="e.g. 5500"
+                    value={form.current_sf} onChange={set('current_sf')} />
+                </Field>
+                <Field label="Current Building Class" hint="drives class-fit factor">
+                  <select className={selectCls} value={form.current_building_class} onChange={set('current_building_class')}>
+                    <option value="">Unknown</option>
+                    <option value="Class A">Class A</option>
+                    <option value="Class B">Class B</option>
+                    <option value="Class C">Class C</option>
+                  </select>
+                </Field>
+              </div>
 
               {/* Live signal preview */}
               {headcount > 0 && (
@@ -266,24 +280,10 @@ export default function AddCompanyModal({ onClose, onSaved }: Props) {
                 <input className={inputCls} placeholder="e.g. 4075 Wilson Blvd, Arlington, VA 22203"
                   value={form.current_address} onChange={set('current_address')} />
               </Field>
-              <div className="grid grid-cols-2 gap-4">
-                <Field label="Current Submarket" hint="drives geo matching">
-                  <select className={selectCls} value={form.current_submarket} onChange={set('current_submarket')}>
-                    <option value="">Select submarket...</option>
-                    {SUBMARKETS.map(s => <option key={s} value={s}>{s}</option>)}
-                  </select>
-                </Field>
-                <Field label="Current SF Leased">
-                  <input className={inputCls} type="number" placeholder="e.g. 5500"
-                    value={form.current_sf} onChange={set('current_sf')} />
-                </Field>
-              </div>
-              <Field label="Current Building Class" hint="drives class-fit factor — leave blank if unknown">
-                <select className={selectCls} value={form.current_building_class} onChange={set('current_building_class')}>
-                  <option value="">Unknown</option>
-                  <option value="Class A">Class A</option>
-                  <option value="Class B">Class B</option>
-                  <option value="Class C">Class C</option>
+              <Field label="Current Submarket" hint="drives geo matching">
+                <select className={selectCls} value={form.current_submarket} onChange={set('current_submarket')}>
+                  <option value="">Select submarket...</option>
+                  {SUBMARKETS.map(s => <option key={s} value={s}>{s}</option>)}
                 </select>
               </Field>
               <Field label="Months Until Lease Expiry" hint="most important signal — be precise">

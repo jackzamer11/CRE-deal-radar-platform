@@ -113,6 +113,12 @@ export const updateCompanyTrajectory = (
 ): Promise<CompanyOut> =>
   api.patch(`/companies/${companyId}/trajectory`, { lease_trajectory }).then(r => r.data)
 
+export const updateCompanyBuildingClass = (
+  companyId: string,
+  current_building_class: string | null,
+): Promise<CompanyOut> =>
+  api.patch(`/companies/${companyId}/building-class`, { current_building_class }).then(r => r.data)
+
 export const draftOutreach = (companyId: string): Promise<OutreachDraft> =>
   api.post(`/companies/${companyId}/draft-outreach`).then(r => r.data)
 
