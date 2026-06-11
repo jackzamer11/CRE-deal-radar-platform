@@ -263,3 +263,11 @@ CLASS_NEUTRAL_POINTS   = 50.0    # class null/missing/unparseable on either side
 MAX_SF_DELTA       = 800
 SF_FIT_MAX_POINTS  = 100.0
 SF_FIT_MIN_POINTS  = 60.0
+
+# ---------------------------------------------------------------------------
+# Vacancy-line citation thresholds for email templates
+# Owner-side: cite submarket vacancy only when vacancy_pct > this value
+# Tenant-side: cite submarket vacancy only when vacancy_pct < this value
+# ---------------------------------------------------------------------------
+OWNER_VACANCY_CITE_THRESHOLD  = 15.0  # owner-side: high vacancy signals leasing urgency
+TENANT_VACANCY_CITE_THRESHOLD = 10.0  # tenant-side: low vacancy signals tight supply
