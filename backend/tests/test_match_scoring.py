@@ -346,6 +346,92 @@ def test_briefing_actions_set_adjacent_flag_and_sort(db_session):
     assert scores == sorted(scores, reverse=True)
 
 
+# ── Non-adjacent leak regression (production pairs from PR #13 verification) ──
+# An Arlington (Clarendon) tenant was observed matched to a Fairfax City
+# property (score 50) and two Alexandria (Old Town) properties (score 40).
+# Neither submarket pair is identical nor adjacent in SUBMARKET_ADJACENCY, so
+# all of them must be excluded entirely: no card, no score, no outreach.
+
+def test_leaked_pair_clarendon_fairfax_city_excluded():
+    assert submarket_score("Arlington (Clarendon)", "Fairfax City") is None
+    assert compute_match("Arlington (Clarendon)", "Fairfax City",
+                         None, "Class B", 5000, 5000) is None
+
+
+def test_leaked_pair_clarendon_old_town_excluded():
+    assert submarket_score("Arlington (Clarendon)", "Alexandria (Old Town)") is None
+    assert compute_match("Arlington (Clarendon)", "Alexandria (Old Town)",
+                         None, "Class B", 5000, 5000) is None
+
+
+def test_null_class_cannot_prop_up_non_adjacent_pair():
+    """The submarket gate runs before any blending — the neutral-50 class
+    factor must never carry a non-adjacent pair into the composite."""
+    match = compute_match("Arlington (Clarendon)", "Fairfax City",
+                          None, None, 5000, 5000)
+    assert match is None
+
+
+def test_reston_tenant_tysons_property_adjacent_factor_60():
+    match = compute_match("Reston", "Tysons", "Class B", "Class B", 5000, 5000)
+    assert match is not None
+    assert match["adjacent"] is True
+    assert match["submarket_score"] == 60.0
+
+
+def test_same_submarket_factor_100():
+    match = compute_match("Tysons", "Tysons", "Class B", "Class B", 5000, 5000)
+    assert match is not None
+    assert match["adjacent"] is False
+    assert match["submarket_score"] == 100.0
+
+
+def test_null_class_on_valid_adjacent_pair_still_matches_at_50():
+    """Gate fix must not over-exclude: a valid adjacent pair with null class
+    on either side still matches with the class factor at neutral 50."""
+    match = compute_match("Reston", "Tysons", None, "Class B", 5000, 5000)
+    assert match is not None
+    assert match["class_score"] == 50.0
+    # 0.40·60 + 0.30·50 + 0.30·100 = 24 + 15 + 30 = 69.0
+    assert match["score"] == pytest.approx(69.0)
+
+
+def test_leaked_pairs_absent_from_all_three_surfaces(db_session):
+    """The three pairing surfaces (property-detail Matched Tenants,
+    company-detail Matched Properties, Dashboard Section A) all consume the
+    shared module — none may display a non-adjacent pair."""
+    from app.api.routes.properties import _compute_matched_tenants
+    from app.api.routes.companies import _compute_matched_properties
+    from app.services.output_engine import _compute_tenant_actions
+
+    prop_ffx = _make_property(db_session, property_id="NVA-FFX", submarket="Fairfax City", sf_avail=5000)
+    prop_ot1 = _make_property(db_session, property_id="NVA-OT1", submarket="Alexandria (Old Town)", sf_avail=5000)
+    prop_ot2 = _make_property(db_session, property_id="NVA-OT2", submarket="Alexandria (Old Town)", sf_avail=4800)
+    tenant = _make_company(db_session, company_id="CO-CLRN",
+                           submarket="Arlington (Clarendon)",
+                           building_class=None, sf_needed=5000)
+    db_session.commit()
+
+    # Surface 1: property-detail Matched Tenants
+    for prop in (prop_ffx, prop_ot1, prop_ot2):
+        assert all(m.company_id != "CO-CLRN" for m in _compute_matched_tenants(prop, db_session)), (
+            f"Non-adjacent tenant leaked onto {prop.property_id} Matched Tenants card"
+        )
+
+    # Surface 2: company-detail Matched Properties
+    matched_props = {m.property_id for m in _compute_matched_properties(tenant, db_session)}
+    assert matched_props.isdisjoint({"NVA-FFX", "NVA-OT1", "NVA-OT2"}), (
+        "Non-adjacent properties leaked onto the company's Matched Properties card"
+    )
+
+    # Surface 3: Dashboard Section A
+    pairs = {(a.property_id, a.tenant_company_id) for a in _compute_tenant_actions(db_session)}
+    for pid in ("NVA-FFX", "NVA-OT1", "NVA-OT2"):
+        assert (pid, "CO-CLRN") not in pairs, (
+            f"Non-adjacent pair {pid} ↔ CO-CLRN leaked into Dashboard Section A"
+        )
+
+
 # ── Tenant-side email privacy on adjacent matches ─────────────────────────────
 
 def test_tenant_side_email_names_property_submarket_never_address():

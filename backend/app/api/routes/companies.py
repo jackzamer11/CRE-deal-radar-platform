@@ -758,6 +758,39 @@ def update_lease_expiry(
     return company
 
 
+VALID_BUILDING_CLASSES = {"Class A", "Class B", "Class C"}
+
+
+class BuildingClassUpdate(BaseModel):
+    # None or "" clears the value back to unknown (class-fit factor → neutral 50)
+    current_building_class: Optional[str] = None
+
+
+@router.patch("/{company_id}/building-class", response_model=CompanyOut)
+def update_building_class(
+    company_id: str,
+    payload: BuildingClassUpdate,
+    db: Session = Depends(get_db),
+):
+    """Set or clear the tenant's current building class (drives the class-fit
+    factor of the composite Match Score). Allows backfilling existing tenants
+    without recreating them."""
+    company = db.query(Company).filter(Company.company_id == company_id).first()
+    if not company:
+        raise HTTPException(status_code=404, detail="Company not found")
+    value = (payload.current_building_class or "").strip() or None
+    if value is not None and value not in VALID_BUILDING_CLASSES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid current_building_class; must be one of {sorted(VALID_BUILDING_CLASSES)} or null",
+        )
+    company.current_building_class = value
+    company.last_modified_by_user  = datetime.utcnow()
+    db.commit()
+    db.refresh(company)
+    return company
+
+
 VALID_TRAJECTORIES = {"AUTO", "CONTRACTING", "FLAT", "GROWING"}
 
 

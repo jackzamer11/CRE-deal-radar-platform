@@ -115,6 +115,7 @@ class CompanyListOut(BaseModel):
     # Space & financials
     current_headcount: Optional[int] = None
     current_sf: Optional[int] = None             # current_sf_leased
+    current_building_class: Optional[str] = None
     current_rent_psf: Optional[float] = None
     current_submarket: Optional[str] = None
 

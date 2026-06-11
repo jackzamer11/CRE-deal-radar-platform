@@ -4,7 +4,7 @@ import {
   Users, Filter, X, TrendingUp, Clock, MapPin, Plus, RefreshCw,
   Upload, Pencil, Check, AlertTriangle, Zap, Send, Building2,
 } from 'lucide-react'
-import { getCompanies, getCompany, updateCompanyLease, updateCompanyTrajectory, unsnoozeCompany } from '../api/client'
+import { getCompanies, getCompany, updateCompanyLease, updateCompanyTrajectory, updateCompanyBuildingClass, unsnoozeCompany } from '../api/client'
 import type { CompanyListOut, CompanyOut, RepClass } from '../types'
 import { PriorityBadge } from '../components/PriorityBadge'
 import ScoreBadge from '../components/ScoreBadge'
@@ -106,6 +106,7 @@ export default function Companies() {
 
   // Trajectory state
   const [trajectorySaving, setTrajectorySaving] = useState(false)
+  const [buildingClassSaving, setBuildingClassSaving] = useState(false)
 
   // Lease expiry inline edit state
   const [editingLease, setEditingLease]     = useState(false)
@@ -161,6 +162,18 @@ export default function Companies() {
       load()
     } finally {
       setTrajectorySaving(false)
+    }
+  }
+
+  const saveBuildingClass = async (company: typeof selected, value: string) => {
+    if (!company) return
+    setBuildingClassSaving(true)
+    try {
+      const updated = await updateCompanyBuildingClass(company.company_id, value || null)
+      setSelected(updated)
+      load()
+    } finally {
+      setBuildingClassSaving(false)
     }
   }
 
@@ -613,6 +626,24 @@ export default function Companies() {
                   </div>
 
                   <Row label="Submarket" value={selected.current_submarket || '—'} />
+
+                  {/* Current Building Class dropdown — backfill without recreating the tenant */}
+                  <div className="flex justify-between items-center">
+                    <span className="text-xs text-ink-muted flex-shrink-0">Building Class</span>
+                    <select
+                      value={(selected as CompanyOut).current_building_class || ''}
+                      disabled={buildingClassSaving}
+                      onChange={e => saveBuildingClass(selected, e.target.value)}
+                      className="text-xs bg-surface-card border border-surface-border rounded-lg px-2 py-1
+                                 focus:outline-none focus:border-accent-blue/50 disabled:opacity-50 text-ink-secondary"
+                    >
+                      <option value="">Unknown</option>
+                      <option value="Class A">Class A</option>
+                      <option value="Class B">Class B</option>
+                      <option value="Class C">Class C</option>
+                    </select>
+                  </div>
+
                   <Row label="Expansion Signal" value={selected.expansion_signal ? '✓ Active' : '—'} />
 
                   {/* Lease Trajectory dropdown */}

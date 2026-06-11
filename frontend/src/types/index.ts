@@ -223,6 +223,7 @@ export interface CompanyOut extends CompanyListOut {
   open_positions: number
   hiring_velocity: number | null
   current_sf: number | null
+  current_building_class: string | null
   sf_per_head: number | null
   estimated_sf_needed: number | null
   sig_headcount_growth: number

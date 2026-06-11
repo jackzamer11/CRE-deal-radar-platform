@@ -159,18 +159,13 @@ def _dedup_lease_clause(body: str, lease_expiry_m) -> str:
 VALID_TYPES = {"tenant_match", "for_sale_vacancy", "listing_rep", "acquisition"}
 
 # CBRE Q1 2026 NoVA office benchmarks (avg full-service rent / vacancy %).
+# Derived from the single source of truth in app.config.SUBMARKET_BENCHMARKS
+# so a quarterly benchmark refresh updates email copy automatically.
+from app.config import SUBMARKET_BENCHMARKS as _SUBMARKET_BENCHMARKS
+
 CBRE_2026_BENCHMARKS = {
-    "Arlington (Clarendon)":      {"rent": 42.93, "vacancy": 26.5},
-    "Arlington (Rosslyn)":        {"rent": 46.85, "vacancy": 20.6},
-    "Arlington (Ballston)":       {"rent": 43.19, "vacancy": 21.1},
-    "Arlington (Columbia Pike)":  {"rent": 28.22, "vacancy": 32.1},
-    "Alexandria (Old Town)":      {"rent": 36.73, "vacancy": 17.6},
-    "Tysons":                     {"rent": 39.10, "vacancy": 27.3},
-    "Reston":                     {"rent": 37.84, "vacancy": 22.9},
-    "Falls Church":               {"rent": 27.87, "vacancy": 10.4},
-    "McLean":                     {"rent": 39.21, "vacancy": 7.4},
-    "Vienna":                     {"rent": 24.16, "vacancy": 5.2},
-    "Fairfax City":               {"rent": 26.23, "vacancy": 8.5},
+    submarket: {"rent": b["market_rent_psf"], "vacancy": b["vacancy_pct"]}
+    for submarket, b in _SUBMARKET_BENCHMARKS.items()
 }
 
 
