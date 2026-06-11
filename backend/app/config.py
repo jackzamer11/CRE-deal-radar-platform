@@ -171,3 +171,102 @@ for _sm in PROVISIONAL_SUBMARKETS:
         f"[config] WARNING: benchmark for submarket '{_sm}' is PROVISIONAL "
         f"({SUBMARKET_BENCHMARKS[_sm]['source']}) — replace with measured data when available."
     )
+
+
+# ---------------------------------------------------------------------------
+# Tenant ↔ Property Match Score configuration
+# All point values and weights for the composite Match Score live here —
+# nothing is hardcoded inline in the matching services.
+# ---------------------------------------------------------------------------
+
+# One-directional adjacency pairs. Symmetry is built programmatically below so
+# a one-sided entry can never silently fail a reverse lookup.
+_SUBMARKET_ADJACENCY_PAIRS = [
+    ("Reston", "Herndon"),
+    ("Reston", "Tysons"),
+    ("Reston", "Vienna"),
+    ("Reston", "McLean"),
+    ("Tysons", "McLean"),
+    ("Tysons", "Vienna"),
+    ("Tysons", "Falls Church"),
+    ("Tysons", "Herndon"),
+    ("McLean", "Vienna"),
+    ("Vienna", "Merrifield"),
+    ("Vienna", "Fairfax City"),
+    ("Falls Church", "Merrifield"),
+    ("Merrifield", "Fairfax City"),
+    ("Merrifield", "Annandale"),
+    ("Annandale", "Springfield"),
+    ("Fairfax City", "Centreville"),
+    # Arlington submarkets — all pairwise adjacent
+    ("Arlington (Clarendon)", "Arlington (Rosslyn)"),
+    ("Arlington (Clarendon)", "Arlington (Ballston)"),
+    ("Arlington (Clarendon)", "Arlington (Columbia Pike)"),
+    ("Arlington (Rosslyn)", "Arlington (Ballston)"),
+    ("Arlington (Rosslyn)", "Arlington (Columbia Pike)"),
+    ("Arlington (Ballston)", "Arlington (Columbia Pike)"),
+    # Each Arlington submarket ↔ Crystal City
+    ("Arlington (Clarendon)", "Crystal City"),
+    ("Arlington (Rosslyn)", "Crystal City"),
+    ("Arlington (Ballston)", "Crystal City"),
+    ("Arlington (Columbia Pike)", "Crystal City"),
+    ("Crystal City", "Alexandria (Old Town)"),
+]
+
+
+def _build_symmetric_adjacency(pairs: list) -> dict:
+    adjacency: dict = {}
+    for a, b in pairs:
+        adjacency.setdefault(a, set()).add(b)
+        adjacency.setdefault(b, set()).add(a)
+    return adjacency
+
+
+# dict[str, set[str]] — symmetric: b in SUBMARKET_ADJACENCY[a] ⇔ a in SUBMARKET_ADJACENCY[b]
+SUBMARKET_ADJACENCY = _build_symmetric_adjacency(_SUBMARKET_ADJACENCY_PAIRS)
+
+# Submarkets selectable in the platform dropdown (mirror of frontend/src/constants.ts).
+# A submarket string absent from BOTH this list and the adjacency map degrades
+# to exact-match-only — never a crash, never a match-everything wildcard.
+PLATFORM_SUBMARKETS = (
+    "Arlington (Clarendon)",
+    "Arlington (Rosslyn)",
+    "Arlington (Ballston)",
+    "Arlington (Columbia Pike)",
+    "Alexandria (Old Town)",
+    "Tysons",
+    "Reston",
+    "Falls Church",
+    "McLean",
+    "Vienna",
+    "Fairfax City",
+    "Annandale",
+    "Crystal City",
+    "Merrifield",
+    "Springfield",
+    "Centreville",
+)
+
+# Composite Match Score weights (must sum to 1.0)
+MATCH_SCORE_WEIGHTS = {
+    "submarket": 0.40,
+    "class":     0.30,
+    "sf_fit":    0.30,
+}
+
+# Submarket factor points (non-adjacent pairs are excluded entirely)
+SUBMARKET_EXACT_POINTS    = 100.0
+SUBMARKET_ADJACENT_POINTS = 60.0
+
+# Building-class factor points (two classes apart → pair excluded)
+CLASS_SAME_POINTS      = 100.0   # tenant class == property class
+CLASS_UPGRADE_POINTS   = 70.0    # tenant moving up one class (e.g. B tenant → A property)
+CLASS_DOWNGRADE_POINTS = 55.0    # tenant moving down one class
+CLASS_NEUTRAL_POINTS   = 50.0    # class null/missing/unparseable on either side
+
+# SF-fit hard gate + gradient: |sf_needed − sf_avail| must be ≤ MAX_SF_DELTA
+# (hard gate applied BEFORE scoring); surviving pairs score on a linear
+# gradient from SF_FIT_MAX_POINTS at delta 0 down to SF_FIT_MIN_POINTS at the cutoff.
+MAX_SF_DELTA       = 800
+SF_FIT_MAX_POINTS  = 100.0
+SF_FIT_MIN_POINTS  = 60.0

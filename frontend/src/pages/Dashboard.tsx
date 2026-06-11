@@ -91,6 +91,11 @@ function TenantActionRow({
               ↩ Returned from Snooze
             </span>
           )}
+          {action.adjacent_submarket && (
+            <span className="text-[9px] px-2 py-0.5 rounded border font-bold bg-sky-500/15 text-sky-400 border-sky-500/30">
+              Adjacent Submarket
+            </span>
+          )}
         </div>
         <div className="text-sm font-semibold text-ink-primary truncate">
           {action.address}

@@ -222,6 +222,7 @@ class CompanyManualCreate(BaseModel):
     current_address: Optional[str] = None
     current_submarket: Optional[str] = None
     current_sf: Optional[int] = None
+    current_building_class: Optional[str] = None
     lease_expiry_months: Optional[int] = None
     primary_contact_name: Optional[str] = None
     primary_contact_title: Optional[str] = None
@@ -332,6 +333,7 @@ def create_company(payload: CompanyManualCreate, db: Session = Depends(get_db)):
         current_address       = payload.current_address,
         current_submarket     = payload.current_submarket,
         current_sf            = payload.current_sf,
+        current_building_class = payload.current_building_class,
         sf_per_head           = sf_per_head,
         lease_expiry_months   = payload.lease_expiry_months,
         lease_expiry_date     = lease_expiry_date_val,
@@ -569,25 +571,9 @@ async def costar_tenant_import(
     }
 
 
-def _adjacent_submarkets(submarket: Optional[str]) -> set:
-    adjacency = {
-        "Arlington (Clarendon)":      {"Arlington (Rosslyn)", "Arlington (Ballston)", "Falls Church"},
-        "Arlington (Rosslyn)":        {"Arlington (Clarendon)", "McLean"},
-        "Arlington (Ballston)":       {"Arlington (Clarendon)", "Arlington (Columbia Pike)", "Falls Church"},
-        "Arlington (Columbia Pike)":  {"Arlington (Ballston)", "Alexandria (Old Town)"},
-        "Alexandria (Old Town)":      {"Arlington (Columbia Pike)"},
-        "Tysons":                     {"McLean", "Vienna", "Reston", "Falls Church"},
-        "Reston":                     {"Tysons", "Vienna"},
-        "Falls Church":               {"Arlington (Clarendon)", "Arlington (Ballston)", "Tysons"},
-        "McLean":                     {"Arlington (Rosslyn)", "Tysons"},
-        "Vienna":                     {"Tysons", "Reston", "Fairfax City"},
-        "Fairfax City":               {"Vienna"},
-    }
-    return adjacency.get(submarket, set())
-
-
 def _compute_matched_properties(company: Company, db: Session) -> list:
     from app.schemas.company import MatchedProperty
+    from app.services.match_scoring import compute_match
     from sqlalchemy import or_
 
     sf_needed = company.estimated_sf_needed or 0
@@ -604,35 +590,33 @@ def _compute_matched_properties(company: Company, db: Session) -> list:
     scored = []
     for prop in candidates:
         avail = prop.sf_avail or (int(prop.vacant_sf) if prop.vacant_sf else 0)
-        reasons: list = []
-        score = 0.0
-        if avail > 0:
-            ratio = sf_needed / avail
-            if 0.6 <= ratio <= 1.4:
-                pct = abs(1.0 - ratio) * 100
-                score += 40.0
-                reasons.append(f"SF fit ±{pct:.0f}% ({sf_needed:,} needed vs {avail:,} avail)")
-        if company.current_submarket == prop.submarket:
-            score += 30.0
-            reasons.append(f"Same submarket ({prop.submarket})")
-        elif company.current_submarket:
-            adjacent = _adjacent_submarkets(prop.submarket)
-            if company.current_submarket in adjacent:
-                score += 15.0
-                reasons.append(f"Adjacent submarket ({prop.submarket})")
+        match = compute_match(
+            tenant_submarket=company.current_submarket,
+            property_submarket=prop.submarket,
+            tenant_class=getattr(company, "current_building_class", None),
+            property_class=prop.asset_class,
+            sf_needed=sf_needed,
+            sf_avail=avail,
+        )
+        if match is None:
+            continue
+
+        reasons = [
+            f"SF fit {match['sf_fit_score']:.0f}/100 ({sf_needed:,} needed vs {avail:,} avail)",
+            (f"Adjacent submarket ({prop.submarket})" if match["adjacent"]
+             else f"Same submarket ({prop.submarket})"),
+            f"Class fit {match['class_score']:.0f}/100",
+        ]
         if company.current_rent_psf and prop.in_place_rent_psf:
             if prop.in_place_rent_psf <= company.current_rent_psf * 1.2:
-                score += 20.0
                 reasons.append(
                     f"Affordable rent (${prop.in_place_rent_psf:.0f} vs ${company.current_rent_psf:.0f} current)"
                 )
         if prop.signal_score and prop.signal_score >= 60:
-            score += 10.0
             reasons.append(f"High landlord motivation ({prop.signal_score:.0f})")
-        if score > 0:
-            scored.append((score, prop, reasons))
+        scored.append((match, prop, reasons))
 
-    scored.sort(key=lambda x: x[0], reverse=True)
+    scored.sort(key=lambda x: x[0]["score"], reverse=True)
     return [
         MatchedProperty(
             property_id=prop.property_id,
@@ -646,10 +630,11 @@ def _compute_matched_properties(company: Company, db: Session) -> list:
             landlord_rep_contact=prop.landlord_rep_contact,
             sales_contact=prop.sales_contact,
             listed_for_sale=bool(prop.listed_for_sale or False),
-            match_score=round(score, 1),
+            match_score=match["score"],
             match_reasons=reasons,
+            adjacent_submarket=match["adjacent"],
         )
-        for score, prop, reasons in scored[:3]
+        for match, prop, reasons in scored[:3]
     ]
 
 

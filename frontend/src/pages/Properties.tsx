@@ -882,6 +882,11 @@ export default function Properties() {
                                         ? ` · ${t.sf_needed.toLocaleString()} SF`
                                         : ` · ${t.headcount ?? '—'} HC · ${t.sf_needed.toLocaleString()} SF needed`}
                                     </div>
+                                    {t.adjacent_submarket && (
+                                      <span className="inline-block mt-1 text-[9px] px-1.5 py-0.5 rounded border font-bold bg-sky-500/15 text-sky-400 border-sky-500/30">
+                                        Adjacent Submarket
+                                      </span>
+                                    )}
                                     {/* Match reasons only shown in Phase 2 */}
                                     {!isPhase1 && t.match_reasons.length > 0 && (
                                       <div className="flex flex-wrap gap-1 mt-1">
