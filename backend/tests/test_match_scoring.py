@@ -8,7 +8,7 @@ Match Score (submarket adjacency 0.40 / building-class fit 0.30 / SF fit 0.30):
     lookup directions; non-adjacent pairs are excluded
   - unknown submarket falls back to exact-match-only (never crashes, never
     matches everything)
-  - class upgrade = 70, downgrade = 55, two-class gap excluded, null class = 50
+  - class upgrade = 70, downgrade = 55, two-class gap = 30 (visible, not excluded), null class = 50
   - the 800 SF delta hard gate excludes pairs BEFORE scoring
   - composite math verified against a hand-calculated example
   - pairing generators sort descending by composite and never 500 on null
@@ -185,9 +185,10 @@ def test_class_downgrade_scores_55():
     assert class_score("Class B", "Class C") == 55.0
 
 
-def test_two_class_gap_excluded_both_directions():
-    assert class_score("Class A", "Class C") is None
-    assert class_score("Class C", "Class A") is None
+def test_two_class_gap_visible_both_directions():
+    """Two-class gaps score 30 (low but visible), never excluded."""
+    assert class_score("Class A", "Class C") == 30.0
+    assert class_score("Class C", "Class A") == 30.0
 
 
 def test_null_or_unparseable_class_is_neutral_50_never_crash():

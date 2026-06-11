@@ -10,7 +10,7 @@ Fixes:
   1. Normalization helper in match_scoring.py: _normalize_class() handles both formats
   2. Backfill migration: convert any single-letter values in the DB to "Class X" format
   3. Defensive _class_rank: always normalizes before ranking
-  4. Test: "B" property + "Class B" tenant = 100 (same class); "A" vs "C" = excluded; etc.
+  4. Test: "B" property + "Class B" tenant = 100 (same class); "A" vs "C" = 30 (visible); etc.
 
 In-memory SQLite only — no live DB, no network, no CoStar.
 """
@@ -110,9 +110,9 @@ def test_class_score_mixed_formats_downgrade():
 
 
 def test_class_score_mixed_formats_two_classes_apart():
-    """Two classes apart: single-letter property ("C") vs platform tenant ("Class A") = None (excluded)."""
-    assert class_score("Class A", "C") is None
-    assert class_score("Class C", "A") is None
+    """Two classes apart: single-letter property ("C") vs platform tenant ("Class A") = 30 (visible)."""
+    assert class_score("Class A", "C") == 30.0
+    assert class_score("Class C", "A") == 30.0
 
 
 def test_compute_match_single_letter_property_format():
@@ -134,10 +134,13 @@ def test_compute_match_adjacent_with_single_letter():
     assert match["adjacent"] is True
 
 
-def test_compute_match_class_a_vs_c_single_letter_excluded():
-    """Class A tenant must not match Class C property, even with single-letter format."""
+def test_compute_match_class_a_vs_c_single_letter_visible():
+    """Class A tenant vs Class C property: two-class gap = 30 (low but visible, not excluded).
+    Composite = 0.40·100 (exact) + 0.30·30 (two-class) + 0.30·100 (delta 0) = 79.0"""
     match = compute_match("Tysons", "Tysons", "Class A", "C", 5000, 5000)
-    assert match is None, "Two-class gap (A↔C) must be excluded regardless of format"
+    assert match is not None, "Two-class gap (A↔C) stays visible with score 30"
+    assert match["class_score"] == 30.0
+    assert match["score"] == pytest.approx(79.0)
 
 
 # ── End-to-end pairing with mixed formats ─────────────────────────────────────
@@ -186,12 +189,13 @@ def test_matched_properties_single_letter_class_property(db_session):
     assert any("Class fit 100/100" in r for r in me.match_reasons)
 
 
-def test_matched_properties_class_a_never_matches_c():
-    """Regression: Class A tenant must never match Class C property, even if single-letter."""
+def test_matched_properties_class_a_low_scores_vs_c():
+    """Two-class gap (A↔C) now scores 30 (visible, not excluded)."""
     from app.services.match_scoring import compute_match
-    # Single-letter C property
+    # Single-letter C property vs platform A tenant
     match = compute_match("Tysons", "Tysons", "Class A", "C", 5000, 5000)
-    assert match is None
+    assert match is not None
+    assert match["class_score"] == 30.0
 
 
 def test_normalization_preserves_null_and_invalid():

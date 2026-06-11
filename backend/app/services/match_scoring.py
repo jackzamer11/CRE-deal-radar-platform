@@ -12,7 +12,7 @@ Contract (all point values / weights live in app.config):
      A submarket string unknown to both the adjacency map and the platform
      dropdown degrades to exact-match-only (never crashes, never matches all).
   2. Building-class factor: same = 100, tenant up one class = 70, down one = 55,
-     two classes apart = excluded, null/unparseable on either side = neutral 50.
+     two classes apart = 30 (visible but low), null/unparseable on either side = 50.
   3. SF-fit HARD GATE: |sf_needed − sf_avail| must be ≤ MAX_SF_DELTA,
      otherwise the pair is excluded before SF scoring happens. SF source is the
      tenant's real occupied SF (current_sf_occupied) vs the property's
@@ -165,8 +165,8 @@ def _class_rank(raw: Optional[str]) -> Optional[int]:
 
 
 def class_score(tenant_class: Optional[str], property_class: Optional[str]) -> Optional[float]:
-    """Same = 100, tenant up one = 70, down one = 55, two apart = None (excluded),
-    null/unparseable on either side = neutral 50 — never a crash or exclusion."""
+    """Same = 100, tenant up one = 70, down one = 55, two apart = 30 (low but visible),
+    null/unparseable on either side = neutral 50. Never returns None — pairs stay visible."""
     t_rank = _class_rank(tenant_class)
     p_rank = _class_rank(property_class)
     if t_rank is None or p_rank is None:
@@ -178,7 +178,7 @@ def class_score(tenant_class: Optional[str], property_class: Optional[str]) -> O
         return CLASS_UPGRADE_POINTS
     if diff == -1:
         return CLASS_DOWNGRADE_POINTS
-    return None  # two classes apart (A↔C) — pair excluded
+    return 30.0  # two classes apart (A↔C) — low score, pair stays visible
 
 
 def sf_delta_passes_gate(sf_needed: Optional[int], sf_avail: Optional[int]) -> bool:
@@ -206,23 +206,24 @@ def compute_match(
     sf_avail: Optional[int],
     sf_gate_exempt: bool = False,
 ) -> Optional[dict]:
-    """Full pairing evaluation. Returns None when the pair is excluded
-    (non-adjacent submarket, two-class gap, or SF gate); otherwise a dict:
+    """Full pairing evaluation. Returns None only when the pair is excluded by hard gates
+    (non-adjacent submarket or SF gate); otherwise returns a dict with composite score:
 
       {
         "score":           float (0–100 composite),
         "submarket_score": float,
-        "class_score":     float,
+        "class_score":     float (range 0–100, never None),
         "sf_fit_score":    float,
         "adjacent":        bool (True when matched via adjacency, not exact),
       }
 
-    Gate order — every gate runs BEFORE any blending, so an excluded factor
-    can never be propped up by the other factors in the weighted composite:
-      1. Submarket gate: exact (100) or adjacent (60) proceeds; anything else
-         (non-adjacent, unknown non-exact, null) returns no match immediately.
-      2. Class gate: two classes apart (A↔C) returns no match.
-      3. SF gate: |sf_needed − sf_avail| > MAX_SF_DELTA returns no match.
+    Hard gates (return None if failed):
+      1. Submarket gate: exact (100) or adjacent (60) required; non-adjacent/null excluded.
+      2. SF gate: |sf_needed − sf_avail| ≤ MAX_SF_DELTA required (unless sf_gate_exempt).
+
+    Class fit is NOT a hard gate — all class combinations score (same=100, up=70, down=55,
+    two-apart=30, null=50) so pairs stay visible and sortable. Only submarket and SF are
+    hard exclusion gates.
     """
     # Gate 1 — submarket. Non-adjacent pairs are never scored: no card,
     # no composite, no outreach.
@@ -230,10 +231,8 @@ def compute_match(
     if sub is None:
         return None
 
-    # Gate 2 — building class (null/unparseable passes through as neutral 50).
+    # Class fit — always scores (never returns None), so never a hard gate.
     cls = class_score(tenant_class, property_class)
-    if cls is None:
-        return None
 
     # Gate 3 — SF delta hard gate, then the gradient for survivors.
     # sf_gate_exempt=True (already-contacted pairs: contacted history is never
