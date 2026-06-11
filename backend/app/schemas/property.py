@@ -98,6 +98,7 @@ class MatchedTenant(BaseModel):
     submarket: Optional[str]
     match_score: float
     match_reasons: list[str]
+    adjacent_submarket: bool = False
     is_medical: bool = False
 
 

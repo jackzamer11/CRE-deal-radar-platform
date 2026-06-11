@@ -38,6 +38,7 @@ export interface MatchedTenant {
   submarket: string | null
   match_score: number
   match_reasons: string[]
+  adjacent_submarket?: boolean
   is_medical: boolean
 }
 
@@ -226,6 +227,7 @@ export interface MatchedProperty {
   listed_for_sale: boolean
   match_score: number
   match_reasons: string[]
+  adjacent_submarket?: boolean
   is_medical: boolean
 }
 
@@ -235,6 +237,10 @@ export interface CompanyOut extends CompanyListOut {
   open_positions: number
   hiring_velocity: number | null
   current_sf_occupied: number | null
+  current_building_class: string | null
+  current_address: string | null
+  linkedin_url: string | null
+  website: string | null
   sf_per_head: number | null
   sig_headcount_growth: number
   sig_hiring_velocity: number
@@ -370,6 +376,7 @@ export interface TenantMatchAction {
   tenant_headcount: number | null
   tenant_sf_needed: number
   match_score: number
+  adjacent_submarket?: boolean
   lease_expiry_months: number | null
   contact_status: string
   property_is_medical: boolean

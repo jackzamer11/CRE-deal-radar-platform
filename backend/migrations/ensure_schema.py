@@ -397,6 +397,8 @@ def ensure_companies(cur: sqlite3.Cursor) -> int:
     added += _add_column(cur, "companies", "snooze_reason",        "TEXT")
     added += _add_column(cur, "companies", "returned_from_snooze", "BOOLEAN")
     added += _add_column(cur, "companies", "expiry_priority_override", "BOOLEAN DEFAULT 0")
+    # ── Building class (composite Match Score class-fit factor) ───────────────
+    added += _add_column(cur, "companies", "current_building_class", "TEXT")
 
     # ── Medical/non-medical classification (soft match penalty) ────────────
     # Defaults to 0 (false) for all existing rows. Guarded so a partially-migrated

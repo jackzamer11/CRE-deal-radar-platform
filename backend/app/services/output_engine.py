@@ -20,11 +20,11 @@ from app.models.opportunity import Opportunity
 from app.models.property import Property
 from app.models.company import Company
 from app.models.outreach_log import OutreachLog
+from app.services.match_scoring import compute_match, medical_mismatch_penalty
 from app.schemas.dashboard import (
     DailyBriefing, DashboardStats, CallTarget, TenantMatchTarget,
     TenantMatchAction, AcquisitionTarget, ExpiredLease,
 )
-from app.services.match_scoring import medical_mismatch_penalty, sf_match_suppressed
 
 
 _SIGNAL_LABEL = {
@@ -52,17 +52,6 @@ def _dominant_signal_label(prop: Property) -> str:
             best_val = val
             best_name = label
     return best_name or ""
-
-
-def _adjacent_submarkets(sub: str) -> list:
-    adj = {
-        "Arlington (Clarendon)": ["Arlington (Rosslyn)", "Arlington (Ballston)"],
-        "Arlington (Rosslyn)":   ["Arlington (Clarendon)", "Arlington (Ballston)"],
-        "Arlington (Ballston)":  ["Arlington (Clarendon)", "Arlington (Rosslyn)"],
-        "Tysons": ["McLean", "Vienna", "Falls Church"],
-        "McLean": ["Tysons", "Arlington (Rosslyn)"],
-    }
-    return adj.get(sub, [])
 
 
 def _is_snoozed(prop: Property) -> bool:
@@ -194,24 +183,21 @@ def _compute_tenant_actions(db: Session, snoozed: bool = False) -> list:
             sf_needed = co.current_sf_occupied or 0
             if sf_needed <= 0:
                 continue
-            # Fix 2: suppress pairings whose SF gap exceeds MAX_SF_DELTA, unless the
-            # pair is already contacted (contacted pairs are never disturbed).
-            if sf_match_suppressed(sf_needed, avail_sf) and (prop.id, co.id) not in contacted:
+            # Composite Match Score gates (submarket -> class -> SF). The SF hard
+            # gate is bypassed for already-contacted pairs (contacted history is
+            # never disturbed): those score SF at the gate floor instead.
+            match = compute_match(
+                tenant_submarket=co.current_submarket,
+                property_submarket=prop.submarket,
+                tenant_class=getattr(co, "current_building_class", None),
+                property_class=prop.asset_class,
+                sf_needed=sf_needed,
+                sf_avail=avail_sf,
+                sf_gate_exempt=(prop.id, co.id) in contacted,
+            )
+            if match is None:
                 continue
-            score = 0.0
-            ratio = sf_needed / avail_sf if avail_sf > 0 else 0
-            if 0.6 <= ratio <= 1.4:
-                score += 40.0
-            if co.current_submarket == prop.submarket:
-                score += 30.0
-            elif co.current_submarket and co.current_submarket in _adjacent_submarkets(prop.submarket):
-                score += 15.0
-            if co.expansion_signal:
-                score += 20.0
-            if co.lease_expiry_months is not None and co.lease_expiry_months <= 18:
-                score += 10.0
-            if score <= 0:
-                continue
+            score = match["score"]
 
             # Soft penalty for medical/non-medical mismatch — applied after the
             # qualification gate so the match still appears, just scored lower.
@@ -245,6 +231,7 @@ def _compute_tenant_actions(db: Session, snoozed: bool = False) -> list:
                 tenant_headcount=co.current_headcount,
                 tenant_sf_needed=sf_needed,
                 match_score=round(score, 1),
+                adjacent_submarket=match["adjacent"],
                 lease_expiry_months=co.lease_expiry_months,
                 contact_status=contact_status,
                 property_is_medical=bool(prop.is_medical),

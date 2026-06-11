@@ -41,21 +41,12 @@ from app.services.scoring_model import score_property, compute_deal_score, deter
 
 
 # ---------------------------------------------------------------------------
-# Adjacent submarket mapping — used to find cross-submarket matches
+# Adjacent submarket mapping — single source of truth lives in app.config
+# (SUBMARKET_ADJACENCY, built symmetric programmatically). Kept as a module
+# alias so existing imports keep working.
 # ---------------------------------------------------------------------------
-ADJACENT_SUBMARKETS = {
-    "Arlington (Clarendon)":     ["Arlington (Rosslyn)", "Arlington (Ballston)", "Arlington (Columbia Pike)"],
-    "Arlington (Rosslyn)":       ["Arlington (Clarendon)", "Arlington (Ballston)"],
-    "Arlington (Ballston)":      ["Arlington (Clarendon)", "Arlington (Columbia Pike)", "Falls Church"],
-    "Arlington (Columbia Pike)": ["Arlington (Ballston)", "Falls Church", "Alexandria (Old Town)"],
-    "Alexandria (Old Town)":     ["Arlington (Columbia Pike)", "Arlington (Rosslyn)"],
-    "Tysons":                    ["Reston", "Falls Church", "Arlington (Ballston)", "McLean", "Vienna"],
-    "Reston":                    ["Tysons", "Falls Church", "Vienna"],
-    "Falls Church":              ["Tysons", "Arlington (Ballston)", "Arlington (Columbia Pike)", "Reston", "McLean", "Fairfax City"],
-    "McLean":                    ["Tysons", "Falls Church"],
-    "Vienna":                    ["McLean", "Tysons", "Fairfax City", "Reston"],
-    "Fairfax City":              ["Vienna", "Falls Church"],
-}
+from app.config import SUBMARKET_ADJACENCY as ADJACENT_SUBMARKETS
+from app.services.match_scoring import are_adjacent
 
 # Typical NoVA office commission rate (% of total lease value or sale price)
 LEASE_COMMISSION_RATE = 0.04    # 4% of total lease value
@@ -70,7 +61,7 @@ def _is_nearby(prop_submarket: str, company_submarket: Optional[str]) -> bool:
         return False
     if prop_submarket == company_submarket:
         return True
-    return prop_submarket in ADJACENT_SUBMARKETS.get(company_submarket, [])
+    return are_adjacent(company_submarket, prop_submarket)
 
 
 def _estimated_sf_needed(company: Company) -> Optional[int]:

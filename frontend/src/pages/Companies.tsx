@@ -4,7 +4,7 @@ import {
   Users, Filter, X, TrendingUp, Clock, MapPin, Plus, RefreshCw,
   Upload, Pencil, Check, AlertTriangle, Zap, Send, Building2, Trash2,
 } from 'lucide-react'
-import { getCompanies, getCompany, updateCompanyLease, unsnoozeCompany, deleteCompany } from '../api/client'
+import { getCompanies, getCompany, updateCompanyLease, updateCompanyBuildingClass, unsnoozeCompany, deleteCompany } from '../api/client'
 import type { CompanyListOut, CompanyOut, RepClass } from '../types'
 import { PriorityBadge, MedicalBadge } from '../components/PriorityBadge'
 import ScoreBadge from '../components/ScoreBadge'
@@ -96,6 +96,7 @@ export default function Companies() {
   const [showTenantImportModal, setShowTenantImportModal] = useState(false)
   const [showOutreachModal, setShowOutreachModal]   = useState(false)
   const [showSnoozeModal, setShowSnoozeModal]       = useState(false)
+  const [buildingClassSaving, setBuildingClassSaving] = useState(false)
   const [editCompanyTarget, setEditCompanyTarget]   = useState<CompanyOut | null>(null)
   const [showSnoozedOnly, setShowSnoozedOnly]       = useState(false)
 
@@ -152,6 +153,18 @@ export default function Companies() {
   const needingExpiryCount   = companies.filter(c => c.lease_expiry_months === null).length
   const needingOutreachCount = companies.length
 
+
+  const saveBuildingClass = async (company: typeof selected, value: string) => {
+    if (!company) return
+    setBuildingClassSaving(true)
+    try {
+      const updated = await updateCompanyBuildingClass(company.company_id, value || null)
+      setSelected(updated)
+      load()
+    } finally {
+      setBuildingClassSaving(false)
+    }
+  }
 
   const openLeaseEdit = () => {
     setLeaseMonthsInput('')
@@ -688,6 +701,24 @@ export default function Companies() {
                     value={selected.current_sf_occupied != null ? `${selected.current_sf_occupied.toLocaleString()} SF` : 'Unknown'}
                   />
                   <Row label="Submarket" value={selected.current_submarket || '—'} />
+
+                  {/* Current Building Class dropdown — backfill without recreating the tenant */}
+                  <div className="flex justify-between items-center">
+                    <span className="text-xs text-ink-muted flex-shrink-0">Building Class</span>
+                    <select
+                      value={(selected as CompanyOut).current_building_class || ''}
+                      disabled={buildingClassSaving}
+                      onChange={e => saveBuildingClass(selected, e.target.value)}
+                      className="text-xs bg-surface-card border border-surface-border rounded-lg px-2 py-1
+                                 focus:outline-none focus:border-accent-blue/50 disabled:opacity-50 text-ink-secondary"
+                    >
+                      <option value="">Unknown</option>
+                      <option value="Class A">Class A</option>
+                      <option value="Class B">Class B</option>
+                      <option value="Class C">Class C</option>
+                    </select>
+                  </div>
+
                   <Row label="Expansion Signal" value={selected.expansion_signal ? '✓ Active' : '—'} />
 
                   {/* Tenant Rep */}
@@ -757,6 +788,11 @@ export default function Companies() {
                                 {p.in_place_rent_psf != null ? `$${p.in_place_rent_psf.toFixed(0)}/SF in-place` : ''}
                                 {p.listed_for_sale ? <span className="ml-1 text-amber-400 font-semibold">FOR SALE</span> : null}
                               </div>
+                              {p.adjacent_submarket && (
+                                <span className="inline-block mt-1 text-[9px] px-1.5 py-0.5 rounded border font-bold bg-sky-500/15 text-sky-400 border-sky-500/30">
+                                  Adjacent Submarket
+                                </span>
+                              )}
                               {p.match_reasons.length > 0 && (
                                 <div className="flex flex-wrap gap-1 mt-1">
                                   {p.match_reasons.map((r, i) => (

@@ -16,6 +16,7 @@ class CompanyBase(BaseModel):
     current_submarket: Optional[str] = None
     # Real occupied SF (CoStar "SF Occupied" / manual). Never calculated. Null = unknown.
     current_sf_occupied: Optional[int] = None
+    current_building_class: Optional[str] = None
     lease_expiry_date: Optional[date] = None
     lease_expiry_months: Optional[int] = None
     lease_expiry_source: Optional[str] = None
@@ -69,6 +70,7 @@ class MatchedProperty(BaseModel):
     listed_for_sale: bool
     match_score: float
     match_reasons: list[str]
+    adjacent_submarket: bool = False
     is_medical: bool = False
 
 
@@ -115,6 +117,7 @@ class CompanyListOut(BaseModel):
     # Space & financials
     current_headcount: Optional[int] = None
     current_sf_occupied: Optional[int] = None    # real occupied SF; null = unknown
+    current_building_class: Optional[str] = None
     current_rent_psf: Optional[float] = None
     current_submarket: Optional[str] = None
 

@@ -260,28 +260,37 @@ def _dedup_lease_clause(body: str, lease_expiry_m) -> str:
 VALID_TYPES = {"tenant_match", "for_sale_vacancy", "listing_rep", "acquisition"}
 
 # CBRE Q1 2026 NoVA office benchmarks (avg full-service rent / vacancy %).
+# Derived from the single source of truth in app.config.SUBMARKET_BENCHMARKS
+# so a quarterly benchmark refresh updates email copy automatically.
+from app.config import SUBMARKET_BENCHMARKS as _SUBMARKET_BENCHMARKS
+from app.config import OWNER_VACANCY_CITE_THRESHOLD, TENANT_VACANCY_CITE_THRESHOLD
+
 CBRE_2026_BENCHMARKS = {
-    "Arlington (Clarendon)":      {"rent": 42.93, "vacancy": 26.5},
-    "Arlington (Rosslyn)":        {"rent": 46.85, "vacancy": 20.6},
-    "Arlington (Ballston)":       {"rent": 43.19, "vacancy": 21.1},
-    "Arlington (Columbia Pike)":  {"rent": 28.22, "vacancy": 32.1},
-    "Alexandria (Old Town)":      {"rent": 36.73, "vacancy": 17.6},
-    "Tysons":                     {"rent": 39.10, "vacancy": 27.3},
-    "Reston":                     {"rent": 37.84, "vacancy": 22.9},
-    "Falls Church":               {"rent": 27.87, "vacancy": 10.4},
-    "McLean":                     {"rent": 39.21, "vacancy": 7.4},
-    "Vienna":                     {"rent": 24.16, "vacancy": 5.2},
-    "Fairfax City":               {"rent": 26.23, "vacancy": 8.5},
+    submarket: {"rent": b["market_rent_psf"], "vacancy": b["vacancy_pct"]}
+    for submarket, b in _SUBMARKET_BENCHMARKS.items()
 }
 
 
-def _submarket_context(submarket: Optional[str]) -> str:
+def _submarket_context(submarket: Optional[str], side: str = "all") -> str:
+    """Return a CBRE Q1 2026 benchmark string for the given submarket.
+
+    side="owner"  — vacancy cited only when vacancy > OWNER_VACANCY_CITE_THRESHOLD (15%)
+    side="tenant" — vacancy cited only when vacancy < TENANT_VACANCY_CITE_THRESHOLD (10%)
+    side="all"    — always include vacancy (default; preserves backward compatibility)
+    """
     if not submarket:
         return ""
     b = CBRE_2026_BENCHMARKS.get(submarket, {})
-    if b:
-        return f"CBRE Q1 2026 {submarket}: avg rent ${b['rent']:.2f}/SF, vacancy {b['vacancy']}%"
-    return ""
+    if not b:
+        return ""
+    vacancy = b["vacancy"]
+    include_vacancy = (
+        side == "all"
+        or (side == "owner"  and vacancy > OWNER_VACANCY_CITE_THRESHOLD)
+        or (side == "tenant" and vacancy < TENANT_VACANCY_CITE_THRESHOLD)
+    )
+    rent_part = f"CBRE Q1 2026 {submarket}: avg rent ${b['rent']:.2f}/SF"
+    return f"{rent_part}, vacancy {vacancy}%" if include_vacancy else rent_part
 
 
 def _submarket_vacancy(submarket: Optional[str]) -> Optional[float]:
@@ -462,7 +471,7 @@ def _prop_context(p: dict) -> str:
         lines.append(f"Loan Maturity Year: {p.get('loan_maturity_year')}")
     if p.get("days_on_market"):
         lines.append(f"Days on Market: {p.get('days_on_market')}")
-    bm = _submarket_context(p.get("submarket"))
+    bm = _submarket_context(p.get("submarket"), side="owner")
     if bm:
         lines.append(f"Submarket Benchmark: {bm}")
     return "\n".join(l for l in lines if l)
@@ -478,7 +487,7 @@ def _build_tenant_match(
     tenant_dict: Optional[dict] = None,
 ) -> dict:
     ctx = _prop_context(p)
-    benchmark = _submarket_context(p.get("submarket"))
+    benchmark = _submarket_context(p.get("submarket"), side="owner")
     submarket = p.get("submarket") or "Northern Virginia"
 
     # Fix 3: property-side always uses full street address
@@ -653,7 +662,7 @@ def _build_for_sale_vacancy(
     Without it, references demand generally ('multiple qualified tenants').
     """
     ctx = _prop_context(p)
-    benchmark = _submarket_context(p.get("submarket"))
+    benchmark = _submarket_context(p.get("submarket"), side="owner")
     submarket = p.get("submarket") or "Northern Virginia"
     landlord_rep = p.get("landlord_representative")
     addressee = f"the landlord representative ({landlord_rep})" if landlord_rep else "the property owner"
@@ -799,7 +808,7 @@ def _build_tenant_side(p: dict, tenant_dict: dict) -> dict:
     that fits their requirements. Never reveals the property street address; never
     describes the tenant to themselves; leads with lease expiry urgency."""
     submarket = p.get("submarket") or "Northern Virginia"
-    benchmark = _submarket_context(p.get("submarket"))
+    benchmark = _submarket_context(p.get("submarket"), side="tenant")
     asset_class = p.get("asset_class") or "office"
     # Fix 1: round the property's available SF to the nearest 100 before it is ever
     # injected into tenant-side copy. The raw figure is never shown to the tenant.
@@ -938,7 +947,7 @@ def _build_tenant_side(p: dict, tenant_dict: dict) -> dict:
 
 def _build_listing_rep(p: dict) -> dict:
     ctx = _prop_context(p)
-    benchmark = _submarket_context(p.get("submarket"))
+    benchmark = _submarket_context(p.get("submarket"), side="owner")
 
     # Fix: safe address, owner_name, and salutation
     address_display = p.get("address") or p.get("submarket") or "Northern Virginia"
@@ -999,7 +1008,7 @@ def _build_listing_rep(p: dict) -> dict:
 
 def _build_acquisition(p: dict, target_type: str) -> dict:
     ctx = _prop_context(p)
-    benchmark = _submarket_context(p.get("submarket"))
+    benchmark = _submarket_context(p.get("submarket"), side="owner")
     submarket  = p.get("submarket") or "Northern Virginia"
     dom_signal = p.get("dominant_score_type", "")
     signal_hint = {

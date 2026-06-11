@@ -38,7 +38,7 @@ class Settings(BaseSettings):
         "McLean": 243,
         "Vienna": 218,
         "Fairfax City": 189,
-        # Provisional (nearest-comparable) — see PROVISIONAL_SUBMARKETS warning below
+        # Nearest-comparable estimates (asking $/SF for sale comps, not CBRE Fig. 10 rents)
         "Annandale": 190,       # ≈ Falls Church
         "Crystal City": 280,    # ≈ Arlington (Ballston)
         "Merrifield": 189,      # ≈ Fairfax City
@@ -140,33 +140,133 @@ NOVA_OFFICE_BENCHMARKS = {
     "data_as_of":  "2026-Q1",
 }
 
+# All values measured — CBRE Northern Virginia Office Figures Q1 2026, Figure 10
+# (vacancy %, avg direct asking rate $/SF FSG/yr).
 SUBMARKET_BENCHMARKS = {
-    "Arlington (Clarendon)":      {"market_rent_psf": 42.93, "vacancy_pct": 26.5,  "source": "CBRE Q1 2026 (Clarendon/Courthouse)"},
-    "Arlington (Rosslyn)":        {"market_rent_psf": 46.85, "vacancy_pct": 20.6,  "source": "CBRE Q1 2026"},
-    "Arlington (Ballston)":       {"market_rent_psf": 43.19, "vacancy_pct": 21.1,  "source": "CBRE Q1 2026"},
-    "Arlington (Columbia Pike)":  {"market_rent_psf": 28.22, "vacancy_pct": 32.1,  "source": "CBRE Q1 2026 (I-395 Corridor Arlington — verify)"},
-    "Alexandria (Old Town)":      {"market_rent_psf": 36.73, "vacancy_pct": 17.6,  "source": "CBRE Q1 2026"},
-    "Tysons":                     {"market_rent_psf": 39.10, "vacancy_pct": 27.3,  "source": "CBRE Q1 2026 (Tysons Corner)"},
-    "Reston":                     {"market_rent_psf": 37.84, "vacancy_pct": 22.9,  "source": "CBRE Q1 2026"},
-    "Falls Church":               {"market_rent_psf": 27.87, "vacancy_pct": 10.4,  "source": "CBRE Q1 2026"},
-    "McLean":                     {"market_rent_psf": 39.21, "vacancy_pct": 7.4,   "source": "CBRE Q1 2026 (small sample 0.78 MSF)"},
-    "Vienna":                     {"market_rent_psf": 24.16, "vacancy_pct": 5.2,   "source": "CBRE Q1 2026 (small sample 0.49 MSF)"},
-    "Fairfax City":               {"market_rent_psf": 26.23, "vacancy_pct": 8.5,   "source": "CBRE Q1 2026"},
-    # ── Provisional benchmarks (nearest-comparable submarket) ────────────────
-    # Added so newly-mapped CoStar submarkets render with sensible market
-    # context instead of falling through to the generic NoVA default. These are
-    # NOT measured CBRE figures — replace when submarket-specific data is available.
-    "Annandale":                  {"market_rent_psf": 27.87, "vacancy_pct": 10.4,  "source": "PROVISIONAL ≈ Falls Church"},
-    "Crystal City":               {"market_rent_psf": 43.19, "vacancy_pct": 21.1,  "source": "PROVISIONAL ≈ Arlington (Ballston)"},
-    "Merrifield":                 {"market_rent_psf": 26.23, "vacancy_pct": 8.5,   "source": "PROVISIONAL ≈ Fairfax City"},
-    "Springfield":                {"market_rent_psf": 26.23, "vacancy_pct": 8.5,   "source": "PROVISIONAL ≈ Fairfax City"},
-    "Centreville":                {"market_rent_psf": 26.23, "vacancy_pct": 8.5,   "source": "PROVISIONAL ≈ Fairfax City"},
+    "Arlington (Clarendon)":      {"market_rent_psf": 42.93, "vacancy_pct": 26.5,  "source": "CBRE Q1 2026 Fig. 10 (Clarendon/Courthouse)"},
+    "Arlington (Rosslyn)":        {"market_rent_psf": 46.85, "vacancy_pct": 20.6,  "source": "CBRE Q1 2026 Fig. 10"},
+    "Arlington (Ballston)":       {"market_rent_psf": 43.19, "vacancy_pct": 21.1,  "source": "CBRE Q1 2026 Fig. 10"},
+    "Arlington (Columbia Pike)":  {"market_rent_psf": 44.79, "vacancy_pct": 22.5,  "source": "CBRE Q1 2026 Fig. 10"},
+    "Alexandria (Old Town)":      {"market_rent_psf": 36.73, "vacancy_pct": 17.6,  "source": "CBRE Q1 2026 Fig. 10"},
+    "Tysons":                     {"market_rent_psf": 39.10, "vacancy_pct": 27.3,  "source": "CBRE Q1 2026 Fig. 10 (Tysons Corner)"},
+    "Reston":                     {"market_rent_psf": 37.84, "vacancy_pct": 22.9,  "source": "CBRE Q1 2026 Fig. 10"},
+    "Falls Church":               {"market_rent_psf": 27.87, "vacancy_pct": 10.4,  "source": "CBRE Q1 2026 Fig. 10"},
+    "McLean":                     {"market_rent_psf": 39.21, "vacancy_pct": 7.4,   "source": "CBRE Q1 2026 Fig. 10 (small sample 0.78 MSF)"},
+    "Vienna":                     {"market_rent_psf": 24.16, "vacancy_pct": 5.2,   "source": "CBRE Q1 2026 Fig. 10 (small sample 0.49 MSF)"},
+    "Fairfax City":               {"market_rent_psf": 26.23, "vacancy_pct": 8.5,   "source": "CBRE Q1 2026 Fig. 10"},
+    "Annandale":                  {"market_rent_psf": 28.53, "vacancy_pct": 17.0,  "source": "CBRE Q1 2026 Fig. 10"},
+    "Crystal City":               {"market_rent_psf": 43.69, "vacancy_pct": 31.0,  "source": "CBRE Q1 2026 Fig. 10"},
+    "Merrifield":                 {"market_rent_psf": 33.61, "vacancy_pct": 16.4,  "source": "CBRE Q1 2026 Fig. 10"},
+    "Springfield":                {"market_rent_psf": 36.22, "vacancy_pct": 16.8,  "source": "CBRE Q1 2026 Fig. 10"},
+    "Herndon":                    {"market_rent_psf": 34.49, "vacancy_pct": 29.0,  "source": "CBRE Q1 2026 Fig. 10"},
+    # Proxy = CBRE "Fairfax Center" submarket, nearest measured equivalent;
+    # revisit when CBRE publishes Centreville-specific data.
+    "Centreville":                {"market_rent_psf": 30.49, "vacancy_pct": 27.2,  "source": "CBRE Q1 2026 Fig. 10 (Fairfax Center proxy)"},
 }
 
-# Submarkets whose benchmark data is provisional (nearest-comparable, not measured).
-PROVISIONAL_SUBMARKETS = ("Annandale", "Crystal City", "Merrifield", "Springfield", "Centreville")
-for _sm in PROVISIONAL_SUBMARKETS:
-    print(
-        f"[config] WARNING: benchmark for submarket '{_sm}' is PROVISIONAL "
-        f"({SUBMARKET_BENCHMARKS[_sm]['source']}) — replace with measured data when available."
-    )
+
+# ---------------------------------------------------------------------------
+# Tenant ↔ Property Match Score configuration
+# All point values and weights for the composite Match Score live here —
+# nothing is hardcoded inline in the matching services.
+# ---------------------------------------------------------------------------
+
+# One-directional adjacency pairs. Symmetry is built programmatically below so
+# a one-sided entry can never silently fail a reverse lookup.
+_SUBMARKET_ADJACENCY_PAIRS = [
+    ("Reston", "Herndon"),
+    ("Reston", "Tysons"),
+    ("Reston", "Vienna"),
+    ("Reston", "McLean"),
+    ("Tysons", "McLean"),
+    ("Tysons", "Vienna"),
+    ("Tysons", "Falls Church"),
+    ("Tysons", "Herndon"),
+    ("McLean", "Vienna"),
+    ("Vienna", "Merrifield"),
+    ("Vienna", "Fairfax City"),
+    ("Falls Church", "Merrifield"),
+    ("Merrifield", "Fairfax City"),
+    ("Merrifield", "Annandale"),
+    ("Annandale", "Springfield"),
+    ("Fairfax City", "Centreville"),
+    # Arlington submarkets — all pairwise adjacent
+    ("Arlington (Clarendon)", "Arlington (Rosslyn)"),
+    ("Arlington (Clarendon)", "Arlington (Ballston)"),
+    ("Arlington (Clarendon)", "Arlington (Columbia Pike)"),
+    ("Arlington (Rosslyn)", "Arlington (Ballston)"),
+    ("Arlington (Rosslyn)", "Arlington (Columbia Pike)"),
+    ("Arlington (Ballston)", "Arlington (Columbia Pike)"),
+    # Each Arlington submarket ↔ Crystal City
+    ("Arlington (Clarendon)", "Crystal City"),
+    ("Arlington (Rosslyn)", "Crystal City"),
+    ("Arlington (Ballston)", "Crystal City"),
+    ("Arlington (Columbia Pike)", "Crystal City"),
+    ("Crystal City", "Alexandria (Old Town)"),
+]
+
+
+def _build_symmetric_adjacency(pairs: list) -> dict:
+    adjacency: dict = {}
+    for a, b in pairs:
+        adjacency.setdefault(a, set()).add(b)
+        adjacency.setdefault(b, set()).add(a)
+    return adjacency
+
+
+# dict[str, set[str]] — symmetric: b in SUBMARKET_ADJACENCY[a] ⇔ a in SUBMARKET_ADJACENCY[b]
+SUBMARKET_ADJACENCY = _build_symmetric_adjacency(_SUBMARKET_ADJACENCY_PAIRS)
+
+# Submarkets selectable in the platform dropdown (mirror of frontend/src/constants.ts).
+# A submarket string absent from BOTH this list and the adjacency map degrades
+# to exact-match-only — never a crash, never a match-everything wildcard.
+PLATFORM_SUBMARKETS = (
+    "Arlington (Clarendon)",
+    "Arlington (Rosslyn)",
+    "Arlington (Ballston)",
+    "Arlington (Columbia Pike)",
+    "Alexandria (Old Town)",
+    "Tysons",
+    "Reston",
+    "Falls Church",
+    "McLean",
+    "Vienna",
+    "Fairfax City",
+    "Annandale",
+    "Crystal City",
+    "Merrifield",
+    "Springfield",
+    "Centreville",
+)
+
+# Composite Match Score weights (must sum to 1.0)
+MATCH_SCORE_WEIGHTS = {
+    "submarket": 0.40,
+    "class":     0.30,
+    "sf_fit":    0.30,
+}
+
+# Submarket factor points (non-adjacent pairs are excluded entirely)
+SUBMARKET_EXACT_POINTS    = 100.0
+SUBMARKET_ADJACENT_POINTS = 60.0
+
+# Building-class factor points (two classes apart → pair excluded)
+CLASS_SAME_POINTS      = 100.0   # tenant class == property class
+CLASS_UPGRADE_POINTS   = 70.0    # tenant moving up one class (e.g. B tenant → A property)
+CLASS_DOWNGRADE_POINTS = 55.0    # tenant moving down one class
+CLASS_NEUTRAL_POINTS   = 50.0    # class null/missing/unparseable on either side
+
+# SF-fit hard gate + gradient: |sf_needed − sf_avail| must be ≤ MAX_SF_DELTA
+# (hard gate applied BEFORE scoring); surviving pairs score on a linear
+# gradient from SF_FIT_MAX_POINTS at delta 0 down to SF_FIT_MIN_POINTS at the cutoff.
+MAX_SF_DELTA       = 800
+SF_FIT_MAX_POINTS  = 100.0
+SF_FIT_MIN_POINTS  = 60.0
+
+# ---------------------------------------------------------------------------
+# Vacancy-line citation thresholds for email templates
+# Owner-side: cite submarket vacancy only when vacancy_pct > this value
+# Tenant-side: cite submarket vacancy only when vacancy_pct < this value
+# ---------------------------------------------------------------------------
+OWNER_VACANCY_CITE_THRESHOLD  = 15.0  # owner-side: high vacancy signals leasing urgency
+TENANT_VACANCY_CITE_THRESHOLD = 10.0  # tenant-side: low vacancy signals tight supply

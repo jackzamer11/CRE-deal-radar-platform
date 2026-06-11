@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { X, Users, ChevronRight } from 'lucide-react'
-import { createCompany, updateCompanyMedical, updateCompanySfOccupied, updateCompanyLease } from '../api/client'
+import { createCompany, updateCompanyMedical, updateCompanySfOccupied, updateCompanyBuildingClass, updateCompanyLease } from '../api/client'
 import type { CompanyOut } from '../types'
 
 const SUBMARKETS = [
@@ -43,6 +43,7 @@ const defaultForm = {
   current_address:       '',
   current_submarket:     '',
   current_sf_occupied:   '',
+  current_building_class: '',
   lease_expiry_months:   '',
   primary_contact_name:  '',
   primary_contact_title: '',
@@ -65,6 +66,7 @@ function companyToForm(data: CompanyOut): FormState {
     current_address:       data.current_address ?? '',
     current_submarket:     data.current_submarket ?? '',
     current_sf_occupied:   data.current_sf_occupied != null ? String(data.current_sf_occupied) : '',
+    current_building_class: data.current_building_class ?? '',
     lease_expiry_months:   data.lease_expiry_months != null ? String(data.lease_expiry_months) : '',
     primary_contact_name:  data.primary_contact_name ?? '',
     primary_contact_title: data.primary_contact_title ?? '',
@@ -143,6 +145,7 @@ export default function AddCompanyModal({ onClose, onSaved, editCompanyId, initi
         // response (medical) as the returned record so the caller gets fresh data.
         const sfVal = form.current_sf_occupied ? parseInt(form.current_sf_occupied) : null
         await updateCompanySfOccupied(editCompanyId!, sfVal)
+        await updateCompanyBuildingClass(editCompanyId!, form.current_building_class || null)
         if (form.lease_expiry_months) {
           await updateCompanyLease(editCompanyId!, {
             lease_expiry_months: parseInt(form.lease_expiry_months),
@@ -161,6 +164,7 @@ export default function AddCompanyModal({ onClose, onSaved, editCompanyId, initi
           current_address:       form.current_address || undefined,
           current_submarket:     form.current_submarket || undefined,
           current_sf_occupied:   form.current_sf_occupied ? parseInt(form.current_sf_occupied) : undefined,
+          current_building_class: form.current_building_class || undefined,
           lease_expiry_months:   form.lease_expiry_months ? parseInt(form.lease_expiry_months) : undefined,
           primary_contact_name:  form.primary_contact_name || undefined,
           primary_contact_title: form.primary_contact_title || undefined,
@@ -275,6 +279,14 @@ export default function AddCompanyModal({ onClose, onSaved, editCompanyId, initi
               <Field label="Open Positions Right Now" hint="drives hiring velocity signal">
                 <input className={inputCls} type="number" placeholder="e.g. 12"
                   value={form.open_positions} onChange={set('open_positions')} />
+              </Field>
+              <Field label="Current Building Class" hint="drives class-fit factor">
+                <select className={selectCls} value={form.current_building_class} onChange={set('current_building_class')}>
+                  <option value="">Unknown</option>
+                  <option value="Class A">Class A</option>
+                  <option value="Class B">Class B</option>
+                  <option value="Class C">Class C</option>
+                </select>
               </Field>
 
               {/* Live signal preview */}

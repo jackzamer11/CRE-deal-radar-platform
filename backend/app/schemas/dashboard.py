@@ -69,6 +69,7 @@ class TenantMatchAction(BaseModel):
     tenant_headcount:   Optional[int]
     tenant_sf_needed:   int
     match_score:        float
+    adjacent_submarket: bool = False
     lease_expiry_months: Optional[int]
     # UI state
     contact_status: str  # NOT_CONTACTED | CONTACTED | FOLLOW_UP

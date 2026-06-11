@@ -511,24 +511,7 @@ def _enrich(prop: Property) -> PropertyOut:
 
 # ── Matched-tenant helper ──────────────────────────────────────────────────
 
-def _adjacent_submarkets(submarket: Optional[str]) -> set:
-    adjacency = {
-        "Arlington (Clarendon)":      {"Arlington (Rosslyn)", "Arlington (Ballston)", "Falls Church"},
-        "Arlington (Rosslyn)":        {"Arlington (Clarendon)", "McLean"},
-        "Arlington (Ballston)":       {"Arlington (Clarendon)", "Arlington (Columbia Pike)", "Falls Church"},
-        "Arlington (Columbia Pike)":  {"Arlington (Ballston)", "Alexandria (Old Town)"},
-        "Alexandria (Old Town)":      {"Arlington (Columbia Pike)"},
-        "Tysons":                     {"McLean", "Vienna", "Reston", "Falls Church"},
-        "Reston":                     {"Tysons", "Vienna"},
-        "Falls Church":               {"Arlington (Clarendon)", "Arlington (Ballston)", "Tysons"},
-        "McLean":                     {"Arlington (Rosslyn)", "Tysons"},
-        "Vienna":                     {"Tysons", "Reston", "Fairfax City"},
-        "Fairfax City":               {"Vienna"},
-    }
-    return adjacency.get(submarket, set())
-
-
-def _sf_needed_display(sf_needed: Optional[int]) -> str:
+def _sf_needed_display(sf_needed):
     """Card label for SF needed: the real number when known, else 'Unknown'."""
     return f"{sf_needed:,} SF" if sf_needed else "Unknown"
 
@@ -536,7 +519,8 @@ def _sf_needed_display(sf_needed: Optional[int]) -> str:
 def _compute_matched_tenants(prop: Property, db: Session) -> list:
     from app.models.company import Company
     from app.schemas.property import MatchedTenant
-    from app.services.match_scoring import sf_match_suppressed
+    from app.config import MATCH_SCORE_WEIGHTS, CLASS_NEUTRAL_POINTS, SUBMARKET_ADJACENT_POINTS
+    from app.services.match_scoring import compute_match, submarket_score, class_score
     from app.services.opportunity_stage_service import pair_is_contacted
 
     # Fix 1: the SF delta filter compares against AVAILABLE SF only — never total
@@ -547,50 +531,71 @@ def _compute_matched_tenants(prop: Property, db: Session) -> list:
         return []
 
     # SF (= real occupied SF) may be unknown; such tenants can still match on
-    # submarket / expansion / lease timing and are shown with "SF: Unknown"
+    # submarket / class / lease timing and are shown with "SF: Unknown"
     # (outreach for them is blocked separately until the figure is populated).
     candidates = db.query(Company).all()
 
     scored = []
     for co in candidates:
         sf_occupied = co.current_sf_occupied or 0
-        # Fix 2: when the gap to AVAILABLE SF exceeds MAX_SF_DELTA, suppress the
-        # pairing entirely — no card, no outreach — UNLESS this exact pair has
-        # already been contacted (contacted history is never disturbed).
-        if (sf_match_suppressed(sf_occupied, avail_sf)
-                and not pair_is_contacted(db, prop.id, co.id)):
-            continue
-        reasons: list = []
-        score = 0.0
-        if sf_occupied > 0 and avail_sf > 0:
-            ratio = sf_occupied / avail_sf
-            if 0.6 <= ratio <= 1.4:
-                pct = abs(1.0 - ratio) * 100
-                score += 40.0
-                reasons.append(f"SF fit ±{pct:.0f}% ({sf_occupied:,} occupied vs {avail_sf:,} avail)")
-        if co.current_submarket == prop.submarket:
-            score += 30.0
-            reasons.append(f"Same submarket ({prop.submarket})")
-        elif co.current_submarket:
-            adjacent = _adjacent_submarkets(prop.submarket)
-            if co.current_submarket in adjacent:
-                score += 15.0
-                reasons.append(f"Adjacent submarket ({co.current_submarket})")
+        if sf_occupied > 0:
+            # Composite Match Score gates (submarket -> class -> SF). The SF hard
+            # gate is bypassed when this exact pair has already been contacted
+            # (contacted history is never disturbed) — it then scores SF at the
+            # gate floor instead of being excluded.
+            match = compute_match(
+                tenant_submarket=co.current_submarket,
+                property_submarket=prop.submarket,
+                tenant_class=getattr(co, "current_building_class", None),
+                property_class=prop.asset_class,
+                sf_needed=sf_occupied,
+                sf_avail=avail_sf,
+                sf_gate_exempt=pair_is_contacted(db, prop.id, co.id),
+            )
+            if match is None:
+                continue
+            reasons = [
+                f"SF fit {match['sf_fit_score']:.0f}/100 ({sf_occupied:,} occupied vs {avail_sf:,} avail)",
+                (f"Adjacent submarket ({co.current_submarket})" if match["adjacent"]
+                 else f"Same submarket ({prop.submarket})"),
+                f"Class fit {match['class_score']:.0f}/100",
+            ]
+        else:
+            # Unknown occupied SF: the pair cannot be sized, but the card is kept
+            # (main behaviour) — submarket and class gates still apply; the SF
+            # factor scores neutral until the figure is populated.
+            sub = submarket_score(co.current_submarket, prop.submarket)
+            if sub is None:
+                continue
+            cls = class_score(getattr(co, "current_building_class", None), prop.asset_class)
+            if cls is None:
+                continue
+            w = MATCH_SCORE_WEIGHTS
+            composite = w["submarket"] * sub + w["class"] * cls + w["sf_fit"] * CLASS_NEUTRAL_POINTS
+            match = {
+                "score": round(composite, 1),
+                "adjacent": sub == SUBMARKET_ADJACENT_POINTS,
+                "class_score": cls,
+                "sf_fit_score": None,
+            }
+            reasons = [
+                "SF unknown — sized fit pending",
+                (f"Adjacent submarket ({co.current_submarket})" if match["adjacent"]
+                 else f"Same submarket ({prop.submarket})"),
+                f"Class fit {cls:.0f}/100",
+            ]
         if co.expansion_signal:
-            score += 20.0
             reasons.append("Expansion signal active")
         if co.lease_expiry_months is not None and co.lease_expiry_months <= 18:
-            score += 10.0
             reasons.append(f"Lease expiry in {co.lease_expiry_months}mo")
-        if score > 0:
-            # Soft medical/non-medical mismatch penalty — match still appears.
-            penalty = medical_mismatch_penalty(prop, co)
-            if penalty:
-                score += penalty
-                reasons.append("Medical/non-medical mismatch (−20)")
-            scored.append((score, co, reasons))
+        # Soft medical/non-medical mismatch penalty — match still appears.
+        penalty = medical_mismatch_penalty(prop, co)
+        if penalty:
+            match["score"] = round(match["score"] + penalty, 1)
+            reasons.append("Medical/non-medical mismatch (−20)")
+        scored.append((match, co, reasons))
 
-    scored.sort(key=lambda x: x[0], reverse=True)
+    scored.sort(key=lambda x: x[0]["score"], reverse=True)
     return [
         MatchedTenant(
             company_id=co.company_id,
@@ -600,12 +605,14 @@ def _compute_matched_tenants(prop: Property, db: Session) -> list:
             sf_needed=co.current_sf_occupied if co.current_sf_occupied else None,
             sf_display=_sf_needed_display(co.current_sf_occupied),
             submarket=co.current_submarket,
-            match_score=round(score, 1),
+            match_score=match["score"],
             match_reasons=reasons,
+            adjacent_submarket=match["adjacent"],
             is_medical=bool(co.is_medical),
         )
-        for score, co, reasons in scored[:3]
+        for match, co, reasons in scored[:3]
     ]
+
 
 
 def _next_property_id(db: Session) -> str:

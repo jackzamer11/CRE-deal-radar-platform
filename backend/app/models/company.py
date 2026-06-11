@@ -31,6 +31,7 @@ class Company(Base):
     # it is NEVER calculated from headcount. Null means "SF unknown".
     current_sf_occupied = Column(Integer, nullable=True)
     sf_per_head = Column(Float, nullable=True)            # current_sf_occupied / headcount
+    current_building_class = Column(String, nullable=True)  # Class A / B / C — drives class-fit factor
 
     # Lease
     lease_expiry_date = Column(Date, nullable=True)
