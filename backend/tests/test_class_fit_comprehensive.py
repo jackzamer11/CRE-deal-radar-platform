@@ -110,8 +110,8 @@ class TestTwoClassGapAlways30:
         match = compute_match("Tysons", "Tysons", "Class C", "Class A", 5000, 5000)
         assert match is not None
         assert match["class_score"] == 30.0
-        # Composite: 0.40·100 (exact submarket) + 0.30·30 (two-class) + 0.30·100 (SF) = 79
-        assert match["score"] == pytest.approx(79.0)
+        # null lease → fallback 25: 0.40·25 + 0.30·100 + 0.15·30 + 0.15·100 = 10+30+4.5+15 = 59.5
+        assert match["score"] == pytest.approx(59.5)
 
 
 class TestNullAndInvalidFallsToNeutral50:
@@ -142,8 +142,8 @@ class TestNullAndInvalidFallsToNeutral50:
         match = compute_match("Tysons", "Tysons", None, "Class A", 5000, 5000)
         assert match is not None
         assert match["class_score"] == 50.0
-        # Composite: 0.40·100 + 0.30·50 + 0.30·100 = 85
-        assert match["score"] == pytest.approx(85.0)
+        # null lease → fallback 25: 0.40·25 + 0.30·100 + 0.15·50 + 0.15·100 = 10+30+7.5+15 = 62.5
+        assert match["score"] == pytest.approx(62.5)
 
 
 class TestClassScoringNeverReturnsNone:

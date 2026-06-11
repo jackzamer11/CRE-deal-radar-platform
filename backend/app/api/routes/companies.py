@@ -570,7 +570,7 @@ async def costar_tenant_import(
 
 def _compute_matched_properties(company: Company, db: Session) -> list:
     from app.schemas.company import MatchedProperty
-    from app.services.match_scoring import compute_match
+    from app.services.match_scoring import compute_match, lease_expiry_chip_label
     from sqlalchemy import or_
 
     # SF source is the company's real occupied SF — never calculated. Unknown SF
@@ -602,6 +602,7 @@ def _compute_matched_properties(company: Company, db: Session) -> list:
             property_class=prop.asset_class,
             sf_needed=sf_occupied,
             sf_avail=avail,
+            tenant_lease_expiry_months=company.lease_expiry_months,
         )
         if match is None:
             continue
@@ -611,6 +612,7 @@ def _compute_matched_properties(company: Company, db: Session) -> list:
             (f"Adjacent submarket ({prop.submarket})" if match["adjacent"]
              else f"Same submarket ({prop.submarket})"),
             f"Class fit {match['class_score']:.0f}/100",
+            f"Lease: {lease_expiry_chip_label(company.lease_expiry_months)}",
         ]
         if company.current_rent_psf and prop.in_place_rent_psf:
             if prop.in_place_rent_psf <= company.current_rent_psf * 1.2:

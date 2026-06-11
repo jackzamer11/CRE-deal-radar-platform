@@ -71,6 +71,7 @@ class TenantMatchAction(BaseModel):
     match_score:        float
     adjacent_submarket: bool = False
     lease_expiry_months: Optional[int]
+    lease_expiry_chip:  Optional[str] = None
     # UI state
     contact_status: str  # NOT_CONTACTED | CONTACTED | FOLLOW_UP
     # Medical flags
