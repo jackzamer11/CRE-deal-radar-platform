@@ -133,8 +133,8 @@ def test_saved_class_feeds_class_fit_factor(client, db_session):
 
     matched = _compute_matched_tenants(prop, db_session)
     me = next(m for m in matched if m.company_id == created["company_id"])
-    # 0.40·100 (exact submarket) + 0.30·70 (B→A upgrade) + 0.30·100 (delta 0) = 91.0
-    assert me.match_score == pytest.approx(91.0)
+    # lease=10→sig=80: 0.40·80 + 0.30·100 (exact) + 0.15·70 (B→A) + 0.15·100 (delta 0) = 87.5
+    assert me.match_score == pytest.approx(87.5)
 
 
 def test_agent_contract_fields_unchanged(client):
@@ -201,9 +201,10 @@ def test_patch_building_class_response_keeps_matched_properties(client, db_sessi
         "Same-class pair must survive in the PATCH response — returning it "
         "without matched_properties wipes the cards in the UI"
     )
-    # Adjacent 60 · 0.40 + same-class 100 · 0.30 + SF fit (delta 363) · 0.30
+    # lease=10→sig=80, adjacent 60, same-class 100, SF fit (delta 363)
+    # 0.40·80 + 0.30·60 + 0.15·100 + 0.15·sf_fit
     sf_fit = 100.0 - 40.0 * (363 / 800)
-    expected = 0.40 * 60 + 0.30 * 100 + 0.30 * sf_fit
+    expected = 0.40 * 80 + 0.30 * 60 + 0.15 * 100 + 0.15 * sf_fit
     assert match["match_score"] == pytest.approx(round(expected, 1))
     assert match["adjacent_submarket"] is True
     assert any("Class fit 100/100" in r for r in match["match_reasons"])

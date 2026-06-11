@@ -20,7 +20,7 @@ from app.models.opportunity import Opportunity
 from app.models.property import Property
 from app.models.company import Company
 from app.models.outreach_log import OutreachLog
-from app.services.match_scoring import compute_match, medical_mismatch_penalty
+from app.services.match_scoring import compute_match, medical_mismatch_penalty, lease_expiry_chip_label
 from app.schemas.dashboard import (
     DailyBriefing, DashboardStats, CallTarget, TenantMatchTarget,
     TenantMatchAction, AcquisitionTarget, ExpiredLease,
@@ -194,6 +194,7 @@ def _compute_tenant_actions(db: Session, snoozed: bool = False) -> list:
                 sf_needed=sf_needed,
                 sf_avail=avail_sf,
                 sf_gate_exempt=(prop.id, co.id) in contacted,
+                tenant_lease_expiry_months=co.lease_expiry_months,
             )
             if match is None:
                 continue
@@ -233,6 +234,7 @@ def _compute_tenant_actions(db: Session, snoozed: bool = False) -> list:
                 match_score=round(score, 1),
                 adjacent_submarket=match["adjacent"],
                 lease_expiry_months=co.lease_expiry_months,
+                lease_expiry_chip=lease_expiry_chip_label(co.lease_expiry_months),
                 contact_status=contact_status,
                 property_is_medical=bool(prop.is_medical),
                 tenant_is_medical=bool(co.is_medical),

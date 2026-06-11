@@ -520,7 +520,11 @@ def _compute_matched_tenants(prop: Property, db: Session) -> list:
     from app.models.company import Company
     from app.schemas.property import MatchedTenant
     from app.config import MATCH_SCORE_WEIGHTS, CLASS_NEUTRAL_POINTS, SUBMARKET_ADJACENT_POINTS
-    from app.services.match_scoring import compute_match, submarket_score, class_score
+    from app.services.match_scoring import (
+        compute_match, submarket_score, class_score,
+        lease_expiry_chip_label, LEASE_EXPIRY_NULL_POINTS, LEASE_EXPIRY_FLOOR_COMPOSITE,
+    )
+    from app.services.signal_engine import sig_lease_expiry_proximity
     from app.services.opportunity_stage_service import pair_is_contacted
 
     # Fix 1: the SF delta filter compares against AVAILABLE SF only — never total
@@ -551,6 +555,7 @@ def _compute_matched_tenants(prop: Property, db: Session) -> list:
                 sf_needed=sf_occupied,
                 sf_avail=avail_sf,
                 sf_gate_exempt=pair_is_contacted(db, prop.id, co.id),
+                tenant_lease_expiry_months=co.lease_expiry_months,
             )
             if match is None:
                 continue
@@ -559,6 +564,7 @@ def _compute_matched_tenants(prop: Property, db: Session) -> list:
                 (f"Adjacent submarket ({co.current_submarket})" if match["adjacent"]
                  else f"Same submarket ({prop.submarket})"),
                 f"Class fit {match['class_score']:.0f}/100",
+                f"Lease: {lease_expiry_chip_label(co.lease_expiry_months)}",
             ]
         else:
             # Unknown occupied SF: the pair cannot be sized, but the card is kept
@@ -570,24 +576,33 @@ def _compute_matched_tenants(prop: Property, db: Session) -> list:
             cls = class_score(getattr(co, "current_building_class", None), prop.asset_class)
             if cls is None:
                 continue
+            raw_lease = sig_lease_expiry_proximity(co.lease_expiry_months)
+            lease = raw_lease if raw_lease is not None else LEASE_EXPIRY_NULL_POINTS
             w = MATCH_SCORE_WEIGHTS
-            composite = w["submarket"] * sub + w["class"] * cls + w["sf_fit"] * CLASS_NEUTRAL_POINTS
+            composite = (
+                w["lease_expiry"] * lease
+                + w["submarket"] * sub
+                + w["class"] * cls
+                + w["sf_fit"] * CLASS_NEUTRAL_POINTS
+            )
+            if raw_lease == 0.0:
+                composite = max(composite, LEASE_EXPIRY_FLOOR_COMPOSITE)
             match = {
                 "score": round(composite, 1),
                 "adjacent": sub == SUBMARKET_ADJACENT_POINTS,
                 "class_score": cls,
                 "sf_fit_score": None,
+                "lease_expiry_score": lease,
             }
             reasons = [
                 "SF unknown — sized fit pending",
                 (f"Adjacent submarket ({co.current_submarket})" if match["adjacent"]
                  else f"Same submarket ({prop.submarket})"),
                 f"Class fit {cls:.0f}/100",
+                f"Lease: {lease_expiry_chip_label(co.lease_expiry_months)}",
             ]
         if co.expansion_signal:
             reasons.append("Expansion signal active")
-        if co.lease_expiry_months is not None and co.lease_expiry_months <= 18:
-            reasons.append(f"Lease expiry in {co.lease_expiry_months}mo")
         # Soft medical/non-medical mismatch penalty — match still appears.
         penalty = medical_mismatch_penalty(prop, co)
         if penalty:

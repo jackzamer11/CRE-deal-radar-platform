@@ -240,10 +240,12 @@ PLATFORM_SUBMARKETS = (
 )
 
 # Composite Match Score weights (must sum to 1.0)
+# lease_expiry 0.40 | submarket 0.30 | class_fit 0.15 | sf_fit 0.15
 MATCH_SCORE_WEIGHTS = {
-    "submarket": 0.40,
-    "class":     0.30,
-    "sf_fit":    0.30,
+    "lease_expiry": 0.40,
+    "submarket":    0.30,
+    "class":        0.15,
+    "sf_fit":       0.15,
 }
 
 # Submarket factor points (non-adjacent pairs are excluded entirely)

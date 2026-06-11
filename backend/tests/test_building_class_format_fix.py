@@ -117,11 +117,12 @@ def test_class_score_mixed_formats_two_classes_apart():
 
 def test_compute_match_single_letter_property_format():
     """Full composite match with single-letter property class (CoStar format).
-    Same submarket, same class, delta 0 → full 100."""
+    Same submarket, same class, delta 0, null lease → fallback 25.
+    0.40·25 + 0.30·100 + 0.15·100 + 0.15·100 = 70.0"""
     match = compute_match("Tysons", "Tysons", "Class B", "B", 5000, 5000)
     assert match is not None
     assert match["class_score"] == 100.0
-    assert match["score"] == 100.0
+    assert match["score"] == pytest.approx(70.0)
 
 
 def test_compute_match_adjacent_with_single_letter():
@@ -129,18 +130,18 @@ def test_compute_match_adjacent_with_single_letter():
     match = compute_match("Reston", "Herndon", "Class B", "B", 5000, 5000)
     assert match is not None
     assert match["class_score"] == 100.0
-    # 0.40·60 (adjacent) + 0.30·100 (same class) + 0.30·100 (delta 0) = 84.0
-    assert match["score"] == pytest.approx(84.0)
+    # null lease → fallback 25: 0.40·25 + 0.30·60 + 0.15·100 + 0.15·100 = 10+18+15+15 = 58.0
+    assert match["score"] == pytest.approx(58.0)
     assert match["adjacent"] is True
 
 
 def test_compute_match_class_a_vs_c_single_letter_visible():
     """Class A tenant vs Class C property: two-class gap = 30 (low but visible, not excluded).
-    Composite = 0.40·100 (exact) + 0.30·30 (two-class) + 0.30·100 (delta 0) = 79.0"""
+    null lease → fallback 25: 0.40·25 + 0.30·100 + 0.15·30 + 0.15·100 = 10+30+4.5+15 = 59.5"""
     match = compute_match("Tysons", "Tysons", "Class A", "C", 5000, 5000)
     assert match is not None, "Two-class gap (A↔C) stays visible with score 30"
     assert match["class_score"] == 30.0
-    assert match["score"] == pytest.approx(79.0)
+    assert match["score"] == pytest.approx(59.5)
 
 
 # ── End-to-end pairing with mixed formats ─────────────────────────────────────
@@ -184,8 +185,8 @@ def test_matched_properties_single_letter_class_property(db_session):
     matched = _compute_matched_properties(co, db_session)
     me = next((m for m in matched if m.property_id == "NVA-SL"), None)
     assert me is not None, "Single-letter property must match platform-format tenant"
-    # 0.40·100 (exact) + 0.30·100 (same class) + 0.30·100 (delta 0) = 100.0
-    assert me.match_score == pytest.approx(100.0)
+    # lease=10→sig=80: 0.40·80 + 0.30·100 + 0.15·100 + 0.15·100 = 32+30+15+15 = 92.0
+    assert me.match_score == pytest.approx(92.0)
     assert any("Class fit 100/100" in r for r in me.match_reasons)
 
 

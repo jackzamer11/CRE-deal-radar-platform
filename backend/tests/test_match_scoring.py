@@ -207,14 +207,15 @@ def test_same_class_pair_produces_valid_match():
     match = compute_match("Tysons", "Tysons", "Class B", "Class B", 5000, 5000)
     assert match is not None, "Same-class pair must not be excluded"
     assert match["class_score"] == 100.0, "Same class must score 100"
-    assert match["score"] == 100.0, "Perfect match (same submarket + class + SF) = 100"
+    # null lease → fallback 25: 0.40·25 + 0.30·100 + 0.15·100 + 0.15·100 = 70.0
+    assert match["score"] == pytest.approx(70.0), "Perfect match (same submarket + class + SF, null lease) = 70.0"
 
     # Same class, adjacent submarket
     match = compute_match("Reston", "Herndon", "Class A", "Class A", 5000, 5000)
     assert match is not None
     assert match["class_score"] == 100.0
-    # 0.40·60 (adjacent) + 0.30·100 (same class) + 0.30·100 (delta 0) = 84.0
-    assert match["score"] == pytest.approx(84.0)
+    # null lease → fallback 25: 0.40·25 + 0.30·60 (adjacent) + 0.15·100 + 0.15·100 = 58.0
+    assert match["score"] == pytest.approx(58.0)
     assert match["adjacent"] is True
 
 
@@ -235,7 +236,9 @@ def test_same_class_pair_persists_through_tenant_match_surface(db_session):
     matched = _compute_matched_tenants(prop, db_session)
     me = next((m for m in matched if m.company_id == "CO-B"), None)
     assert me is not None, "Same-class tenant must appear in matched_tenants"
-    assert me.match_score == 100.0, "Perfect match (same submarket + class + SF) must be 100"
+    # _make_company sets lease_expiry_months=10 → sig=80
+    # 0.40·80 + 0.30·100 + 0.15·100 + 0.15·100 = 92.0
+    assert me.match_score == pytest.approx(92.0), "Perfect match (same submarket + class + SF, lease=10→80) must be 92.0"
 
 
 # ── SF-fit gate + gradient ────────────────────────────────────────────────────
@@ -263,24 +266,29 @@ def test_sf_fit_gradient():
 # ── Composite math (hand-calculated) ──────────────────────────────────────────
 
 def test_composite_hand_calculated_example():
-    # Exact submarket (100), B-tenant → A-property (70),
-    # 4,800 SF needed vs 5,000 SF available → delta 200 → 100 − 40·(200/800) = 90
-    # Composite = 0.40·100 + 0.30·70 + 0.30·90 = 40 + 21 + 27 = 88.0
-    match = compute_match("Tysons", "Tysons", "Class B", "Class A", 4800, 5000)
+    # Spec example: adjacent submarket (60), same class (100), delta 0 SF (100),
+    # 7-month lease → Peak Window → sig=100
+    # Composite = 0.40·100 (lease) + 0.30·60 (adjacent) + 0.15·100 (class) + 0.15·100 (SF)
+    #           = 40 + 18 + 15 + 15 = 88.0
+    match = compute_match(
+        "Reston", "Herndon", "Class B", "Class B", 5000, 5000,
+        tenant_lease_expiry_months=7,
+    )
     assert match is not None
-    assert match["submarket_score"] == 100.0
-    assert match["class_score"] == 70.0
-    assert match["sf_fit_score"] == 90.0
+    assert match["submarket_score"] == 60.0
+    assert match["class_score"] == 100.0
+    assert match["sf_fit_score"] == 100.0
+    assert match["lease_expiry_score"] == 100.0
     assert match["score"] == pytest.approx(88.0)
-    assert match["adjacent"] is False
+    assert match["adjacent"] is True
 
 
 def test_composite_adjacent_example_flags_badge():
-    # Adjacent submarket (60), same class (100), delta 0 (100)
-    # Composite = 0.40·60 + 0.30·100 + 0.30·100 = 24 + 30 + 30 = 84.0
+    # Adjacent submarket (60), same class (100), delta 0 (100), null lease → fallback 25
+    # Composite = 0.40·25 + 0.30·60 + 0.15·100 + 0.15·100 = 10 + 18 + 15 + 15 = 58.0
     match = compute_match("Herndon", "Reston", "Class B", "Class B", 5000, 5000)
     assert match is not None
-    assert match["score"] == pytest.approx(84.0)
+    assert match["score"] == pytest.approx(58.0)
     assert match["adjacent"] is True
 
 
@@ -336,9 +344,10 @@ def test_matched_tenants_null_submarket_and_class_never_500(db_session):
     ids = {m.company_id for m in matched}
     assert "CO-NOSUB" not in ids
     assert "CO-NOCLASS" in ids
-    # Null class company: 0.4·100 + 0.3·50 + 0.3·100 = 85.0
+    # Null class company: lease=10→sig=80, sub=100, class=50 (neutral), SF=100
+    # 0.40·80 + 0.30·100 + 0.15·50 + 0.15·100 = 32 + 30 + 7.5 + 15 = 84.5
     no_class = next(m for m in matched if m.company_id == "CO-NOCLASS")
-    assert no_class.match_score == pytest.approx(85.0)
+    assert no_class.match_score == pytest.approx(84.5)
 
 
 def test_matched_properties_empty_company_data_and_reverse_direction(db_session):
@@ -433,8 +442,8 @@ def test_null_class_on_valid_adjacent_pair_still_matches_at_50():
     match = compute_match("Reston", "Tysons", None, "Class B", 5000, 5000)
     assert match is not None
     assert match["class_score"] == 50.0
-    # 0.40·60 + 0.30·50 + 0.30·100 = 24 + 15 + 30 = 69.0
-    assert match["score"] == pytest.approx(69.0)
+    # null lease → fallback 25: 0.40·25 + 0.30·60 + 0.15·50 + 0.15·100 = 10 + 18 + 7.5 + 15 = 50.5
+    assert match["score"] == pytest.approx(50.5)
 
 
 def test_leaked_pairs_absent_from_all_three_surfaces(db_session):
