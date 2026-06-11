@@ -197,6 +197,46 @@ def test_null_or_unparseable_class_is_neutral_50_never_crash():
     assert class_score("Trophy", "Class A") == 50.0  # unparseable → neutral
 
 
+def test_same_class_pair_produces_valid_match():
+    """Same-class pairs must score the class factor at 100 and produce a
+    non-None composite match. This regression test locks the fix for: when a
+    tenant's current_building_class matches a property's building class
+    exactly (e.g. both Class B), the pair must not be excluded."""
+    # Same class, exact submarket — full composite
+    match = compute_match("Tysons", "Tysons", "Class B", "Class B", 5000, 5000)
+    assert match is not None, "Same-class pair must not be excluded"
+    assert match["class_score"] == 100.0, "Same class must score 100"
+    assert match["score"] == 100.0, "Perfect match (same submarket + class + SF) = 100"
+
+    # Same class, adjacent submarket
+    match = compute_match("Reston", "Herndon", "Class A", "Class A", 5000, 5000)
+    assert match is not None
+    assert match["class_score"] == 100.0
+    # 0.40·60 (adjacent) + 0.30·100 (same class) + 0.30·100 (delta 0) = 84.0
+    assert match["score"] == pytest.approx(84.0)
+    assert match["adjacent"] is True
+
+
+def test_same_class_pair_persists_through_tenant_match_surface(db_session):
+    """A Class B tenant matched against a Class B property must appear in the
+    matched_tenants surface with the correct class score and composite, not be
+    excluded."""
+    from app.api.routes.properties import _compute_matched_tenants
+
+    # Create a Class B property, Tysons, 5000 SF available
+    prop = _make_property(db_session, property_id="NVA-B", submarket="Tysons",
+                         asset_class="Class B", sf_avail=5000)
+    # Create a Class B tenant, Tysons, 5000 SF needed
+    tenant = _make_company(db_session, company_id="CO-B", submarket="Tysons",
+                          building_class="Class B", sf_needed=5000)
+    db_session.commit()
+
+    matched = _compute_matched_tenants(prop, db_session)
+    me = next((m for m in matched if m.company_id == "CO-B"), None)
+    assert me is not None, "Same-class tenant must appear in matched_tenants"
+    assert me.match_score == 100.0, "Perfect match (same submarket + class + SF) must be 100"
+
+
 # ── SF-fit gate + gradient ────────────────────────────────────────────────────
 
 def test_800_sf_gate_excludes_before_scoring():
