@@ -649,15 +649,25 @@ def _compute_matched_properties(company: Company, db: Session) -> list:
     ]
 
 
+def _company_out(company: Company, db: Session):
+    """Serialize a Company to CompanyOut WITH matched_properties computed.
+
+    Every endpoint whose response the frontend uses to replace the selected
+    company state must go through here — returning the raw ORM object lets
+    matched_properties fall back to the schema default [] and the matched
+    property cards vanish from the detail panel after the edit."""
+    from app.schemas.company import CompanyOut as CompanyOutSchema
+    out = CompanyOutSchema.model_validate(company)
+    out.matched_properties = _compute_matched_properties(company, db)
+    return out
+
+
 @router.get("/{company_id}", response_model=CompanyOut)
 def get_company(company_id: str, db: Session = Depends(get_db)):
     company = db.query(Company).filter(Company.company_id == company_id).first()
     if not company:
         raise HTTPException(status_code=404, detail="Company not found")
-    from app.schemas.company import CompanyOut as CompanyOutSchema
-    out = CompanyOutSchema.model_validate(company)
-    out.matched_properties = _compute_matched_properties(company, db)
-    return out
+    return _company_out(company, db)
 
 
 @router.delete("/{company_id}", status_code=200)
@@ -699,10 +709,7 @@ def snooze_company(company_id: str, payload: SnoozeRequest, db: Session = Depend
     ))
     db.commit()
     db.refresh(company)
-    from app.schemas.company import CompanyOut as CompanyOutSchema
-    out = CompanyOutSchema.model_validate(company)
-    out.matched_properties = _compute_matched_properties(company, db)
-    return out
+    return _company_out(company, db)
 
 
 @router.post("/{company_id}/unsnooze", response_model=CompanyOut)
@@ -723,10 +730,7 @@ def unsnooze_company(company_id: str, db: Session = Depends(get_db)):
     ))
     db.commit()
     db.refresh(company)
-    from app.schemas.company import CompanyOut as CompanyOutSchema
-    out = CompanyOutSchema.model_validate(company)
-    out.matched_properties = _compute_matched_properties(company, db)
-    return out
+    return _company_out(company, db)
 
 
 VALID_LEASE_SOURCES = {"costar", "manual", "compstak", "sec_filing", "landlord_confirmed", "public_record"}
@@ -781,7 +785,7 @@ def update_lease_expiry(
     _run_signals(company)
     db.commit()
     db.refresh(company)
-    return company
+    return _company_out(company, db)
 
 
 VALID_BUILDING_CLASSES = {"Class A", "Class B", "Class C"}
@@ -814,7 +818,7 @@ def update_building_class(
     company.last_modified_by_user  = datetime.utcnow()
     db.commit()
     db.refresh(company)
-    return company
+    return _company_out(company, db)
 
 
 VALID_TRAJECTORIES = {"AUTO", "CONTRACTING", "FLAT", "GROWING"}
@@ -843,7 +847,7 @@ def update_lease_trajectory(
     company.last_modified_by_user = datetime.utcnow()
     db.commit()
     db.refresh(company)
-    return company
+    return _company_out(company, db)
 
 
 class SfOccupiedUpdate(BaseModel):
@@ -870,7 +874,7 @@ def update_sf_occupied(
     _run_signals(company)
     db.commit()
     db.refresh(company)
-    return company
+    return _company_out(company, db)
 
 
 class MedicalUpdate(BaseModel):
@@ -891,7 +895,7 @@ def update_medical(
     company.last_modified_by_user = datetime.utcnow()
     db.commit()
     db.refresh(company)
-    return company
+    return _company_out(company, db)
 
 
 @router.post("/refresh-signals", response_model=dict)
