@@ -48,6 +48,22 @@ _KNOWN_SUBMARKETS = set(SUBMARKET_ADJACENCY.keys()) | set(PLATFORM_SUBMARKETS)
 # Class rank: A=3, B=2, C=1 (higher = better building)
 _CLASS_RANK = {"A": 3, "B": 2, "C": 1}
 
+
+def _normalize_class(raw: Optional[str]) -> Optional[str]:
+    """Normalize building class to 'Class A' / 'Class B' / 'Class C' format.
+
+    Handles both single-letter (from CoStar import: "A", "B", "C") and
+    normalized (from platform dropdown: "Class A", "Class B", "Class C").
+    Case-insensitive. Returns None if unparseable (invalid string, null, etc.).
+    """
+    if not raw or not isinstance(raw, str):
+        return None
+    normalized = raw.strip().upper().replace("CLASS", "").strip()
+    if normalized in _CLASS_RANK:
+        return f"Class {normalized}"
+    return None
+
+
 # Soft penalty applied when exactly one side of a match is medical (a medical
 # property matched to a non-medical tenant, or vice versa). It is a SOFT signal:
 # the match is still produced and displayed — it just scores lower so cleaner
@@ -135,10 +151,16 @@ def submarket_score(tenant_submarket: Optional[str], property_submarket: Optiona
 
 
 def _class_rank(raw: Optional[str]) -> Optional[int]:
-    """Parse 'Class A' / 'A' / 'class b' → rank. Unparseable → None (neutral)."""
-    if not raw or not isinstance(raw, str):
+    """Parse 'Class A' / 'A' / 'class b' / 'B' → rank. Unparseable → None (neutral).
+
+    Uses _normalize_class for defensive format handling: accepts both the
+    platform's "Class B" format and CoStar's single-letter "B" format.
+    """
+    normalized = _normalize_class(raw)
+    if not normalized:
         return None
-    letter = raw.strip().upper().replace("CLASS", "").strip()
+    # normalized is now "Class A" / "Class B" / "Class C"; extract the letter
+    letter = normalized.split()[-1]  # "Class A" → "A"
     return _CLASS_RANK.get(letter)
 
 
