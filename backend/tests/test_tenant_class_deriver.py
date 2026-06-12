@@ -893,3 +893,51 @@ def test_load_costar_lookup_bad_file_skipped_gracefully(tmp_path, caplog):
 
     assert result["400 good st, vienna, va"] == "Class B"
     assert any("Could not load" in m or "failed" in m.lower() for m in caplog.messages)
+
+
+# ── POST /api/admin/approve-75-confidence ────────────────────────────────────
+
+@pytest.fixture()
+def client(db_session):
+    from fastapi.testclient import TestClient
+    from app.main import app
+    from app.database import get_db
+
+    app.dependency_overrides[get_db] = lambda: db_session
+    try:
+        yield TestClient(app)
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_approve_75_confidence_writes_class_and_returns_count(db_session, client):
+    """
+    POST /api/admin/approve-75-confidence must write matched_class to all
+    confidence-75 tenants and return the correct approved count + company list.
+
+    Setup: one property, two companies at the same address → deriver yields
+    confidence 75 for both (multi-tenant building). After calling the endpoint
+    both companies must have current_building_class set.
+    """
+    addr = "500 Multi Tenant Way, Reston, VA 20190"
+    _make_property(db_session, address=addr, asset_class="Class A")
+    co1 = _make_company(db_session, address=addr)
+    co2 = _make_company(db_session, address=addr)
+    db_session.commit()
+
+    resp = client.post("/api/admin/approve-75-confidence")
+    assert resp.status_code == 200
+
+    data = resp.json()
+    assert data["approved"] == 2
+    assert len(data["companies"]) == 2
+    assert all(c["matched_class"] == "Class A" for c in data["companies"])
+    assert {c["company_id"] for c in data["companies"]} == {
+        co1.company_id, co2.company_id
+    }
+
+    # Verify DB was actually updated
+    db_session.refresh(co1)
+    db_session.refresh(co2)
+    assert co1.current_building_class == "Class A"
+    assert co2.current_building_class == "Class A"
