@@ -820,6 +820,13 @@ def update_building_class(
     company.last_modified_by_user  = datetime.utcnow()
     db.commit()
     db.refresh(company)
+    # Log to feedback table so the deriver learns from this correction and
+    # won't re-guess the wrong class for this address on future runs.
+    try:
+        from app.services.tenant_class_deriver import record_building_class_feedback
+        record_building_class_feedback(company, value, db)
+    except Exception:
+        pass  # feedback is best-effort; never fail the PATCH
     return _company_out(company, db)
 
 

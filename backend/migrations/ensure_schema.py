@@ -453,6 +453,47 @@ def backfill_lease_expiry_dates(cur: sqlite3.Cursor) -> int:
     return len(rows)
 
 
+def ensure_tenant_class_feedback(cur: sqlite3.Cursor) -> int:
+    """Create the tenant_class_feedback table if not present (idempotent).
+
+    This table is the deriver's long-term memory: each row records an address
+    plus the class a user corrected to, so the deriver never re-guesses the
+    same address incorrectly on subsequent runs.
+
+    Wrapped in try/except so a partially-migrated DB never aborts startup.
+    """
+    try:
+        cur.execute(
+            "SELECT name FROM sqlite_master "
+            "WHERE type='table' AND name='tenant_class_feedback'"
+        )
+        if cur.fetchone():
+            return 0  # already exists
+        cur.execute("""
+            CREATE TABLE tenant_class_feedback (
+                id                   INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+                company_id           INTEGER NOT NULL REFERENCES companies(id),
+                current_address      TEXT NOT NULL,
+                inferred_class       TEXT,
+                user_corrected_class TEXT,
+                created_at           DATETIME
+            )
+        """)
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS ix_tcf_id "
+            "ON tenant_class_feedback (id)"
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS ix_tcf_address "
+            "ON tenant_class_feedback (current_address)"
+        )
+        print("  + created table tenant_class_feedback")
+        return 1
+    except Exception as exc:
+        print(f"  ! ensure_tenant_class_feedback failed: {exc}")
+        return 0
+
+
 def backfill_building_class_format(cur: sqlite3.Cursor) -> int:
     """Normalize building class values from single letters ('A', 'B', 'C') to
     platform format ('Class A', 'Class B', 'Class C').
@@ -462,7 +503,6 @@ def backfill_building_class_format(cur: sqlite3.Cursor) -> int:
     values. This backfill normalizes them so scoring comparisons work correctly.
     """
     try:
-        # Find all properties with single-letter class values
         cur.execute("""
             SELECT id, asset_class FROM properties
             WHERE asset_class IS NOT NULL AND length(asset_class) = 1
@@ -479,8 +519,6 @@ def backfill_building_class_format(cur: sqlite3.Cursor) -> int:
             print(f"  + normalized building class for {len(rows)} properties (A/B/C → Class A/B/C)")
         return len(rows)
     except Exception:
-        # If the properties table doesn't exist or asset_class column is missing,
-        # silently skip — the column additions will be handled by ensure_properties.
         return 0
 
 
@@ -531,12 +569,13 @@ def run() -> None:
     act_added      = ensure_activity_logs(cur)
     draft_added    = ensure_outreach_drafts(cur)
     bf_added       = backfill_lease_expiry_dates(cur)
+    tcf_added      = ensure_tenant_class_feedback(cur)
     bf_class_added = backfill_building_class_format(cur)
 
     conn.commit()
     conn.close()
 
-    total = prop_added + comp_added + olog_added + olog_fixed + act_added + draft_added + bf_added + bf_class_added
+    total = prop_added + comp_added + olog_added + olog_fixed + act_added + draft_added + bf_added + tcf_added + bf_class_added
     if total:
         print(f"ensure_schema: applied {total} column addition(s)/backfill(s).")
     else:
