@@ -604,8 +604,8 @@ def test_costar_class_normalization():
     from app.services.tenant_class_deriver import _build_costar_lookup_from_dataframes
 
     df = pd.DataFrame({
-        "Address": ["1 A Blvd, Reston, VA", "2 B St, Tysons, VA", "3 C Ave, Vienna, VA"],
-        "Class": ["A", "B", "C"],
+        "Property Address": ["1 A Blvd, Reston, VA", "2 B St, Tysons, VA", "3 C Ave, Vienna, VA"],
+        "Building Class": ["A", "B", "C"],
     })
     result = _build_costar_lookup_from_dataframes([df])
     assert result["1 a blvd, reston, va"] == "Class A"
@@ -619,8 +619,8 @@ def test_costar_invalid_class_values_skipped():
     from app.services.tenant_class_deriver import _build_costar_lookup_from_dataframes
 
     df = pd.DataFrame({
-        "Address": ["1 Trophy Tower, McLean, VA", "2 Real St, Reston, VA"],
-        "Class": ["Trophy", "B"],
+        "Property Address": ["1 Trophy Tower, McLean, VA", "2 Real St, Reston, VA"],
+        "Building Class": ["Trophy", "B"],
     })
     result = _build_costar_lookup_from_dataframes([df])
     assert "1 trophy tower, mclean, va" not in result
@@ -632,8 +632,8 @@ def test_costar_deduplication_first_occurrence_wins():
     import pandas as pd
     from app.services.tenant_class_deriver import _build_costar_lookup_from_dataframes
 
-    df1 = pd.DataFrame({"Address": ["100 Main St, Fairfax, VA"], "Class": ["A"]})
-    df2 = pd.DataFrame({"Address": ["100 Main St, Fairfax, VA"], "Class": ["C"]})
+    df1 = pd.DataFrame({"Property Address": ["100 Main St, Fairfax, VA"], "Building Class": ["A"]})
+    df2 = pd.DataFrame({"Property Address": ["100 Main St, Fairfax, VA"], "Building Class": ["C"]})
     result = _build_costar_lookup_from_dataframes([df1, df2])
     assert result["100 main st, fairfax, va"] == "Class A"   # first wins
 
@@ -643,8 +643,8 @@ def test_costar_deduplication_preserves_other_entries():
     import pandas as pd
     from app.services.tenant_class_deriver import _build_costar_lookup_from_dataframes
 
-    df1 = pd.DataFrame({"Address": ["100 Alpha Ct, Reston, VA"], "Class": ["A"]})
-    df2 = pd.DataFrame({"Address": ["200 Beta Ct, Herndon, VA"], "Class": ["B"]})
+    df1 = pd.DataFrame({"Property Address": ["100 Alpha Ct, Reston, VA"], "Building Class": ["A"]})
+    df2 = pd.DataFrame({"Property Address": ["200 Beta Ct, Herndon, VA"], "Building Class": ["B"]})
     result = _build_costar_lookup_from_dataframes([df1, df2])
     assert result["100 alpha ct, reston, va"] == "Class A"
     assert result["200 beta ct, herndon, va"] == "Class B"
@@ -655,7 +655,7 @@ def test_costar_address_normalization_in_builder():
     import pandas as pd
     from app.services.tenant_class_deriver import _build_costar_lookup_from_dataframes
 
-    df = pd.DataFrame({"Address": ["  300 UPPER ST, McLean, VA  "], "Class": ["B"]})
+    df = pd.DataFrame({"Property Address": ["  300 UPPER ST, McLean, VA  "], "Building Class": ["B"]})
     result = _build_costar_lookup_from_dataframes([df])
     assert "300 upper st, mclean, va" in result
 
@@ -846,8 +846,8 @@ def test_load_costar_lookup_loads_real_xlsx(tmp_path):
     lkp_dir = tmp_path / "costar_lookup"
     lkp_dir.mkdir()
     df = pd.DataFrame({
-        "Address": ["100 Real Way, Reston, VA", "200 Test Blvd, Tysons, VA"],
-        "Class": ["A", "B"],
+        "Property Address": ["100 Real Way, Reston, VA", "200 Test Blvd, Tysons, VA"],
+        "Building Class": ["A", "B"],
     })
     df.to_excel(lkp_dir / "CostarExport (27).xlsx", index=False)
 
@@ -863,10 +863,10 @@ def test_load_costar_lookup_deduplicates_across_files(tmp_path):
 
     lkp_dir = tmp_path / "costar_lookup"
     lkp_dir.mkdir()
-    pd.DataFrame({"Address": ["300 Dup St, McLean, VA"], "Class": ["A"]}).to_excel(
+    pd.DataFrame({"Property Address": ["300 Dup St, McLean, VA"], "Building Class": ["A"]}).to_excel(
         lkp_dir / "CostarExport (27).xlsx", index=False
     )
-    pd.DataFrame({"Address": ["300 Dup St, McLean, VA"], "Class": ["C"]}).to_excel(
+    pd.DataFrame({"Property Address": ["300 Dup St, McLean, VA"], "Building Class": ["C"]}).to_excel(
         lkp_dir / "CostarExport (28).xlsx", index=False
     )
 
@@ -884,7 +884,7 @@ def test_load_costar_lookup_bad_file_skipped_gracefully(tmp_path, caplog):
     # Bad file (not a real xlsx)
     (lkp_dir / "CostarExport (27).xlsx").write_bytes(b"not an excel file")
     # Good file
-    pd.DataFrame({"Address": ["400 Good St, Vienna, VA"], "Class": ["B"]}).to_excel(
+    pd.DataFrame({"Property Address": ["400 Good St, Vienna, VA"], "Building Class": ["B"]}).to_excel(
         lkp_dir / "CostarExport (28).xlsx", index=False
     )
 

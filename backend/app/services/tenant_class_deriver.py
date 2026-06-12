@@ -51,9 +51,9 @@ def _build_costar_lookup_from_dataframes(dataframes: list) -> dict:
     """
     Build a normalized {address: "Class X"} dict from a list of DataFrames.
 
-    Each DataFrame must have 'Address' and 'Class' columns.  CoStar exports
-    single-letter class values ('A', 'B', 'C'); this function normalizes
-    them to platform format ('Class A', 'Class B', 'Class C').
+    Each DataFrame must have 'Property Address' and 'Building Class' columns.
+    CoStar exports single-letter class values ('A', 'B', 'C'); this function
+    normalizes them to platform format ('Class A', 'Class B', 'Class C').
 
     First occurrence wins when the same address appears in multiple files —
     callers should pass files in deterministic order so deduplication is
@@ -65,8 +65,8 @@ def _build_costar_lookup_from_dataframes(dataframes: list) -> dict:
     result: dict = {}
     for df in dataframes:
         for _, row in df.iterrows():
-            addr = str(row.get("Address") or "").strip()
-            cls  = str(row.get("Class")   or "").strip().upper()
+            addr = str(row.get("Property Address") or "").strip()
+            cls  = str(row.get("Building Class")   or "").strip().upper()
             if not addr or cls not in ("A", "B", "C"):
                 continue
             addr_norm = addr.lower()
@@ -144,7 +144,7 @@ def _load_costar_lookup(lookup_dir: Optional[Path] = None) -> dict:
     failed = 0
     for path in xlsx_files:
         try:
-            df = pd.read_excel(path, usecols=["Address", "Class"])
+            df = pd.read_excel(path, usecols=["Property Address", "Building Class"])
             dataframes.append(df)
         except Exception as exc:
             warn = f"[TenantClassDeriver] Could not load {path.name}: {exc}"
