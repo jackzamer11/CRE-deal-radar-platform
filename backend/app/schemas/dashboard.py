@@ -77,6 +77,8 @@ class TenantMatchAction(BaseModel):
     # Medical flags
     property_is_medical: bool = False
     tenant_is_medical:   bool = False
+    # Signal tags surfaced on the UI card
+    signal_tags: List[str] = []
 
 
 class AcquisitionTarget(BaseModel):

@@ -20,7 +20,7 @@ from app.models.opportunity import Opportunity
 from app.models.property import Property
 from app.models.company import Company
 from app.models.outreach_log import OutreachLog
-from app.services.match_scoring import compute_match, medical_mismatch_penalty, lease_expiry_chip_label
+from app.services.match_scoring import compute_match, medical_mismatch_penalty, lease_expiry_chip_label, _class_rank
 from app.schemas.dashboard import (
     DailyBriefing, DashboardStats, CallTarget, TenantMatchTarget,
     TenantMatchAction, AcquisitionTarget, ExpiredLease,
@@ -217,6 +217,13 @@ def _compute_tenant_actions(db: Session, snoozed: bool = False) -> list:
             else:
                 contact_status = "NOT_CONTACTED"
 
+            # Signal tags visible on the UI card
+            t_rank = _class_rank(getattr(co, "current_building_class", None))
+            p_rank = _class_rank(prop.asset_class)
+            signal_tags: list = []
+            if t_rank is not None and p_rank is not None and t_rank > p_rank:
+                signal_tags = ["Class Downgrade — Lease-First Framing"]
+
             actions.append(TenantMatchAction(
                 property_id=prop.property_id,
                 address=prop.address,
@@ -238,6 +245,7 @@ def _compute_tenant_actions(db: Session, snoozed: bool = False) -> list:
                 contact_status=contact_status,
                 property_is_medical=bool(prop.is_medical),
                 tenant_is_medical=bool(co.is_medical),
+                signal_tags=signal_tags,
             ))
 
     # Deduplicate: keep only the highest-scoring tenant per property so each
