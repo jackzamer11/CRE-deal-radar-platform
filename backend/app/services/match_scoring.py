@@ -8,23 +8,30 @@ Single source of truth for the pairing logic used by:
   - run_deal_creation pipeline      → submarket proximity filter
 
 Contract (all point values / weights live in app.config):
-  1. Submarket factor: exact = 100, adjacent = 60, non-adjacent = excluded.
+  1. Lease-expiry factor (40%): reuses sig_lease_expiry_proximity from signal_engine.
+     Peak window 6-9 months = 100, see signal_engine for full tier table.
+     Null/unknown lease expiry → 25 (below neutral; missing data ranks lower).
+     36+ month tenants (score=0) → composite floored at 20 (visible, not hidden).
+  2. Submarket factor (30%): exact = 100, adjacent = 60, non-adjacent = excluded.
      A submarket string unknown to both the adjacency map and the platform
      dropdown degrades to exact-match-only (never crashes, never matches all).
-  2. Building-class factor: same = 100, tenant up one class = 70, down one = 55,
-     two classes apart = excluded, null/unparseable on either side = neutral 50.
-  3. SF-fit HARD GATE: |sf_needed − sf_avail| must be ≤ MAX_SF_DELTA,
+  3. Building-class factor (15%): same = 100, tenant up one class = 70, down one = 55,
+     two classes apart = 30 (visible but low), null/unparseable on either side = 50.
+  4. SF-fit HARD GATE: |sf_needed − sf_avail| must be ≤ MAX_SF_DELTA,
      otherwise the pair is excluded before SF scoring happens. SF source is the
      tenant's real occupied SF (current_sf_occupied) vs the property's
      AVAILABLE SF — never total or vacant SF.
-  4. Composite = 0.40·submarket + 0.30·class + 0.30·sf_fit (0–100).
+  5. Composite = 0.40·lease_expiry + 0.30·submarket + 0.15·class + 0.15·sf_fit (0–100).
      The score is informational — it never blocks outreach generation.
-  5. Medical soft penalty: when exactly one side of a pair is medical the
+  6. Medical soft penalty: when exactly one side of a pair is medical the
      composite drops by MEDICAL_MISMATCH_PENALTY — the match still appears,
      it just ranks lower. Never a hard filter.
 """
 import logging
 from typing import Optional
+
+# signal_engine has no dependency on match_scoring, so this import is safe.
+from app.services.signal_engine import sig_lease_expiry_proximity
 
 from app.config import (
     SUBMARKET_ADJACENCY,
@@ -45,8 +52,58 @@ logger = logging.getLogger(__name__)
 
 _KNOWN_SUBMARKETS = set(SUBMARKET_ADJACENCY.keys()) | set(PLATFORM_SUBMARKETS)
 
+# Lease-expiry scoring constants.
+# When tenant's lease_expiry_months is null/unknown, use a below-neutral
+# fallback (25) so missing data ranks lower than known data.
+# When sig_lease_expiry_proximity returns exactly 0.0 (36+ month tenants),
+# enforce a composite floor so they stay visible at the bottom, never hidden.
+LEASE_EXPIRY_NULL_POINTS     = 25.0
+LEASE_EXPIRY_FLOOR_COMPOSITE = 20.0
+
+
+def lease_expiry_chip_label(months: Optional[int]) -> str:
+    """Return the urgency-tier chip label shown on every pairing card.
+
+    Mirrors the tier breakpoints of sig_lease_expiry_proximity exactly so
+    the chip label matches the score that drives ranking.
+    """
+    if months is None:
+        return "No Expiry Data"
+    if months <= 0:
+        return "Expired"
+    if months <= 3:
+        return f"Late Stage ({months}mo)"
+    if months <= 5:
+        return f"Ramping ({months}mo)"
+    if months <= 9:
+        return f"Peak Window ({months}mo)"
+    if months <= 12:
+        return f"Early Prime ({months}mo)"
+    if months <= 18:
+        return f"Planning Stage ({months}mo)"
+    if months <= 24:
+        return f"Early Stage ({months}mo)"
+    return f"Too Early ({months}mo)"
+
+
 # Class rank: A=3, B=2, C=1 (higher = better building)
 _CLASS_RANK = {"A": 3, "B": 2, "C": 1}
+
+
+def _normalize_class(raw: Optional[str]) -> Optional[str]:
+    """Normalize building class to 'Class A' / 'Class B' / 'Class C' format.
+
+    Handles both single-letter (from CoStar import: "A", "B", "C") and
+    normalized (from platform dropdown: "Class A", "Class B", "Class C").
+    Case-insensitive. Returns None if unparseable (invalid string, null, etc.).
+    """
+    if not raw or not isinstance(raw, str):
+        return None
+    normalized = raw.strip().upper().replace("CLASS", "").strip()
+    if normalized in _CLASS_RANK:
+        return f"Class {normalized}"
+    return None
+
 
 # Soft penalty applied when exactly one side of a match is medical (a medical
 # property matched to a non-medical tenant, or vice versa). It is a SOFT signal:
@@ -135,16 +192,22 @@ def submarket_score(tenant_submarket: Optional[str], property_submarket: Optiona
 
 
 def _class_rank(raw: Optional[str]) -> Optional[int]:
-    """Parse 'Class A' / 'A' / 'class b' → rank. Unparseable → None (neutral)."""
-    if not raw or not isinstance(raw, str):
+    """Parse 'Class A' / 'A' / 'class b' / 'B' → rank. Unparseable → None (neutral).
+
+    Uses _normalize_class for defensive format handling: accepts both the
+    platform's "Class B" format and CoStar's single-letter "B" format.
+    """
+    normalized = _normalize_class(raw)
+    if not normalized:
         return None
-    letter = raw.strip().upper().replace("CLASS", "").strip()
+    # normalized is now "Class A" / "Class B" / "Class C"; extract the letter
+    letter = normalized.split()[-1]  # "Class A" → "A"
     return _CLASS_RANK.get(letter)
 
 
 def class_score(tenant_class: Optional[str], property_class: Optional[str]) -> Optional[float]:
-    """Same = 100, tenant up one = 70, down one = 55, two apart = None (excluded),
-    null/unparseable on either side = neutral 50 — never a crash or exclusion."""
+    """Same = 100, tenant up one = 70, down one = 55, two apart = 30 (low but visible),
+    null/unparseable on either side = neutral 50. Never returns None — pairs stay visible."""
     t_rank = _class_rank(tenant_class)
     p_rank = _class_rank(property_class)
     if t_rank is None or p_rank is None:
@@ -156,7 +219,7 @@ def class_score(tenant_class: Optional[str], property_class: Optional[str]) -> O
         return CLASS_UPGRADE_POINTS
     if diff == -1:
         return CLASS_DOWNGRADE_POINTS
-    return None  # two classes apart (A↔C) — pair excluded
+    return 30.0  # two classes apart (A↔C) — low score, pair stays visible
 
 
 def sf_delta_passes_gate(sf_needed: Optional[int], sf_avail: Optional[int]) -> bool:
@@ -183,24 +246,26 @@ def compute_match(
     sf_needed: Optional[int],
     sf_avail: Optional[int],
     sf_gate_exempt: bool = False,
+    tenant_lease_expiry_months: Optional[int] = None,
 ) -> Optional[dict]:
-    """Full pairing evaluation. Returns None when the pair is excluded
-    (non-adjacent submarket, two-class gap, or SF gate); otherwise a dict:
+    """Full pairing evaluation. Returns None only when the pair is excluded by hard gates
+    (non-adjacent submarket or SF gate); otherwise returns a dict with composite score:
 
       {
-        "score":           float (0–100 composite),
-        "submarket_score": float,
-        "class_score":     float,
-        "sf_fit_score":    float,
-        "adjacent":        bool (True when matched via adjacency, not exact),
+        "score":                float (0–100 composite),
+        "submarket_score":      float,
+        "class_score":          float (range 0–100, never None),
+        "sf_fit_score":         float,
+        "lease_expiry_score":   float (25 when null/unknown, 0–100 otherwise),
+        "adjacent":             bool (True when matched via adjacency, not exact),
       }
 
-    Gate order — every gate runs BEFORE any blending, so an excluded factor
-    can never be propped up by the other factors in the weighted composite:
-      1. Submarket gate: exact (100) or adjacent (60) proceeds; anything else
-         (non-adjacent, unknown non-exact, null) returns no match immediately.
-      2. Class gate: two classes apart (A↔C) returns no match.
-      3. SF gate: |sf_needed − sf_avail| > MAX_SF_DELTA returns no match.
+    Hard gates (return None if failed):
+      1. Submarket gate: exact (100) or adjacent (60) required; non-adjacent/null excluded.
+      2. SF gate: |sf_needed − sf_avail| ≤ MAX_SF_DELTA required (unless sf_gate_exempt).
+
+    Class fit and lease expiry are NOT hard gates — all combinations score so pairs
+    stay visible and sortable. Only submarket and SF are hard exclusion gates.
     """
     # Gate 1 — submarket. Non-adjacent pairs are never scored: no card,
     # no composite, no outreach.
@@ -208,10 +273,8 @@ def compute_match(
     if sub is None:
         return None
 
-    # Gate 2 — building class (null/unparseable passes through as neutral 50).
+    # Class fit — always scores (never returns None), so never a hard gate.
     cls = class_score(tenant_class, property_class)
-    if cls is None:
-        return None
 
     # Gate 3 — SF delta hard gate, then the gradient for survivors.
     # sf_gate_exempt=True (already-contacted pairs: contacted history is never
@@ -223,12 +286,29 @@ def compute_match(
     else:
         sf = sf_fit_score(sf_needed, sf_avail)
 
+    # Lease expiry factor — never a hard gate.
+    # sig_lease_expiry_proximity returns None when months is None (abstain),
+    # and 0.0 for 36+ month tenants (too-early tier).
+    raw_lease = sig_lease_expiry_proximity(tenant_lease_expiry_months)
+    lease = raw_lease if raw_lease is not None else LEASE_EXPIRY_NULL_POINTS
+
     w = MATCH_SCORE_WEIGHTS
-    composite = w["submarket"] * sub + w["class"] * cls + w["sf_fit"] * sf
+    composite = (
+        w["lease_expiry"] * lease
+        + w["submarket"]  * sub
+        + w["class"]      * cls
+        + w["sf_fit"]     * sf
+    )
+    # Safety floor: 36+ month tenants (lease factor = 0) still appear at the
+    # bottom of Section A — never suppressed by a near-zero composite.
+    if raw_lease == 0.0:
+        composite = max(composite, LEASE_EXPIRY_FLOOR_COMPOSITE)
+
     return {
-        "score":           round(composite, 1),
-        "submarket_score": sub,
-        "class_score":     cls,
-        "sf_fit_score":    round(sf, 1),
-        "adjacent":        sub == SUBMARKET_ADJACENT_POINTS,
+        "score":              round(composite, 1),
+        "submarket_score":    sub,
+        "class_score":        cls,
+        "sf_fit_score":       round(sf, 1),
+        "lease_expiry_score": lease,
+        "adjacent":           sub == SUBMARKET_ADJACENT_POINTS,
     }

@@ -494,6 +494,34 @@ def ensure_tenant_class_feedback(cur: sqlite3.Cursor) -> int:
         return 0
 
 
+def backfill_building_class_format(cur: sqlite3.Cursor) -> int:
+    """Normalize building class values from single letters ('A', 'B', 'C') to
+    platform format ('Class A', 'Class B', 'Class C').
+
+    CoStar exports single-letter building class; the platform's internal format
+    is "Class X". Properties imported before normalization may have single-letter
+    values. This backfill normalizes them so scoring comparisons work correctly.
+    """
+    try:
+        cur.execute("""
+            SELECT id, asset_class FROM properties
+            WHERE asset_class IS NOT NULL AND length(asset_class) = 1
+              AND UPPER(asset_class) IN ('A', 'B', 'C')
+        """)
+        rows = cur.fetchall()
+        for prop_id, single_letter in rows:
+            normalized = f"Class {single_letter.upper()}"
+            cur.execute(
+                "UPDATE properties SET asset_class = ? WHERE id = ?",
+                (normalized, prop_id),
+            )
+        if rows:
+            print(f"  + normalized building class for {len(rows)} properties (A/B/C → Class A/B/C)")
+        return len(rows)
+    except Exception:
+        return 0
+
+
 def run() -> None:
     db = _resolve_db_path()
     if not os.path.exists(db):
@@ -538,15 +566,16 @@ def run() -> None:
         except Exception:
             pass
         olog_fixed = 0
-    act_added    = ensure_activity_logs(cur)
-    draft_added  = ensure_outreach_drafts(cur)
-    bf_added     = backfill_lease_expiry_dates(cur)
-    tcf_added    = ensure_tenant_class_feedback(cur)
+    act_added      = ensure_activity_logs(cur)
+    draft_added    = ensure_outreach_drafts(cur)
+    bf_added       = backfill_lease_expiry_dates(cur)
+    tcf_added      = ensure_tenant_class_feedback(cur)
+    bf_class_added = backfill_building_class_format(cur)
 
     conn.commit()
     conn.close()
 
-    total = prop_added + comp_added + olog_added + olog_fixed + act_added + draft_added + bf_added + tcf_added
+    total = prop_added + comp_added + olog_added + olog_fixed + act_added + draft_added + bf_added + tcf_added + bf_class_added
     if total:
         print(f"ensure_schema: applied {total} column addition(s)/backfill(s).")
     else:
