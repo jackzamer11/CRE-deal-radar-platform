@@ -1,7 +1,7 @@
 """
 Tenant Class Deriver — contract tests (in-memory SQLite only, no live DB).
 
-Covers all 12 spec requirements:
+Covers all 12 original spec requirements:
   1.  Exact single-property match → confidence 100, auto-fills
   2.  Exact match but multiple companies share address → confidence 75, logs (not auto-filled)
   3.  Partial match (street matches, zip/city differs) → confidence 50, logs (not auto-filled)
@@ -589,3 +589,307 @@ def test_backfill_with_mix_of_match_types(db_session):
     assert len(stats["logged_50_confidence"]) == 1
     assert len(stats["unmatched"]) == 1
     assert stats["total_processed"] == 5
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CoStar two-tier matching tests
+# These tests inject a mock CoStar lookup dict directly — no xlsx files needed.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# ── CoStar lookup builder helpers ─────────────────────────────────────────────
+
+def test_costar_class_normalization():
+    """Single-letter CoStar classes must be mapped to platform format."""
+    import pandas as pd
+    from app.services.tenant_class_deriver import _build_costar_lookup_from_dataframes
+
+    df = pd.DataFrame({
+        "Address": ["1 A Blvd, Reston, VA", "2 B St, Tysons, VA", "3 C Ave, Vienna, VA"],
+        "Class": ["A", "B", "C"],
+    })
+    result = _build_costar_lookup_from_dataframes([df])
+    assert result["1 a blvd, reston, va"] == "Class A"
+    assert result["2 b st, tysons, va"] == "Class B"
+    assert result["3 c ave, vienna, va"] == "Class C"
+
+
+def test_costar_invalid_class_values_skipped():
+    """Rows whose Class is not A/B/C must be silently ignored."""
+    import pandas as pd
+    from app.services.tenant_class_deriver import _build_costar_lookup_from_dataframes
+
+    df = pd.DataFrame({
+        "Address": ["1 Trophy Tower, McLean, VA", "2 Real St, Reston, VA"],
+        "Class": ["Trophy", "B"],
+    })
+    result = _build_costar_lookup_from_dataframes([df])
+    assert "1 trophy tower, mclean, va" not in result
+    assert result["2 real st, reston, va"] == "Class B"
+
+
+def test_costar_deduplication_first_occurrence_wins():
+    """When the same address appears in two DataFrames, the first wins."""
+    import pandas as pd
+    from app.services.tenant_class_deriver import _build_costar_lookup_from_dataframes
+
+    df1 = pd.DataFrame({"Address": ["100 Main St, Fairfax, VA"], "Class": ["A"]})
+    df2 = pd.DataFrame({"Address": ["100 Main St, Fairfax, VA"], "Class": ["C"]})
+    result = _build_costar_lookup_from_dataframes([df1, df2])
+    assert result["100 main st, fairfax, va"] == "Class A"   # first wins
+
+
+def test_costar_deduplication_preserves_other_entries():
+    """Deduplication must not discard unique entries from later files."""
+    import pandas as pd
+    from app.services.tenant_class_deriver import _build_costar_lookup_from_dataframes
+
+    df1 = pd.DataFrame({"Address": ["100 Alpha Ct, Reston, VA"], "Class": ["A"]})
+    df2 = pd.DataFrame({"Address": ["200 Beta Ct, Herndon, VA"], "Class": ["B"]})
+    result = _build_costar_lookup_from_dataframes([df1, df2])
+    assert result["100 alpha ct, reston, va"] == "Class A"
+    assert result["200 beta ct, herndon, va"] == "Class B"
+
+
+def test_costar_address_normalization_in_builder():
+    """Builder must store addresses lowercased so lookups are case-insensitive."""
+    import pandas as pd
+    from app.services.tenant_class_deriver import _build_costar_lookup_from_dataframes
+
+    df = pd.DataFrame({"Address": ["  300 UPPER ST, McLean, VA  "], "Class": ["B"]})
+    result = _build_costar_lookup_from_dataframes([df])
+    assert "300 upper st, mclean, va" in result
+
+
+# ── CoStar tier in match_address_to_property ─────────────────────────────────
+
+def test_costar_exact_match_returns_confidence_100(db_session):
+    """A tenant address found in the CoStar lookup → confidence 100, no DB hit needed."""
+    from app.services.tenant_class_deriver import match_address_to_property
+
+    costar = {"1000 costar blvd, reston, va 20190": "Class A"}
+    result = match_address_to_property(
+        "1000 CoStar Blvd, Reston, VA 20190",
+        db_session,
+        _costar_lookup=costar,
+    )
+    assert result is not None
+    assert result["confidence"] == 100
+    assert result["matched_class"] == "Class A"
+    # CoStar matches have no platform DB property_id
+    assert result["property_id"] is None
+
+
+def test_costar_exact_match_is_case_insensitive(db_session):
+    """CoStar lookup match must be case-insensitive."""
+    from app.services.tenant_class_deriver import match_address_to_property
+
+    costar = {"100 tech park dr, herndon, va": "Class B"}
+    result = match_address_to_property(
+        "100 TECH PARK DR, HERNDON, VA",
+        db_session,
+        _costar_lookup=costar,
+    )
+    assert result is not None
+    assert result["confidence"] == 100
+    assert result["matched_class"] == "Class B"
+
+
+def test_costar_exact_match_multi_tenant_is_confidence_75(db_session):
+    """CoStar exact match with multiple companies at that address → confidence 75."""
+    from app.services.tenant_class_deriver import match_address_to_property
+
+    addr = "200 Shared Tower, McLean, VA 22102"
+    costar = {addr.lower(): "Class A"}
+    _make_company(db_session, address=addr, company_id="CO-CS75A")
+    _make_company(db_session, address=addr, company_id="CO-CS75B")
+    db_session.commit()
+
+    result = match_address_to_property(addr, db_session, _costar_lookup=costar)
+    assert result is not None
+    assert result["confidence"] == 75
+    assert result["matched_class"] == "Class A"
+
+
+def test_costar_partial_match_is_confidence_50(db_session):
+    """Street matches CoStar entry but full address differs → confidence 50."""
+    from app.services.tenant_class_deriver import match_address_to_property
+
+    costar = {"300 park blvd, tysons, va 22102": "Class C"}
+    result = match_address_to_property(
+        "300 Park Blvd, Vienna, VA 22180",   # same street, different city
+        db_session,
+        _costar_lookup=costar,
+    )
+    assert result is not None
+    assert result["confidence"] == 50
+    assert result["matched_class"] == "Class C"
+
+
+def test_costar_miss_falls_back_to_platform_db(db_session):
+    """If the CoStar lookup has no match, the platform DB is tried next."""
+    from app.services.tenant_class_deriver import match_address_to_property
+
+    addr = "400 Fallback Way, Vienna, VA 22180"
+    _make_property(db_session, address=addr, asset_class="Class B")
+    db_session.commit()
+
+    # CoStar lookup is empty — must fall through to DB
+    result = match_address_to_property(addr, db_session, _costar_lookup={})
+    assert result is not None
+    assert result["confidence"] == 100
+    assert result["matched_class"] == "Class B"
+    assert result["property_id"] is not None   # came from platform DB
+
+
+def test_costar_miss_and_db_miss_returns_none(db_session):
+    """No match in either tier → None (confidence 0)."""
+    from app.services.tenant_class_deriver import match_address_to_property
+
+    result = match_address_to_property(
+        "999 Ghost Rd, Leesburg, VA 20176",
+        db_session,
+        _costar_lookup={},
+    )
+    assert result is None
+
+
+# ── CoStar tier in derive_tenant_building_classes ─────────────────────────────
+
+def test_derive_uses_costar_lookup_when_injected(db_session):
+    """derive_tenant_building_classes must use the injected CoStar lookup."""
+    from app.services.tenant_class_deriver import derive_tenant_building_classes
+
+    addr = "1500 CoStar Match Ave, Reston, VA 20190"
+    co = _make_company(db_session, address=addr, building_class=None)
+    db_session.commit()
+
+    costar = {addr.lower(): "Class A"}
+    stats = derive_tenant_building_classes(
+        db_session, backfill=True, _costar_lookup=costar
+    )
+    db_session.refresh(co)
+
+    assert co.current_building_class == "Class A"
+    assert stats["auto_filled_100_confidence"] == 1
+    assert stats["feedback_hits"] == 0
+
+
+def test_derive_falls_back_to_db_when_costar_empty(db_session):
+    """Empty CoStar lookup → platform DB fallback, class still auto-filled."""
+    from app.services.tenant_class_deriver import derive_tenant_building_classes
+
+    addr = "1600 DB Only Rd, Tysons, VA 22102"
+    _make_property(db_session, address=addr, asset_class="Class B")
+    co = _make_company(db_session, address=addr, building_class=None)
+    db_session.commit()
+
+    stats = derive_tenant_building_classes(
+        db_session, backfill=True, _costar_lookup={}
+    )
+    db_session.refresh(co)
+
+    assert co.current_building_class == "Class B"
+    assert stats["auto_filled_100_confidence"] == 1
+
+
+def test_costar_match_respected_in_dry_run(db_session):
+    """dry_run=True with CoStar match reports the hit but does not persist."""
+    from app.services.tenant_class_deriver import derive_tenant_building_classes
+
+    addr = "1700 Dry Run CoStar Blvd, Herndon, VA 20170"
+    co = _make_company(db_session, address=addr, building_class=None)
+    db_session.commit()
+
+    costar = {addr.lower(): "Class C"}
+    stats = derive_tenant_building_classes(
+        db_session, backfill=True, dry_run=True, _costar_lookup=costar
+    )
+
+    assert stats["auto_filled_100_confidence"] == 1
+    db_session.refresh(co)
+    assert co.current_building_class is None   # not written
+
+
+# ── _load_costar_lookup path / warning tests ──────────────────────────────────
+
+def test_load_costar_lookup_missing_dir_returns_empty_and_warns(tmp_path, caplog):
+    """_load_costar_lookup with a non-existent dir → {} + WARNING log."""
+    from app.services.tenant_class_deriver import _load_costar_lookup
+
+    missing = tmp_path / "no_such_dir"
+    with caplog.at_level(logging.WARNING, logger="deal_radar.pipeline"):
+        result = _load_costar_lookup(lookup_dir=missing)
+
+    assert result == {}
+    combined = "\n".join(caplog.messages)
+    assert "not found" in combined.lower() or "costar_lookup" in combined.lower()
+
+
+def test_load_costar_lookup_empty_dir_returns_empty_and_warns(tmp_path, caplog):
+    """_load_costar_lookup with an existing but empty dir → {} + WARNING log."""
+    from app.services.tenant_class_deriver import _load_costar_lookup
+
+    empty_dir = tmp_path / "costar_lookup"
+    empty_dir.mkdir()
+    with caplog.at_level(logging.WARNING, logger="deal_radar.pipeline"):
+        result = _load_costar_lookup(lookup_dir=empty_dir)
+
+    assert result == {}
+    assert any("costar" in m.lower() for m in caplog.messages)
+
+
+def test_load_costar_lookup_loads_real_xlsx(tmp_path):
+    """_load_costar_lookup reads xlsx files and returns normalized lookup."""
+    import pandas as pd
+    from app.services.tenant_class_deriver import _load_costar_lookup
+
+    lkp_dir = tmp_path / "costar_lookup"
+    lkp_dir.mkdir()
+    df = pd.DataFrame({
+        "Address": ["100 Real Way, Reston, VA", "200 Test Blvd, Tysons, VA"],
+        "Class": ["A", "B"],
+    })
+    df.to_excel(lkp_dir / "CostarExport (27).xlsx", index=False)
+
+    result = _load_costar_lookup(lookup_dir=lkp_dir)
+    assert result["100 real way, reston, va"] == "Class A"
+    assert result["200 test blvd, tysons, va"] == "Class B"
+
+
+def test_load_costar_lookup_deduplicates_across_files(tmp_path):
+    """First-file-wins deduplication works when the same address spans files."""
+    import pandas as pd
+    from app.services.tenant_class_deriver import _load_costar_lookup
+
+    lkp_dir = tmp_path / "costar_lookup"
+    lkp_dir.mkdir()
+    pd.DataFrame({"Address": ["300 Dup St, McLean, VA"], "Class": ["A"]}).to_excel(
+        lkp_dir / "CostarExport (27).xlsx", index=False
+    )
+    pd.DataFrame({"Address": ["300 Dup St, McLean, VA"], "Class": ["C"]}).to_excel(
+        lkp_dir / "CostarExport (28).xlsx", index=False
+    )
+
+    result = _load_costar_lookup(lookup_dir=lkp_dir)
+    assert result["300 dup st, mclean, va"] == "Class A"   # file 27 wins
+
+
+def test_load_costar_lookup_bad_file_skipped_gracefully(tmp_path, caplog):
+    """A corrupt/unreadable file is skipped with a warning; valid files still load."""
+    import pandas as pd
+    from app.services.tenant_class_deriver import _load_costar_lookup
+
+    lkp_dir = tmp_path / "costar_lookup"
+    lkp_dir.mkdir()
+    # Bad file (not a real xlsx)
+    (lkp_dir / "CostarExport (27).xlsx").write_bytes(b"not an excel file")
+    # Good file
+    pd.DataFrame({"Address": ["400 Good St, Vienna, VA"], "Class": ["B"]}).to_excel(
+        lkp_dir / "CostarExport (28).xlsx", index=False
+    )
+
+    with caplog.at_level(logging.WARNING, logger="deal_radar.pipeline"):
+        result = _load_costar_lookup(lookup_dir=lkp_dir)
+
+    assert result["400 good st, vienna, va"] == "Class B"
+    assert any("Could not load" in m or "failed" in m.lower() for m in caplog.messages)

@@ -38,3 +38,6 @@ Thumbs.db
 *.log
 .claude/
 google_credentials.json
+
+# CoStar lookup Excel files — large, local-only, not committed to repo
+costar_lookup/
