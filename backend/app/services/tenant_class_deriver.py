@@ -79,40 +79,65 @@ def _load_costar_lookup(lookup_dir: Optional[Path] = None) -> dict:
     """
     Load all CostarExport*.xlsx files from costar_lookup/ at the repo root.
 
-    Pass lookup_dir to override the default path (useful in tests).
-    Returns {} with a WARNING log if the directory is missing, no files are
-    found, or every file fails to parse.  Never raises.
+    Path resolution order (when lookup_dir is not supplied):
+      1. Four levels above this file  → always points at repo root regardless
+         of working directory.
+      2. One level above CWD          → handles the common case where the
+         platform is launched from backend/ (CWD = backend/, parent = repo root).
+
+    Pass lookup_dir to override both (used in tests against a tmp_path).
+
+    Always prints to stdout in addition to the logger so the load summary is
+    visible at startup even before the pipeline logger has handlers attached.
+    Never raises.
     """
     try:
         import pandas as pd
     except ImportError:
-        logger.warning(
-            "[TenantClassDeriver] pandas unavailable — CoStar lookup disabled"
-        )
+        msg = "[TenantClassDeriver] pandas unavailable — CoStar lookup disabled"
+        print(msg)
+        logger.warning(msg)
         return {}
 
     if lookup_dir is None:
-        # tenant_class_deriver.py lives at backend/app/services/
-        # repo root is four levels up
-        lookup_dir = (
+        # Primary: relative to this source file (correct in all deployment modes)
+        file_based = (
             Path(__file__).resolve().parent.parent.parent.parent / "costar_lookup"
         )
+        # Fallback: one level above CWD — covers the common launch pattern
+        # `cd backend && uvicorn app.main:app` where CWD = backend/
+        cwd_based = Path.cwd().parent / "costar_lookup"
 
-    if not lookup_dir.exists():
-        logger.warning(
-            "[TenantClassDeriver] costar_lookup/ not found at '%s' — "
-            "address matching will use platform DB only",
-            lookup_dir,
-        )
-        return {}
+        if file_based.exists():
+            lookup_dir = file_based
+        elif cwd_based.exists() and cwd_based.resolve() != file_based.resolve():
+            lookup_dir = cwd_based
+            msg = f"[TenantClassDeriver] Using CWD-parent path: '{cwd_based}'"
+            print(msg)
+            logger.info(msg)
+        else:
+            # Show both paths only when they differ (avoids duplicate noise)
+            if file_based.resolve() == cwd_based.resolve():
+                checked = str(file_based)
+            else:
+                checked = f"'{file_based}' and '{cwd_based}'"
+            msg = (
+                f"[TenantClassDeriver] costar_lookup/ not found — "
+                f"checked {checked} — "
+                "address matching will use platform DB only"
+            )
+            print(msg)
+            logger.warning(msg)
+            return {}
 
     xlsx_files = sorted(lookup_dir.glob("CostarExport*.xlsx"))
     if not xlsx_files:
-        logger.warning(
-            "[TenantClassDeriver] No CostarExport*.xlsx files in '%s' — "
-            "address matching will use platform DB only",
-            lookup_dir,
+        msg = (
+            f"[TenantClassDeriver] No CostarExport*.xlsx files in '{lookup_dir}' — "
+            "address matching will use platform DB only"
         )
+        print(msg)
+        logger.warning(msg)
         return {}
 
     dataframes: list = []
@@ -122,25 +147,31 @@ def _load_costar_lookup(lookup_dir: Optional[Path] = None) -> dict:
             df = pd.read_excel(path, usecols=["Address", "Class"])
             dataframes.append(df)
         except Exception as exc:
-            logger.warning(
-                "[TenantClassDeriver] Could not load %s: %s", path.name, exc
-            )
+            warn = f"[TenantClassDeriver] Could not load {path.name}: {exc}"
+            print(warn)
+            logger.warning(warn)
             failed += 1
 
     if not dataframes:
-        logger.warning(
-            "[TenantClassDeriver] All %d CoStar file(s) failed to load — "
-            "falling back to platform DB only",
-            failed,
+        msg = (
+            f"[TenantClassDeriver] All {failed} CoStar file(s) failed to load — "
+            "falling back to platform DB only"
         )
+        print(msg)
+        logger.warning(msg)
         return {}
 
     result = _build_costar_lookup_from_dataframes(dataframes)
-    logger.info(
-        "[TenantClassDeriver] CoStar lookup ready: %d addresses from "
-        "%d file(s) (%d skipped)",
-        len(result), len(dataframes), failed,
+    msg = (
+        f"[TenantClassDeriver] CoStar lookup ready: "
+        f"path='{lookup_dir}' "
+        f"xlsx_files_found={len(xlsx_files)} "
+        f"files_loaded={len(dataframes)} "
+        f"files_skipped={failed} "
+        f"addresses={len(result)}"
     )
+    print(msg)
+    logger.info(msg)
     return result
 
 
