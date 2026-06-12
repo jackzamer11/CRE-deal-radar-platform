@@ -378,6 +378,7 @@ export interface TenantMatchAction {
   match_score: number
   adjacent_submarket?: boolean
   lease_expiry_months: number | null
+  lease_expiry_chip?: string | null
   contact_status: string
   property_is_medical: boolean
   tenant_is_medical: boolean

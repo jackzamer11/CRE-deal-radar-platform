@@ -131,11 +131,11 @@ function TenantActionRow({
           <span>{action.submarket}</span>
           {action.sf_avail != null && <span>{(action.sf_avail / 1000).toFixed(0)}K SF avail</span>}
           <span>{(action.tenant_sf_needed / 1000).toFixed(0)}K SF needed</span>
-          {action.lease_expiry_months != null && (
-            <span className={action.lease_expiry_months <= 12 ? 'text-amber-400' : 'text-ink-muted'}>
-              {action.lease_expiry_months}mo to expiry
-            </span>
-          )}
+        </div>
+        <div className="flex flex-wrap gap-1 mt-1">
+          <span className="text-[9px] px-1.5 py-0.5 rounded bg-surface-card text-ink-secondary border border-surface-border">
+            Lease: {action.lease_expiry_chip ?? (action.lease_expiry_months != null ? `${action.lease_expiry_months}mo` : 'No Expiry Data')}
+          </span>
         </div>
       </div>
       <div className="flex-shrink-0 flex flex-col items-end gap-2">
