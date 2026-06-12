@@ -498,21 +498,35 @@ def run_full_pipeline(db: Session = None) -> dict:
         enriched = refresh_public_records(db)
         logger.info("[Pipeline] Public records: %d properties enriched", enriched)
 
-        # 2. Refresh property signals
+        # 2. Derive tenant building classes (new/unclassified tenants only)
+        from app.services.tenant_class_deriver import derive_tenant_building_classes
+        deriver_stats = derive_tenant_building_classes(db, backfill=False)
+        logger.info(
+            "[Pipeline] Tenant class deriver — processed=%d auto_filled=%d "
+            "conf75=%d conf50=%d unmatched=%d feedback_hits=%d",
+            deriver_stats["total_processed"],
+            deriver_stats["auto_filled_100_confidence"],
+            len(deriver_stats["logged_75_confidence"]),
+            len(deriver_stats["logged_50_confidence"]),
+            len(deriver_stats["unmatched"]),
+            deriver_stats["feedback_hits"],
+        )
+
+        # 3. Refresh property signals
         props = db.query(Property).all()
         for prop in props:
             refresh_property_signals(db, prop)
         db.commit()
         logger.info("[Pipeline] Property signals refreshed: %d properties", len(props))
 
-        # 3. Refresh company signals
+        # 4. Refresh company signals
         companies = db.query(Company).all()
         for company in companies:
             refresh_company_signals(db, company)
         db.commit()
         logger.info("[Pipeline] Company signals refreshed: %d companies", len(companies))
 
-        # 4. Run deal creation
+        # 5. Run deal creation
         deal_stats = run_deal_creation(db)
 
         elapsed = (datetime.utcnow() - start).seconds

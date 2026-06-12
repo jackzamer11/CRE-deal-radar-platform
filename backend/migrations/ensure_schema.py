@@ -453,6 +453,47 @@ def backfill_lease_expiry_dates(cur: sqlite3.Cursor) -> int:
     return len(rows)
 
 
+def ensure_tenant_class_feedback(cur: sqlite3.Cursor) -> int:
+    """Create the tenant_class_feedback table if not present (idempotent).
+
+    This table is the deriver's long-term memory: each row records an address
+    plus the class a user corrected to, so the deriver never re-guesses the
+    same address incorrectly on subsequent runs.
+
+    Wrapped in try/except so a partially-migrated DB never aborts startup.
+    """
+    try:
+        cur.execute(
+            "SELECT name FROM sqlite_master "
+            "WHERE type='table' AND name='tenant_class_feedback'"
+        )
+        if cur.fetchone():
+            return 0  # already exists
+        cur.execute("""
+            CREATE TABLE tenant_class_feedback (
+                id                   INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+                company_id           INTEGER NOT NULL REFERENCES companies(id),
+                current_address      TEXT NOT NULL,
+                inferred_class       TEXT,
+                user_corrected_class TEXT,
+                created_at           DATETIME
+            )
+        """)
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS ix_tcf_id "
+            "ON tenant_class_feedback (id)"
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS ix_tcf_address "
+            "ON tenant_class_feedback (current_address)"
+        )
+        print("  + created table tenant_class_feedback")
+        return 1
+    except Exception as exc:
+        print(f"  ! ensure_tenant_class_feedback failed: {exc}")
+        return 0
+
+
 def run() -> None:
     db = _resolve_db_path()
     if not os.path.exists(db):
@@ -500,11 +541,12 @@ def run() -> None:
     act_added    = ensure_activity_logs(cur)
     draft_added  = ensure_outreach_drafts(cur)
     bf_added     = backfill_lease_expiry_dates(cur)
+    tcf_added    = ensure_tenant_class_feedback(cur)
 
     conn.commit()
     conn.close()
 
-    total = prop_added + comp_added + olog_added + olog_fixed + act_added + draft_added + bf_added
+    total = prop_added + comp_added + olog_added + olog_fixed + act_added + draft_added + bf_added + tcf_added
     if total:
         print(f"ensure_schema: applied {total} column addition(s)/backfill(s).")
     else:
