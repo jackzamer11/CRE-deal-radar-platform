@@ -826,6 +826,14 @@ def _build_tenant_side(p: dict, tenant_dict: dict) -> dict:
     lease_expiry_m = tenant_dict.get("lease_expiry_months")
     submarket_pref = tenant_dict.get("current_submarket") or submarket
 
+    # Detect class downgrade: tenant currently occupies higher-class space
+    from app.services.match_scoring import _class_rank as _cr
+    _t_rank = _cr(tenant_dict.get("current_building_class"))
+    _p_rank = _cr(p.get("asset_class"))
+    is_class_downgrade = (
+        _t_rank is not None and _p_rank is not None and _t_rank > _p_rank
+    )
+
     greeting = (
         f"Hi {contact_name},"
         if contact_name
@@ -867,7 +875,7 @@ def _build_tenant_side(p: dict, tenant_dict: dict) -> dict:
     tenant_profile = "\n".join(tenant_profile_lines)
 
     property_profile_lines = [
-        f"Asset Class: {asset_class}",
+        *([] if is_class_downgrade else [f"Asset Class: {asset_class}"]),
         f"Submarket: {submarket}",
         f"SF Available: {sf_avail or 'N/A'}",
         *([ f"Asking Rent: ${asking_rent:.2f}/SF" ] if asking_rent else []),
@@ -892,6 +900,42 @@ def _build_tenant_side(p: dict, tenant_dict: dict) -> dict:
         "number — a single market line is added separately. Never mention rent PSF."
     )
 
+    # For class-downgrade pairs: omit the class label from the property description
+    # and add an explicit framing rule so the opening never leads with the building.
+    prop_description = (
+        f"an office property in {submarket}{sf_clause}{rent_clause}"
+        if is_class_downgrade
+        else f"a {asset_class} property in {submarket}{sf_clause}{rent_clause}"
+    )
+    downgrade_rule = (
+        f"\n\nCLASS DOWNGRADE FRAMING — STRICT RULES (override general rules where they conflict):"
+        f"\n  PROHIBITION 1: Do NOT mention building class, class ratings, a 'Class A/B/C' label, "
+        f"class differences, or ANY language implying the tenant would be moving down in quality."
+        f"\n  PROHIBITION 2: Do NOT lead paragraph one with the property, space availability, or building "
+        f"features. Paragraph one MUST be entirely about the tenant's lease timing, {industry} industry "
+        f"context, and the {submarket} market — nothing else."
+        f"\n  PROHIBITION 3: Paragraph two may reference space availability (SF and {submarket} only — "
+        f"no class, no address). Frame it as 'options are moving' or 'timing matters in this market', "
+        f"NOT 'I found you a space' or 'I have something for you'."
+        f"\n  PROHIBITION 4: Do NOT restate the tenant's SF need back to them — they know it. "
+        f"Never write phrases like 'a company needing X SF', 'fits your X SF requirement', "
+        f"or any sentence that quotes their SF figure back at them."
+        f"\n  PROHIBITION 5: The vacancy rate stat (if injected) must be embedded inside paragraph 2 "
+        f"as supporting evidence for urgency — never as a standalone sentence and never as an orphan "
+        f"paragraph after the closing question."
+        f"\n  GOAL: This email exists to get a phone call, not pitch a property. "
+        f"End with a specific, time-bound ask: 'Are you free this week or next?' — "
+        f"not 'I\\'d welcome a brief call at your convenience.'"
+        if is_class_downgrade else ""
+    )
+
+    close_rule = (
+        "End with a specific, time-bound ask: 'Are you free this week or next?' — "
+        "the goal is a phone call, not a property pitch."
+        if is_class_downgrade else
+        "End with ONE low-friction ask and nothing else: 'I\\'d welcome a brief call at your convenience.'"
+    )
+
     system = (
         f"You are {AGENT_NAME} at {FIRM_NAME}, a commercial real estate agent who works the "
         f"Northern Virginia office market every day. You are emailing the decision maker at a tenant "
@@ -903,14 +947,15 @@ def _build_tenant_side(p: dict, tenant_dict: dict) -> dict:
         f"\n- ONE hook only: their lease timing ({lease_clause.lower()}). Open on that pain in your own "
         f"words and do NOT repeat the lease-expiry phrase later; do NOT also hook on the building's vacancy."
         f"\n- Greet by name if available; otherwise use 'Hi [Company Name] Team,'."
-        f"\n- Describe the property GENERALLY as 'a {asset_class} property in {submarket}{sf_clause}{rent_clause}'. NEVER reveal the street address."
+        f"\n- Describe the property GENERALLY as '{prop_description}'. NEVER reveal the street address."
         f"\n- Do NOT describe the tenant company back to themselves; do NOT reference their headcount or team size."
+        + downgrade_rule
         + sf_fit_constraint
         + f"\n- {tenant_proof_rule}"
         f"\n- Tone: knowledgeable and consultative — a trusted market expert, not a salesperson."
         f"\n- Do NOT reveal that any web search or platform tool was used; do NOT mention other tenants or properties."
         f"\n- NEVER suggest specific days of the week."
-        f"\n- End with ONE low-friction ask and nothing else: 'I'd welcome a brief call at your convenience.'"
+        f"\n- {close_rule}"
     )
 
     user = (
@@ -942,7 +987,7 @@ def _build_tenant_side(p: dict, tenant_dict: dict) -> dict:
         "PAIN_PROBE:\n<probe>\n"
         "CLOSE:\n<close>"
     )
-    return {"system": system, "user": user}
+    return {"system": system, "user": user, "is_class_downgrade": is_class_downgrade}
 
 
 def _build_listing_rep(p: dict) -> dict:
@@ -1274,6 +1319,187 @@ def generate_property_outreach(
         # scarcity); otherwise substitute a lease-timeline urgency line.
         owner_line = _owner_vacancy_sentence(submarket) or _owner_lease_timeline_sentence(tenant_dict)
         email_body = _insert_before_ask(email_body, owner_line)
+
+    # Class-downgrade post-processing: strip SF-restatement sentences and
+    # merge any standalone vacancy paragraph into the preceding paragraph.
+    if is_tenant_side and prompt.get("is_class_downgrade"):
+        import re as _re
+
+        # Step 1: Remove sentences that quote the tenant's SF requirement back at them.
+        _sf_restate = _re.compile(
+            r'[^.!?]*\b(?:aligns?\s+well\s+with\s+your|fits\s+your|matches\s+your'
+            r'|a\s+company\s+needing|your\s+spatial\s+needs|your\s+space\s+needs)\b'
+            r'[^.!?]*[.!?]',
+            _re.IGNORECASE,
+        )
+        sf_hits = _sf_restate.findall(email_body)
+        for hit in sf_hits:
+            print(f"[downgrade-strip] removed SF-restatement: {hit.strip()}")
+        if sf_hits:
+            email_body = _sf_restate.sub("", email_body)
+            email_body = _re.sub(r"  +", " ", email_body).strip()
+
+        # Step 2: Merge standalone vacancy paragraphs into the preceding paragraph.
+        # A "standalone vacancy paragraph" is one whose entire text is a single
+        # sentence that mentions a vacancy percentage and nothing else.
+        _vacancy_only = _re.compile(
+            r'^[^.!?]*\b(?:vacancy|vacancies)\b[^.!?]*\d+(?:\.\d+)?%[^.!?]*[.!?]?\s*$'
+            r'|^[^.!?]*\d+(?:\.\d+)?%[^.!?]*\b(?:vacancy|vacancies)\b[^.!?]*[.!?]?\s*$',
+            _re.IGNORECASE,
+        )
+        paras = email_body.split("\n\n")
+        merged: list = []
+        for para in paras:
+            if _vacancy_only.match(para.strip()) and merged:
+                merged[-1] = merged[-1].rstrip() + " " + para.strip()
+            elif _vacancy_only.match(para.strip()):
+                pass  # no preceding paragraph — drop the orphan
+            else:
+                merged.append(para)
+        email_body = "\n\n".join(merged)
+
+        # Shared helpers reused by Steps 3–7.
+        _GREETING_ONLY = _re.compile(r'^(?:hi|dear|hello)\b', _re.IGNORECASE)
+        _SIGNATURE_ONLY = _re.compile(
+            r'^(?:thank\s+you|best\s*(?:regards)?|sincerely|warm\s+regards|thanks,|cheers)',
+            _re.IGNORECASE,
+        )
+        _CLOSE_PAT = _re.compile(r'are\s+you\s+free\s+this\s+week', _re.IGNORECASE)
+
+        def _is_framing(p: str) -> bool:
+            s = p.strip()
+            if not s:
+                return True
+            if _GREETING_ONLY.match(s) and len(s) < 50:
+                return True
+            if s.startswith("My name is Jack Zamer"):
+                return True
+            return bool(_SIGNATURE_ONLY.match(s))
+
+        # Step 3: Strip the "timing is key" sentence from any paragraph that
+        # already contains "timing is crucial" — two timing clichés in the
+        # same paragraph cancel each other out.
+        _timing_key_re = _re.compile(
+            r'[^.!?]*\btiming\s+is\s+key\b[^.!?]*[.!?]',
+            _re.IGNORECASE,
+        )
+        _paras3 = email_body.split("\n\n")
+        for _i3, _p3 in enumerate(_paras3):
+            if "timing is crucial" in _p3.lower() and "timing is key" in _p3.lower():
+                _hit3 = _timing_key_re.search(_p3)
+                if _hit3:
+                    print(f"[downgrade-strip] removed redundant timing: {_hit3.group().strip()}")
+                _paras3[_i3] = _timing_key_re.sub("", _p3)
+                _paras3[_i3] = _re.sub(r"  +", " ", _paras3[_i3]).strip()
+        email_body = "\n\n".join(_paras3)
+
+        # Step 4: Strip sentences containing "how this could be a fit for" —
+        # implies a specific space match which breaks the lease-first framing rule.
+        _fit_for_re = _re.compile(
+            r'[^.!?]*\bhow\s+this\s+could\s+be\s+a\s+fit\s+for\b[^.!?]*[.!?]',
+            _re.IGNORECASE,
+        )
+        _fit_hits = _fit_for_re.findall(email_body)
+        for _hit4 in _fit_hits:
+            print(f"[downgrade-strip] removed fit-for sentence: {_hit4.strip()}")
+        if _fit_hits:
+            email_body = _fit_for_re.sub("", email_body)
+            email_body = _re.sub(r"  +", " ", email_body).strip()
+
+        # Step 5: Hard stop at the closing ask — replace the entire sentence
+        # containing "Are you free this week or next?" with just that question,
+        # regardless of any trailing clause ("to discuss", "to chat", etc.).
+        email_body = _re.sub(
+            r'[^.!?\n]*\bAre\s+you\s+free\s+this\s+week\s+or\s+next\b[^\n]*',
+            'Are you free this week or next?',
+            email_body,
+            flags=_re.IGNORECASE,
+        )
+
+        # Step 6: If stripping reduced the email to fewer than 2 substantive body
+        # paragraphs (excluding the standalone greeting, the hardcoded Jack Zamer
+        # intro, and the signature), inject a market-context fallback before the
+        # closing ask so the email always has opener + market-context + close.
+        body_paras_after = [p for p in email_body.split("\n\n") if not _is_framing(p)]
+        if len(body_paras_after) < 2:
+            vac = _submarket_vacancy(submarket) or property_dict.get("vacancy_pct")
+            if vac is not None and submarket:
+                fallback_mid = (
+                    f"With {submarket}'s vacancy rate at {float(vac):.1f}%, quality options are "
+                    f"moving quickly — it's worth a conversation before the window closes."
+                )
+                p_list = email_body.split("\n\n")
+                close_idx = next(
+                    (i for i, p in enumerate(p_list) if _CLOSE_PAT.search(p)),
+                    None,
+                )
+                if close_idx is None:
+                    close_idx = next(
+                        (i for i, p in enumerate(p_list)
+                         if _SIGNATURE_ONLY.match(p.strip())),
+                        None,
+                    )
+                if close_idx is not None:
+                    p_list.insert(close_idx, fallback_mid)
+                else:
+                    p_list.append(fallback_mid)
+                email_body = "\n\n".join(p_list)
+
+        # Step 7: Ensure the paragraph immediately preceding the closing ask ends
+        # with the canonical property-reference sentence.  Anchoring to
+        # close_idx - 1 (not "second content paragraph") guarantees we always
+        # modify the paragraph the reader sees just before the ask, regardless of
+        # how many framing or intro paragraphs precede it.
+        _raw_avail = property_dict.get("sf_avail") or 0
+        _avail_sf = round(_raw_avail / 100) * 100 if _raw_avail else 0
+        if _avail_sf > 0 and submarket:
+            _prop_ref = (
+                f"There's an office property in {submarket} with approximately "
+                f"{_avail_sf:,} SF available that's worth a look."
+            )
+            # Any square-footage reference, in any phrasing.
+            _sf_pat = _re.compile(
+                r'\d[\d,]*\s*(?:SF|sq\.?\s*ft\.?|square\s*feet)',
+                _re.IGNORECASE,
+            )
+            # Sentence splitter — keeps terminal punctuation on each sentence.
+            _sent_split = _re.compile(r'(?<=[.!?])\s+')
+
+            _p_list7 = email_body.split("\n\n")
+            # Locate the closing ask paragraph.
+            _close_idx7 = next(
+                (i for i, p in enumerate(_p_list7) if _CLOSE_PAT.search(p)),
+                None,
+            )
+            # Target is the paragraph immediately before the close.
+            if _close_idx7 is not None and _close_idx7 > 0:
+                _target_idx = _close_idx7 - 1
+                _target_para = _p_list7[_target_idx]
+                _sentences = [
+                    s for s in _sent_split.split(_target_para.strip()) if s.strip()
+                ]
+                # If the canonical sentence is not already present verbatim, drop
+                # any sentence carrying a (non-standard) SF reference and append
+                # the standard sentence — replace, never duplicate.
+                if _prop_ref.lower() not in _target_para.lower():
+                    _sentences = [s for s in _sentences if not _sf_pat.search(s)]
+                    _sentences.append(_prop_ref)
+                # Paragraph length cap: trim to 3 sentences by shedding the
+                # shortest filler (no submarket name, no SF reference).
+                while len(_sentences) > 3:
+                    _filler = [
+                        s for s in _sentences
+                        if submarket.lower() not in s.lower()
+                        and not _sf_pat.search(s)
+                    ]
+                    if not _filler:
+                        break
+                    _sentences.remove(min(_filler, key=len))
+                _p_list7[_target_idx] = " ".join(_sentences).strip()
+                email_body = "\n\n".join(_p_list7)
+
+        # Collapse triple-or-more newlines left by sentence stripping.
+        email_body = _re.sub(r'\n{3,}', '\n\n', email_body)
 
     # Safety strip: property-side copy must never mention headcount,
     # and must never contain a redundant "I propose a short call" sentence.

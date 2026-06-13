@@ -117,6 +117,11 @@ function TenantActionRow({
               Adjacent Submarket
             </span>
           )}
+          {(action.signal_tags ?? []).map(tag => (
+            <span key={tag} className="text-[9px] px-2 py-0.5 rounded border font-bold bg-orange-500/15 text-orange-400 border-orange-500/30">
+              {tag}
+            </span>
+          ))}
         </div>
         <div className="flex items-center gap-1.5">
           <div className="text-sm font-semibold text-ink-primary truncate">{action.address}</div>

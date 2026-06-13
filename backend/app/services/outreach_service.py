@@ -219,9 +219,10 @@ def generate_outreach(company: dict) -> dict:
     tenant_rep    = company.get("tenant_representative") or ""
     rep_class     = classify_rep(tenant_rep)
     current_rent  = company.get("current_rent_psf")
-    future_flag   = company.get("future_move_flag")
-    future_type   = company.get("future_move_type") or ""
-    trajectory    = (company.get("lease_trajectory") or "AUTO").upper()
+    future_flag         = company.get("future_move_flag")
+    future_type         = company.get("future_move_type") or ""
+    trajectory          = (company.get("lease_trajectory") or "AUTO").upper()
+    is_class_downgrade  = bool(company.get("is_class_downgrade", False))
 
     market_rent  = SUBMARKET_MARKET_RENT.get(submarket)
     avg_vacancy  = SUBMARKET_AVG_VACANCY.get(submarket)
@@ -398,6 +399,15 @@ def generate_outreach(company: dict) -> dict:
         rules.append(trajectory_note)
     if contraction_note:
         rules.append(contraction_note)
+    if is_class_downgrade:
+        rules.append(
+            "CLASS DOWNGRADE FRAMING — this tenant occupies a higher-class building than the target property. "
+            "LEAD with lease timing and market positioning, NOT the building or its features. "
+            "The opening line MUST reference: (1) the tenant's submarket, (2) their industry, "
+            "and (3) their lease window. "
+            "Building details (if included at all) belong in paragraph 2. "
+            "Do NOT mention the property address or building class directly."
+        )
     rules.append(_SIGNATURE_INSTRUCTION)
 
     numbered_rules = "\n".join(f"{i+1}. {r}" for i, r in enumerate(rules))

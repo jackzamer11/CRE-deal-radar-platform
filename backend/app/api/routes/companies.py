@@ -940,6 +940,17 @@ def draft_outreach(company_id: str, db: Session = Depends(get_db)):
             ),
         )
 
+    # Detect class downgrade: tenant occupies higher-class space than the linked property.
+    is_class_downgrade = False
+    if company.linked_property_id:
+        from app.services.match_scoring import _class_rank
+        linked_prop = db.query(Property).filter(Property.id == company.linked_property_id).first()
+        if linked_prop:
+            t_rank = _class_rank(company.current_building_class)
+            p_rank = _class_rank(linked_prop.asset_class)
+            if t_rank is not None and p_rank is not None and t_rank > p_rank:
+                is_class_downgrade = True
+
     company_dict = {
         "name":                 company.name,
         "industry":             company.industry,
@@ -959,6 +970,7 @@ def draft_outreach(company_id: str, db: Session = Depends(get_db)):
         "contraction_signal":   company.contraction_signal,
         "opportunity_score":    company.opportunity_score,
         "priority":             company.priority,
+        "is_class_downgrade":   is_class_downgrade,
     }
 
     try:
