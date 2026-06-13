@@ -826,6 +826,14 @@ def _build_tenant_side(p: dict, tenant_dict: dict) -> dict:
     lease_expiry_m = tenant_dict.get("lease_expiry_months")
     submarket_pref = tenant_dict.get("current_submarket") or submarket
 
+    # Detect class downgrade: tenant currently occupies higher-class space
+    from app.services.match_scoring import _class_rank as _cr
+    _t_rank = _cr(tenant_dict.get("current_building_class"))
+    _p_rank = _cr(p.get("asset_class"))
+    is_class_downgrade = (
+        _t_rank is not None and _p_rank is not None and _t_rank > _p_rank
+    )
+
     greeting = (
         f"Hi {contact_name},"
         if contact_name
@@ -867,7 +875,7 @@ def _build_tenant_side(p: dict, tenant_dict: dict) -> dict:
     tenant_profile = "\n".join(tenant_profile_lines)
 
     property_profile_lines = [
-        f"Asset Class: {asset_class}",
+        *([] if is_class_downgrade else [f"Asset Class: {asset_class}"]),
         f"Submarket: {submarket}",
         f"SF Available: {sf_avail or 'N/A'}",
         *([ f"Asking Rent: ${asking_rent:.2f}/SF" ] if asking_rent else []),
@@ -892,6 +900,22 @@ def _build_tenant_side(p: dict, tenant_dict: dict) -> dict:
         "number — a single market line is added separately. Never mention rent PSF."
     )
 
+    # For class-downgrade pairs: omit the class label from the property description
+    # and add an explicit framing rule so the opening never leads with the building.
+    prop_description = (
+        f"an office property in {submarket}{sf_clause}{rent_clause}"
+        if is_class_downgrade
+        else f"a {asset_class} property in {submarket}{sf_clause}{rent_clause}"
+    )
+    downgrade_rule = (
+        f"\n- CLASS DOWNGRADE FRAMING: this tenant's current space is a higher class than this property. "
+        f"LEAD the email with lease timing and {submarket} market positioning — NOT the building or its features. "
+        f"The opening line MUST reference: (1) {submarket} submarket, (2) {industry} industry context, "
+        f"and (3) the {exp_display or 'upcoming'} lease window. Building details belong in paragraph 2. "
+        f"Do NOT mention the property class directly."
+        if is_class_downgrade else ""
+    )
+
     system = (
         f"You are {AGENT_NAME} at {FIRM_NAME}, a commercial real estate agent who works the "
         f"Northern Virginia office market every day. You are emailing the decision maker at a tenant "
@@ -903,8 +927,9 @@ def _build_tenant_side(p: dict, tenant_dict: dict) -> dict:
         f"\n- ONE hook only: their lease timing ({lease_clause.lower()}). Open on that pain in your own "
         f"words and do NOT repeat the lease-expiry phrase later; do NOT also hook on the building's vacancy."
         f"\n- Greet by name if available; otherwise use 'Hi [Company Name] Team,'."
-        f"\n- Describe the property GENERALLY as 'a {asset_class} property in {submarket}{sf_clause}{rent_clause}'. NEVER reveal the street address."
+        f"\n- Describe the property GENERALLY as '{prop_description}'. NEVER reveal the street address."
         f"\n- Do NOT describe the tenant company back to themselves; do NOT reference their headcount or team size."
+        + downgrade_rule
         + sf_fit_constraint
         + f"\n- {tenant_proof_rule}"
         f"\n- Tone: knowledgeable and consultative — a trusted market expert, not a salesperson."

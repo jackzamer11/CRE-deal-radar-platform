@@ -381,6 +381,7 @@ export interface TenantMatchAction {
   contact_status: string
   property_is_medical: boolean
   tenant_is_medical: boolean
+  signal_tags?: string[]
 }
 
 export interface AcquisitionTarget {

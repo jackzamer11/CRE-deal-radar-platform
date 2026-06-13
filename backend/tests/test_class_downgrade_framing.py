@@ -220,3 +220,72 @@ def test_signal_tag_absent_for_class_upgrade():
         signal_tags = ["Class Downgrade — Lease-First Framing"]
 
     assert signal_tags == []
+
+
+# ── _build_tenant_side: the real execution path from the Dashboard ────────────
+
+def _tenant_side_prompt(tenant_class: str, property_class: str) -> str:
+    """
+    Call _build_tenant_side with a minimal property + tenant dict and return
+    the system prompt that would be sent to GPT-4o.
+    """
+    from app.services.property_outreach_service import _build_tenant_side
+
+    p = {
+        "asset_class": property_class,
+        "submarket": "Reston",
+        "sf_avail": 20_000,
+        "in_place_rent_psf": 38.0,
+    }
+    tenant_dict = {
+        "name": "Acme Tech LLC",
+        "primary_contact_name": "Alex Chen",
+        "industry": "Technology",
+        "current_sf_occupied": 15_000,
+        "lease_expiry_months": 14,
+        "current_submarket": "Reston",
+        "current_building_class": tenant_class,
+    }
+    result = _build_tenant_side(p, tenant_dict)
+    return result["system"]
+
+
+def test_tenant_side_downgrade_omits_asset_class_from_description():
+    """
+    For a Class A tenant matched to a Class B property, the tenant-side system
+    prompt must NOT say 'a Class B property' — class label must be hidden.
+    """
+    prompt = _tenant_side_prompt("Class A", "Class B")
+    assert "Class B property" not in prompt
+    assert "CLASS DOWNGRADE FRAMING" in prompt
+
+
+def test_tenant_side_downgrade_leads_with_lease_timing():
+    """
+    The downgrade framing rule must require opening on lease timing +
+    submarket + industry context.
+    """
+    prompt = _tenant_side_prompt("Class A", "Class B")
+    assert "lease" in prompt.lower()
+    assert "Reston" in prompt
+    assert "Technology" in prompt
+
+
+def test_tenant_side_downgrade_not_triggered_for_same_class():
+    """
+    For a Class B tenant matched to a Class B property, no downgrade rule
+    and the asset class label IS present in the property description.
+    """
+    prompt = _tenant_side_prompt("Class B", "Class B")
+    assert "CLASS DOWNGRADE FRAMING" not in prompt
+    assert "Class B property" in prompt
+
+
+def test_tenant_side_downgrade_not_triggered_for_upgrade():
+    """
+    For a Class C tenant matched to a Class B property (upgrade), no downgrade
+    rule and the asset class label IS present.
+    """
+    prompt = _tenant_side_prompt("Class C", "Class B")
+    assert "CLASS DOWNGRADE FRAMING" not in prompt
+    assert "Class B property" in prompt
