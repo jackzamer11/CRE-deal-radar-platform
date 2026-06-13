@@ -1358,6 +1358,56 @@ def generate_property_outreach(
                 merged.append(para)
         email_body = "\n\n".join(merged)
 
+        # Step 3: If the post-processor stripped too aggressively and fewer than
+        # 2 substantive body paragraphs remain (excluding the standalone greeting,
+        # the hardcoded Jack Zamer intro, and the signature), inject a market-
+        # context fallback paragraph before the closing ask so the email always
+        # has at least opener + market-context + close.
+        _GREETING_ONLY = _re.compile(r'^(?:hi|dear|hello)\b', _re.IGNORECASE)
+        _SIGNATURE_ONLY = _re.compile(
+            r'^(?:thank\s+you|best\s*(?:regards)?|sincerely|warm\s+regards|thanks,|cheers)',
+            _re.IGNORECASE,
+        )
+
+        def _is_framing(p: str) -> bool:
+            s = p.strip()
+            if not s:
+                return True
+            if _GREETING_ONLY.match(s) and len(s) < 50:
+                return True
+            if s.startswith("My name is Jack Zamer"):
+                return True
+            return bool(_SIGNATURE_ONLY.match(s))
+
+        body_paras_after = [p for p in email_body.split("\n\n") if not _is_framing(p)]
+        if len(body_paras_after) < 2:
+            vac = _submarket_vacancy(submarket) or property_dict.get("vacancy_pct")
+            if vac is not None and submarket:
+                fallback_mid = (
+                    f"With {submarket}'s vacancy rate at {float(vac):.1f}%, quality options are "
+                    f"moving quickly — it's worth a conversation before the window closes."
+                )
+                _CLOSE_PAT = _re.compile(r'are\s+you\s+free\s+this\s+week', _re.IGNORECASE)
+                p_list = email_body.split("\n\n")
+                close_idx = next(
+                    (i for i, p in enumerate(p_list) if _CLOSE_PAT.search(p)),
+                    None,
+                )
+                if close_idx is None:
+                    close_idx = next(
+                        (i for i, p in enumerate(p_list)
+                         if _SIGNATURE_ONLY.match(p.strip())),
+                        None,
+                    )
+                if close_idx is not None:
+                    p_list.insert(close_idx, fallback_mid)
+                else:
+                    p_list.append(fallback_mid)
+                email_body = "\n\n".join(p_list)
+
+        # Collapse triple-or-more newlines left by sentence stripping.
+        email_body = _re.sub(r'\n{3,}', '\n\n', email_body)
+
     # Safety strip: property-side copy must never mention headcount,
     # and must never contain a redundant "I propose a short call" sentence.
     if not is_tenant_side:

@@ -474,3 +474,34 @@ def test_postprocess_not_applied_for_non_downgrade():
                 direction="tenant_side", tenant_dict=t,
             )
     assert "fits your" in result["email_body"].lower()
+
+
+def test_postprocess_injects_fallback_when_stripped_to_one_body_para():
+    """
+    When post-processing reduces a class-downgrade email to fewer than 2
+    substantive body paragraphs (the only SF phrase is stripped, leaving just
+    the Jack Zamer intro and the closing ask), a market-context fallback
+    paragraph must be injected before the closing ask.
+    """
+    # The middle paragraph contains ONLY an SF-restatement phrase — Step 1 will
+    # strip it entirely, leaving: greeting + hardcoded-intro + close.
+    body = (
+        "Hi Alex,\n\n"
+        "A company needing 15,000 SF in Reston should start their search now.\n\n"
+        "Are you free this week or next?"
+    )
+    result = _run_postprocess(body)
+
+    # Fallback market-context paragraph must be present.
+    assert "vacancy rate" in result.lower(), (
+        f"Expected fallback with 'vacancy rate' in result, got:\n{result}"
+    )
+    assert "options are moving quickly" in result.lower(), (
+        f"Expected 'options are moving quickly' in result, got:\n{result}"
+    )
+    # The closing ask must still be present.
+    assert "are you free this week" in result.lower()
+    # Reston submarket must appear in the fallback.
+    assert "reston" in result.lower()
+    # No triple (or more) consecutive newlines — cleanup step ran.
+    assert "\n\n\n" not in result
