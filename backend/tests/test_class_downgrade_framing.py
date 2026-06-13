@@ -636,26 +636,118 @@ def test_postprocess_appends_property_reference_to_second_body_para():
     )
 
 
-def test_postprocess_skips_property_reference_when_already_present():
+def test_postprocess_replaces_nonstandard_sf_reference():
     """
-    Step 7 (duplicate guard): if the paragraph immediately before the closing ask
-    already contains both {submarket} and 'SF available', the property-reference
-    sentence must NOT be appended again.
+    Step 7 (replace): a non-standard SF reference ('offers approximately 2,500 SF')
+    in the target paragraph is removed and replaced with the canonical sentence —
+    not duplicated alongside it.
     """
     body = (
         "Hi Alex,\n\n"
         "With your lease expiring in 14 months, Reston market timing is critical.\n\n"
-        "There is a quality office property in Reston with approximately 20,000 SF available "
-        "that suits your window.\n\n"
+        "There is a building in Reston that offers approximately 2,500 SF for your team.\n\n"
         "Are you free this week or next?\n\n"
         "Thank you,\nJack Zamer"
     )
     result = _run_postprocess(body)
-    # Must not be duplicated
-    assert result.lower().count("sf available") == 1, (
-        f"Property reference was double-appended:\n{result}"
+    # The non-standard figure is gone.
+    assert "2,500" not in result, (
+        f"Non-standard SF figure should have been removed:\n{result}"
     )
-    # The canonical 'worth a look' suffix must not appear (already-present guard fired)
-    assert "worth a look" not in result.lower(), (
-        f"Property reference was incorrectly appended despite existing reference:\n{result}"
+    # The canonical sentence is present exactly once.
+    assert "there's an office property in reston" in result.lower(), (
+        f"Canonical property reference not found:\n{result}"
+    )
+    assert result.lower().count("worth a look") == 1, (
+        f"Canonical reference must appear exactly once:\n{result}"
+    )
+    assert result.lower().count("sf available") == 1, (
+        f"SF reference must appear exactly once (no duplication):\n{result}"
+    )
+
+
+def test_postprocess_replaces_square_feet_reference():
+    """
+    Step 7 (replace): a 'square feet' phrasing is detected by the broader SF
+    pattern and replaced with the canonical sentence, not duplicated.
+    """
+    body = (
+        "Hi Alex,\n\n"
+        "With your lease expiring in 14 months, Reston market timing is critical.\n\n"
+        "There is space in Reston offering 2,500 square feet available for lease.\n\n"
+        "Are you free this week or next?\n\n"
+        "Thank you,\nJack Zamer"
+    )
+    result = _run_postprocess(body)
+    # The 'square feet' phrasing and its figure are gone.
+    assert "square feet" not in result.lower(), (
+        f"'square feet' phrasing should have been removed:\n{result}"
+    )
+    assert "2,500" not in result, (
+        f"Non-standard SF figure should have been removed:\n{result}"
+    )
+    # The canonical sentence is present exactly once.
+    assert "there's an office property in reston" in result.lower(), (
+        f"Canonical property reference not found:\n{result}"
+    )
+    assert result.lower().count("worth a look") == 1, (
+        f"Canonical reference must appear exactly once:\n{result}"
+    )
+
+
+def test_postprocess_caps_target_paragraph_at_three_sentences():
+    """
+    Step 7 (length cap): after the canonical sentence is appended, a target
+    paragraph with more than 3 sentences is trimmed to 3 by removing the shortest
+    filler sentence (one with no submarket name and no SF reference).
+    """
+    body = (
+        "Hi Alex,\n\n"
+        "With your lease expiring in 14 months, Reston market timing is critical.\n\n"
+        "Demand is high. Tenants are active. Quality buildings are tightening across the corridor.\n\n"
+        "Are you free this week or next?\n\n"
+        "Thank you,\nJack Zamer"
+    )
+    result = _run_postprocess(body)
+
+    # Locate the target paragraph (the one carrying the canonical reference).
+    target = next(
+        p for p in result.split("\n\n") if "worth a look" in p.lower()
+    )
+    import re as _re
+    n_sentences = len(
+        [s for s in _re.split(r'(?<=[.!?])\s+', target.strip()) if s.strip()]
+    )
+    assert n_sentences == 3, (
+        f"Target paragraph must be capped at 3 sentences, got {n_sentences}:\n{target}"
+    )
+    # The shortest filler sentence was dropped; the longer ones and the
+    # canonical sentence remain.
+    assert "demand is high" not in result.lower(), (
+        f"Shortest filler sentence should have been removed:\n{result}"
+    )
+    assert "tenants are active" in result.lower()
+    assert "quality buildings are tightening" in result.lower()
+    assert "there's an office property in reston" in result.lower()
+
+
+def test_postprocess_does_not_duplicate_existing_standard_reference():
+    """
+    Step 7 (idempotency): if the target paragraph already contains the exact
+    canonical sentence, it is left untouched — no second copy is appended.
+    """
+    body = (
+        "Hi Alex,\n\n"
+        "With your lease expiring in 14 months, Reston market timing is critical.\n\n"
+        "There's an office property in Reston with approximately 20,000 SF available "
+        "that's worth a look.\n\n"
+        "Are you free this week or next?\n\n"
+        "Thank you,\nJack Zamer"
+    )
+    result = _run_postprocess(body)
+    assert result.lower().count("worth a look") == 1, (
+        f"Canonical reference must not be duplicated:\n{result}"
+    )
+    assert result.lower().count("sf available") == 1, (
+        f"SF reference must appear exactly once:\n{result}"
     )

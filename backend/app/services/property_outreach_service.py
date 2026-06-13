@@ -1445,18 +1445,26 @@ def generate_property_outreach(
                     p_list.append(fallback_mid)
                 email_body = "\n\n".join(p_list)
 
-        # Step 7: Append the canonical property-reference sentence to the paragraph
-        # immediately preceding the closing ask.  Anchoring to close_idx - 1
-        # (not to "second content paragraph") guarantees we always modify the
-        # paragraph the reader sees just before the ask, regardless of how many
-        # framing or intro paragraphs precede it.
+        # Step 7: Ensure the paragraph immediately preceding the closing ask ends
+        # with the canonical property-reference sentence.  Anchoring to
+        # close_idx - 1 (not "second content paragraph") guarantees we always
+        # modify the paragraph the reader sees just before the ask, regardless of
+        # how many framing or intro paragraphs precede it.
         _raw_avail = property_dict.get("sf_avail") or 0
         _avail_sf = round(_raw_avail / 100) * 100 if _raw_avail else 0
         if _avail_sf > 0 and submarket:
             _prop_ref = (
-                f"there's an office property in {submarket} with approximately "
+                f"There's an office property in {submarket} with approximately "
                 f"{_avail_sf:,} SF available that's worth a look."
             )
+            # Any square-footage reference, in any phrasing.
+            _sf_pat = _re.compile(
+                r'\d[\d,]*\s*(?:SF|sq\.?\s*ft\.?|square\s*feet)',
+                _re.IGNORECASE,
+            )
+            # Sentence splitter — keeps terminal punctuation on each sentence.
+            _sent_split = _re.compile(r'(?<=[.!?])\s+')
+
             _p_list7 = email_body.split("\n\n")
             # Locate the closing ask paragraph.
             _close_idx7 = next(
@@ -1467,15 +1475,28 @@ def generate_property_outreach(
             if _close_idx7 is not None and _close_idx7 > 0:
                 _target_idx = _close_idx7 - 1
                 _target_para = _p_list7[_target_idx]
-                # Skip if the paragraph already references both the submarket and
-                # available SF — covers any phrasing, not just our exact sentence.
-                _already_ref = (
-                    submarket.lower() in _target_para.lower()
-                    and "sf available" in _target_para.lower()
-                )
-                if not _already_ref:
-                    _p_list7[_target_idx] = _target_para.rstrip() + " " + _prop_ref
-                    email_body = "\n\n".join(_p_list7)
+                _sentences = [
+                    s for s in _sent_split.split(_target_para.strip()) if s.strip()
+                ]
+                # If the canonical sentence is not already present verbatim, drop
+                # any sentence carrying a (non-standard) SF reference and append
+                # the standard sentence — replace, never duplicate.
+                if _prop_ref.lower() not in _target_para.lower():
+                    _sentences = [s for s in _sentences if not _sf_pat.search(s)]
+                    _sentences.append(_prop_ref)
+                # Paragraph length cap: trim to 3 sentences by shedding the
+                # shortest filler (no submarket name, no SF reference).
+                while len(_sentences) > 3:
+                    _filler = [
+                        s for s in _sentences
+                        if submarket.lower() not in s.lower()
+                        and not _sf_pat.search(s)
+                    ]
+                    if not _filler:
+                        break
+                    _sentences.remove(min(_filler, key=len))
+                _p_list7[_target_idx] = " ".join(_sentences).strip()
+                email_body = "\n\n".join(_p_list7)
 
         # Collapse triple-or-more newlines left by sentence stripping.
         email_body = _re.sub(r'\n{3,}', '\n\n', email_body)
