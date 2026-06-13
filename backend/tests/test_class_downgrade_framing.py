@@ -549,7 +549,8 @@ def test_postprocess_strips_fit_for_sentence():
 def test_postprocess_truncates_trailing_content_after_close():
     """
     Step 5: Anything after 'Are you free this week or next?' on the same line
-    is stripped — hard stop at the ask.
+    is stripped — the entire close sentence is replaced with just the ask.
+    Covers a plain trailing phrase joined by a space.
     """
     body = (
         "Hi Alex,\n\n"
@@ -566,6 +567,30 @@ def test_postprocess_truncates_trailing_content_after_close():
     )
 
 
+def test_postprocess_truncates_prepended_clause_before_close():
+    """
+    Step 5 (bug fix): trailing clauses joined by words like 'to discuss' or
+    'to chat' before 'Are you free this week or next?' are also stripped.
+    The entire sentence is replaced with just the bare ask.
+    """
+    body = (
+        "Hi Alex,\n\n"
+        "With your lease expiring in 14 months, the timing is right to explore.\n\n"
+        "Options in Reston have been moving quickly.\n\n"
+        "I'd love to chat — are you free this week or next to discuss further?"
+    )
+    result = _run_postprocess(body)
+    assert "are you free this week or next?" in result.lower(), (
+        f"Closing ask must be present; got:\n{result}"
+    )
+    assert "to discuss further" not in result.lower(), (
+        f"Trailing clause should have been stripped; got:\n{result}"
+    )
+    assert "i'd love to chat" not in result.lower(), (
+        f"Leading clause should have been stripped; got:\n{result}"
+    )
+
+
 def test_postprocess_appends_property_reference_to_second_body_para():
     """
     Step 7: The second substantive body paragraph must end with the canonical
@@ -574,7 +599,7 @@ def test_postprocess_appends_property_reference_to_second_body_para():
     body = (
         "Hi Alex,\n\n"
         "With your lease expiring in 14 months, Reston market timing is critical.\n\n"
-        "Options in Reston have been moving quickly and there is strong demand.\n\n"
+        "Options in the market have been moving quickly and there is strong demand.\n\n"
         "Are you free this week or next?"
     )
     result = _run_postprocess(body)
@@ -587,4 +612,24 @@ def test_postprocess_appends_property_reference_to_second_body_para():
     # Must appear only once — no double-append.
     assert result.lower().count("worth a look") == 1, (
         f"Property reference was appended more than once:\n{result}"
+    )
+
+
+def test_postprocess_skips_property_reference_when_already_present():
+    """
+    Step 7 (bug fix): if the second body paragraph already contains both the
+    submarket name and 'SF available', the property-reference sentence must
+    NOT be appended again — coverage check for the detection logic.
+    """
+    body = (
+        "Hi Alex,\n\n"
+        "With your lease expiring in 14 months, Reston market timing is critical.\n\n"
+        "There is a quality office property in Reston with approximately 20,000 SF available "
+        "that suits your window.\n\n"
+        "Are you free this week or next?"
+    )
+    result = _run_postprocess(body)
+    # The reference must not be duplicated.
+    assert result.lower().count("sf available") == 1, (
+        f"Property reference was double-appended:\n{result}"
     )

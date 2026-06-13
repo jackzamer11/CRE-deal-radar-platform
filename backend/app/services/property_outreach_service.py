@@ -1406,11 +1406,12 @@ def generate_property_outreach(
             email_body = _fit_for_re.sub("", email_body)
             email_body = _re.sub(r"  +", " ", email_body).strip()
 
-        # Step 5: Hard stop at the closing ask — strip anything that follows
-        # "Are you free this week or next?" on the same line.
+        # Step 5: Hard stop at the closing ask — replace the entire sentence
+        # containing "Are you free this week or next?" with just that question,
+        # regardless of any trailing clause ("to discuss", "to chat", etc.).
         email_body = _re.sub(
-            r'(Are\s+you\s+free\s+this\s+week\s+or\s+next\?)[^\n]*',
-            r'\1',
+            r'[^.!?\n]*\bAre\s+you\s+free\s+this\s+week\s+or\s+next\b[^\n]*',
+            'Are you free this week or next?',
             email_body,
             flags=_re.IGNORECASE,
         )
@@ -1462,8 +1463,15 @@ def generate_property_outreach(
             ]
             if len(_content_idx) >= 2:
                 _sec_idx = _content_idx[1]
-                if "worth a look" not in _p_list7[_sec_idx].lower():
-                    _p_list7[_sec_idx] = _p_list7[_sec_idx].rstrip() + " " + _prop_ref
+                _sec_para = _p_list7[_sec_idx]
+                # Skip if the paragraph already references both the submarket and
+                # SF availability — covers any phrasing, not just our exact sentence.
+                _already_ref = (
+                    submarket.lower() in _sec_para.lower()
+                    and "sf available" in _sec_para.lower()
+                )
+                if not _already_ref:
+                    _p_list7[_sec_idx] = _sec_para.rstrip() + " " + _prop_ref
                     email_body = "\n\n".join(_p_list7)
 
         # Collapse triple-or-more newlines left by sentence stripping.
