@@ -273,12 +273,30 @@ def test_tenant_side_downgrade_leads_with_lease_timing():
 
 def test_tenant_side_downgrade_three_prohibitions_present():
     """
-    The strengthened downgrade rule must include all three PROHIBITION lines.
+    The downgrade rule must include all five PROHIBITION lines.
     """
     prompt = _tenant_side_prompt("Class A", "Class B")
     assert "PROHIBITION 1" in prompt
     assert "PROHIBITION 2" in prompt
     assert "PROHIBITION 3" in prompt
+    assert "PROHIBITION 4" in prompt
+    assert "PROHIBITION 5" in prompt
+
+
+def test_tenant_side_downgrade_prohibition_4_no_sf_restatement():
+    """PROHIBITION 4 must forbid restating the tenant's SF need back to them."""
+    prompt = _tenant_side_prompt("Class A", "Class B")
+    assert "PROHIBITION 4" in prompt
+    assert "restate the tenant's sf need" in prompt.lower()
+    assert "a company needing x sf" in prompt.lower()
+
+
+def test_tenant_side_downgrade_prohibition_5_vacancy_embedded():
+    """PROHIBITION 5 must require the vacancy stat to be embedded inside paragraph 2."""
+    prompt = _tenant_side_prompt("Class A", "Class B")
+    assert "PROHIBITION 5" in prompt
+    assert "embedded inside paragraph 2" in prompt.lower()
+    assert "orphan" in prompt.lower()
 
 
 def test_tenant_side_downgrade_prohibition_1_forbids_class_language():
