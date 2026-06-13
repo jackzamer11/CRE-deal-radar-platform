@@ -987,7 +987,7 @@ def _build_tenant_side(p: dict, tenant_dict: dict) -> dict:
         "PAIN_PROBE:\n<probe>\n"
         "CLOSE:\n<close>"
     )
-    return {"system": system, "user": user}
+    return {"system": system, "user": user, "is_class_downgrade": is_class_downgrade}
 
 
 def _build_listing_rep(p: dict) -> dict:
@@ -1319,6 +1319,44 @@ def generate_property_outreach(
         # scarcity); otherwise substitute a lease-timeline urgency line.
         owner_line = _owner_vacancy_sentence(submarket) or _owner_lease_timeline_sentence(tenant_dict)
         email_body = _insert_before_ask(email_body, owner_line)
+
+    # Class-downgrade post-processing: strip SF-restatement sentences and
+    # merge any standalone vacancy paragraph into the preceding paragraph.
+    if is_tenant_side and prompt.get("is_class_downgrade"):
+        import re as _re
+
+        # Step 1: Remove sentences that quote the tenant's SF requirement back at them.
+        _sf_restate = _re.compile(
+            r'[^.!?]*\b(?:aligns?\s+well\s+with\s+your|fits\s+your|matches\s+your'
+            r'|a\s+company\s+needing|your\s+spatial\s+needs|your\s+space\s+needs)\b'
+            r'[^.!?]*[.!?]',
+            _re.IGNORECASE,
+        )
+        sf_hits = _sf_restate.findall(email_body)
+        for hit in sf_hits:
+            print(f"[downgrade-strip] removed SF-restatement: {hit.strip()}")
+        if sf_hits:
+            email_body = _sf_restate.sub("", email_body)
+            email_body = _re.sub(r"  +", " ", email_body).strip()
+
+        # Step 2: Merge standalone vacancy paragraphs into the preceding paragraph.
+        # A "standalone vacancy paragraph" is one whose entire text is a single
+        # sentence that mentions a vacancy percentage and nothing else.
+        _vacancy_only = _re.compile(
+            r'^[^.!?]*\b(?:vacancy|vacancies)\b[^.!?]*\d+(?:\.\d+)?%[^.!?]*[.!?]?\s*$'
+            r'|^[^.!?]*\d+(?:\.\d+)?%[^.!?]*\b(?:vacancy|vacancies)\b[^.!?]*[.!?]?\s*$',
+            _re.IGNORECASE,
+        )
+        paras = email_body.split("\n\n")
+        merged: list = []
+        for para in paras:
+            if _vacancy_only.match(para.strip()) and merged:
+                merged[-1] = merged[-1].rstrip() + " " + para.strip()
+            elif _vacancy_only.match(para.strip()):
+                pass  # no preceding paragraph — drop the orphan
+            else:
+                merged.append(para)
+        email_body = "\n\n".join(merged)
 
     # Safety strip: property-side copy must never mention headcount,
     # and must never contain a redundant "I propose a short call" sentence.
