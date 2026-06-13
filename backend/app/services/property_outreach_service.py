@@ -1445,10 +1445,11 @@ def generate_property_outreach(
                     p_list.append(fallback_mid)
                 email_body = "\n\n".join(p_list)
 
-        # Step 7: Ensure the second substantive body paragraph ends with the
-        # canonical property-reference sentence so every class-downgrade email
-        # anchors to the specific opportunity. Pull submarket + avail_sf from
-        # property_dict (same values used in _build_tenant_side); round to nearest 100.
+        # Step 7: Append the canonical property-reference sentence to the paragraph
+        # immediately preceding the closing ask.  Anchoring to close_idx - 1
+        # (not to "second content paragraph") guarantees we always modify the
+        # paragraph the reader sees just before the ask, regardless of how many
+        # framing or intro paragraphs precede it.
         _raw_avail = property_dict.get("sf_avail") or 0
         _avail_sf = round(_raw_avail / 100) * 100 if _raw_avail else 0
         if _avail_sf > 0 and submarket:
@@ -1457,21 +1458,23 @@ def generate_property_outreach(
                 f"{_avail_sf:,} SF available that's worth a look."
             )
             _p_list7 = email_body.split("\n\n")
-            _content_idx = [
-                i for i, p in enumerate(_p_list7)
-                if not _is_framing(p) and not _CLOSE_PAT.search(p)
-            ]
-            if len(_content_idx) >= 2:
-                _sec_idx = _content_idx[1]
-                _sec_para = _p_list7[_sec_idx]
+            # Locate the closing ask paragraph.
+            _close_idx7 = next(
+                (i for i, p in enumerate(_p_list7) if _CLOSE_PAT.search(p)),
+                None,
+            )
+            # Target is the paragraph immediately before the close.
+            if _close_idx7 is not None and _close_idx7 > 0:
+                _target_idx = _close_idx7 - 1
+                _target_para = _p_list7[_target_idx]
                 # Skip if the paragraph already references both the submarket and
-                # SF availability — covers any phrasing, not just our exact sentence.
+                # available SF — covers any phrasing, not just our exact sentence.
                 _already_ref = (
-                    submarket.lower() in _sec_para.lower()
-                    and "sf available" in _sec_para.lower()
+                    submarket.lower() in _target_para.lower()
+                    and "sf available" in _target_para.lower()
                 )
                 if not _already_ref:
-                    _p_list7[_sec_idx] = _sec_para.rstrip() + " " + _prop_ref
+                    _p_list7[_target_idx] = _target_para.rstrip() + " " + _prop_ref
                     email_body = "\n\n".join(_p_list7)
 
         # Collapse triple-or-more newlines left by sentence stripping.

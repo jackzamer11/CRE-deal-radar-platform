@@ -593,23 +593,44 @@ def test_postprocess_truncates_prepended_clause_before_close():
 
 def test_postprocess_appends_property_reference_to_second_body_para():
     """
-    Step 7: The second substantive body paragraph must end with the canonical
-    property-reference sentence if it isn't already there.
+    Step 7: The property-reference sentence is appended to the paragraph
+    immediately before the closing ask — not to the end of the full email.
+    Assertions:
+      - property reference appears before 'Are you free this week'
+      - property reference does NOT appear after 'Thank you'
+      - no duplicate appends
     """
     body = (
         "Hi Alex,\n\n"
         "With your lease expiring in 14 months, Reston market timing is critical.\n\n"
         "Options in the market have been moving quickly and there is strong demand.\n\n"
-        "Are you free this week or next?"
+        "Are you free this week or next?\n\n"
+        "Thank you,\nJack Zamer"
     )
     result = _run_postprocess(body)
-    assert "there's an office property in reston" in result.lower(), (
+
+    prop_ref_marker = "there's an office property in reston"
+    assert prop_ref_marker in result.lower(), (
         f"Property reference not found in result:\n{result}"
     )
-    assert "worth a look" in result.lower(), (
-        f"'worth a look' anchor not found in result:\n{result}"
+
+    r = result.lower()
+    ref_pos = r.find(prop_ref_marker)
+    close_pos = r.find("are you free this week")
+    thanks_pos = r.find("thank you")
+
+    # Reference must appear before the closing ask
+    assert ref_pos < close_pos, (
+        f"Property reference (pos {ref_pos}) must appear before "
+        f"'Are you free' (pos {close_pos}):\n{result}"
     )
-    # Must appear only once — no double-append.
+    # Reference must NOT appear after 'Thank you'
+    if thanks_pos != -1:
+        assert ref_pos < thanks_pos, (
+            f"Property reference (pos {ref_pos}) must not appear after "
+            f"'Thank you' (pos {thanks_pos}):\n{result}"
+        )
+    # Must appear only once — no double-append
     assert result.lower().count("worth a look") == 1, (
         f"Property reference was appended more than once:\n{result}"
     )
@@ -617,19 +638,24 @@ def test_postprocess_appends_property_reference_to_second_body_para():
 
 def test_postprocess_skips_property_reference_when_already_present():
     """
-    Step 7 (bug fix): if the second body paragraph already contains both the
-    submarket name and 'SF available', the property-reference sentence must
-    NOT be appended again — coverage check for the detection logic.
+    Step 7 (duplicate guard): if the paragraph immediately before the closing ask
+    already contains both {submarket} and 'SF available', the property-reference
+    sentence must NOT be appended again.
     """
     body = (
         "Hi Alex,\n\n"
         "With your lease expiring in 14 months, Reston market timing is critical.\n\n"
         "There is a quality office property in Reston with approximately 20,000 SF available "
         "that suits your window.\n\n"
-        "Are you free this week or next?"
+        "Are you free this week or next?\n\n"
+        "Thank you,\nJack Zamer"
     )
     result = _run_postprocess(body)
-    # The reference must not be duplicated.
+    # Must not be duplicated
     assert result.lower().count("sf available") == 1, (
         f"Property reference was double-appended:\n{result}"
+    )
+    # The canonical 'worth a look' suffix must not appear (already-present guard fired)
+    assert "worth a look" not in result.lower(), (
+        f"Property reference was incorrectly appended despite existing reference:\n{result}"
     )
