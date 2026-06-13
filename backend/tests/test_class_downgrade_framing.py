@@ -263,12 +263,54 @@ def test_tenant_side_downgrade_omits_asset_class_from_description():
 def test_tenant_side_downgrade_leads_with_lease_timing():
     """
     The downgrade framing rule must require opening on lease timing +
-    submarket + industry context.
+    submarket + industry context — all three appear in the prompt.
     """
     prompt = _tenant_side_prompt("Class A", "Class B")
-    assert "lease" in prompt.lower()
-    assert "Reston" in prompt
-    assert "Technology" in prompt
+    assert "lease" in prompt.lower()    # lease timing hook present
+    assert "Reston" in prompt           # submarket injected
+    assert "Technology" in prompt       # industry injected into PROHIBITION 2
+
+
+def test_tenant_side_downgrade_three_prohibitions_present():
+    """
+    The strengthened downgrade rule must include all three PROHIBITION lines.
+    """
+    prompt = _tenant_side_prompt("Class A", "Class B")
+    assert "PROHIBITION 1" in prompt
+    assert "PROHIBITION 2" in prompt
+    assert "PROHIBITION 3" in prompt
+
+
+def test_tenant_side_downgrade_prohibition_1_forbids_class_language():
+    """PROHIBITION 1 must forbid class labels and downgrade-implying language."""
+    prompt = _tenant_side_prompt("Class A", "Class B")
+    assert "class ratings" in prompt.lower() or "Class A/B/C" in prompt
+    assert "moving down in quality" in prompt or "downgrade" in prompt.lower()
+
+
+def test_tenant_side_downgrade_prohibition_2_forbids_property_lead():
+    """PROHIBITION 2 must require paragraph one to be about lease timing and industry context."""
+    prompt = _tenant_side_prompt("Class A", "Class B")
+    assert "paragraph one must be entirely about" in prompt.lower()
+    assert "Technology" in prompt  # industry injected into rule
+    assert "Reston" in prompt      # submarket injected into rule
+
+
+def test_tenant_side_downgrade_prohibition_3_options_moving_framing():
+    """PROHIBITION 3 must require 'options are moving' framing, not 'I found you a space'."""
+    prompt = _tenant_side_prompt("Class A", "Class B")
+    assert "options are moving" in prompt
+    assert "I found you a space" in prompt  # must appear as a FORBIDDEN example
+
+
+def test_tenant_side_downgrade_specific_ask_close():
+    """
+    For a class-downgrade pair the close must be 'Are you free this week or next?',
+    not the default 'I'd welcome a brief call at your convenience.'
+    """
+    prompt = _tenant_side_prompt("Class A", "Class B")
+    assert "Are you free this week or next?" in prompt
+    assert "I'd welcome a brief call at your convenience" not in prompt
 
 
 def test_tenant_side_downgrade_not_triggered_for_same_class():

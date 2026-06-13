@@ -908,12 +908,26 @@ def _build_tenant_side(p: dict, tenant_dict: dict) -> dict:
         else f"a {asset_class} property in {submarket}{sf_clause}{rent_clause}"
     )
     downgrade_rule = (
-        f"\n- CLASS DOWNGRADE FRAMING: this tenant's current space is a higher class than this property. "
-        f"LEAD the email with lease timing and {submarket} market positioning — NOT the building or its features. "
-        f"The opening line MUST reference: (1) {submarket} submarket, (2) {industry} industry context, "
-        f"and (3) the {exp_display or 'upcoming'} lease window. Building details belong in paragraph 2. "
-        f"Do NOT mention the property class directly."
+        f"\n\nCLASS DOWNGRADE FRAMING — STRICT RULES (override general rules where they conflict):"
+        f"\n  PROHIBITION 1: Do NOT mention building class, class ratings, a 'Class A/B/C' label, "
+        f"class differences, or ANY language implying the tenant would be moving down in quality."
+        f"\n  PROHIBITION 2: Do NOT lead paragraph one with the property, space availability, or building "
+        f"features. Paragraph one MUST be entirely about the tenant's lease timing, {industry} industry "
+        f"context, and the {submarket} market — nothing else."
+        f"\n  PROHIBITION 3: Paragraph two may reference space availability (SF and {submarket} only — "
+        f"no class, no address). Frame it as 'options are moving' or 'timing matters in this market', "
+        f"NOT 'I found you a space' or 'I have something for you'."
+        f"\n  GOAL: This email exists to get a phone call, not pitch a property. "
+        f"End with a specific, time-bound ask: 'Are you free this week or next?' — "
+        f"not 'I\\'d welcome a brief call at your convenience.'"
         if is_class_downgrade else ""
+    )
+
+    close_rule = (
+        "End with a specific, time-bound ask: 'Are you free this week or next?' — "
+        "the goal is a phone call, not a property pitch."
+        if is_class_downgrade else
+        "End with ONE low-friction ask and nothing else: 'I\\'d welcome a brief call at your convenience.'"
     )
 
     system = (
@@ -935,7 +949,7 @@ def _build_tenant_side(p: dict, tenant_dict: dict) -> dict:
         f"\n- Tone: knowledgeable and consultative — a trusted market expert, not a salesperson."
         f"\n- Do NOT reveal that any web search or platform tool was used; do NOT mention other tenants or properties."
         f"\n- NEVER suggest specific days of the week."
-        f"\n- End with ONE low-friction ask and nothing else: 'I'd welcome a brief call at your convenience.'"
+        f"\n- {close_rule}"
     )
 
     user = (
