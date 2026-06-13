@@ -349,3 +349,128 @@ def test_tenant_side_downgrade_not_triggered_for_upgrade():
     prompt = _tenant_side_prompt("Class C", "Class B")
     assert "CLASS DOWNGRADE FRAMING" not in prompt
     assert "Class B property" in prompt
+
+
+# ── Post-processor: SF-restatement strip + vacancy-orphan merge ───────────────
+
+def _run_postprocess(email_body: str) -> str:
+    from unittest.mock import patch, MagicMock
+
+    raw = (
+        f"SUBJECT: Test subject\n"
+        f"EMAIL:\n{email_body}\n"
+        f"OPENING:\nOpening text.\n"
+        f"CORE:\nCore message.\n"
+        f"PAIN_PROBE:\nProbe question?\n"
+        f"CLOSE:\nClose text."
+    )
+    mock_resp = MagicMock()
+    mock_resp.choices[0].message.content = raw
+    mock_client = MagicMock()
+    mock_client.chat.completions.create.return_value = mock_resp
+
+    from app.services.property_outreach_service import generate_property_outreach
+
+    p = {
+        "property_id": "NVA-001", "address": "100 Test Blvd, Reston, VA",
+        "submarket": "Reston", "asset_class": "Class B", "sf_avail": 20_000,
+        "in_place_rent_psf": 38.0, "owner_name": "Test Owner LLC",
+        "total_sf": 50_000, "year_built": 2005, "vacancy_pct": 8.0,
+    }
+    t = {
+        "name": "Acme Tech LLC", "company_id": "CO-001",
+        "primary_contact_name": "Alex Chen", "industry": "Technology",
+        "current_sf_occupied": 15_000, "lease_expiry_months": 14,
+        "current_submarket": "Reston", "current_building_class": "Class A",
+    }
+
+    with patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}):
+        with patch("openai.OpenAI", return_value=mock_client):
+            result = generate_property_outreach(
+                property_dict=p, outreach_type="tenant_match",
+                direction="tenant_side", tenant_dict=t,
+            )
+    return result["email_body"]
+
+
+def test_postprocess_removes_sf_restatement_sentences():
+    """SF-restatement phrases are stripped from class-downgrade emails."""
+    body = (
+        "Hi Alex, with your lease expiring in 14 months this is a good time to look.\n\n"
+        "I have office space in Reston that aligns well with your 15,000 SF requirement "
+        "and fits your space needs perfectly.\n\n"
+        "Are you free this week or next?"
+    )
+    result = _run_postprocess(body)
+    assert "aligns well with your" not in result.lower()
+    assert "fits your" not in result.lower()
+
+
+def test_postprocess_removes_company_needing_sf_phrase():
+    """'a company needing X SF' phrasing is stripped from class-downgrade emails."""
+    body = (
+        "Hi Alex, your lease window is tightening.\n\n"
+        "I know of a space for a company needing 15,000 SF in Reston.\n\n"
+        "Are you free this week or next?"
+    )
+    result = _run_postprocess(body)
+    assert "a company needing" not in result.lower()
+
+
+def test_postprocess_merges_standalone_vacancy_paragraph():
+    """A standalone vacancy-only paragraph is merged into the preceding paragraph."""
+    body = (
+        "Hi Alex, your lease is expiring soon.\n\n"
+        "There is quality office space available in Reston right now.\n\n"
+        "Reston currently has 8.2% vacancy.\n\n"
+        "Are you free this week or next?"
+    )
+    result = _run_postprocess(body)
+    paras = [p.strip() for p in result.split("\n\n") if p.strip()]
+    standalone_vac = [
+        p for p in paras
+        if "vacancy" in p.lower() and "%" in p
+        and "free this week" not in p.lower()
+        and "lease" not in p.lower()
+        and "space" not in p.lower()
+        and len(p.split(".")) <= 2
+    ]
+    assert standalone_vac == [], f"Found standalone vacancy paragraph(s): {standalone_vac}"
+
+
+def test_postprocess_not_applied_for_non_downgrade():
+    """Post-processor must NOT strip SF phrases when there is no class downgrade."""
+    from unittest.mock import patch, MagicMock
+    from app.services.property_outreach_service import generate_property_outreach
+
+    body = (
+        "Hi Alex, I have space that fits your 15,000 SF needs perfectly.\n\n"
+        "Are you free this week or next?"
+    )
+    raw = (
+        f"SUBJECT: Test\nEMAIL:\n{body}\n"
+        "OPENING:\nOpening.\nCORE:\nCore.\nPAIN_PROBE:\nProbe?\nCLOSE:\nClose."
+    )
+    mock_resp = MagicMock()
+    mock_resp.choices[0].message.content = raw
+    mock_client = MagicMock()
+    mock_client.chat.completions.create.return_value = mock_resp
+
+    p = {
+        "property_id": "NVA-002", "address": "200 Test St", "submarket": "Tysons",
+        "asset_class": "Class B", "sf_avail": 20_000, "owner_name": "Owner LLC",
+        "total_sf": 40_000, "year_built": 2000,
+    }
+    t = {
+        "name": "Beta Corp", "company_id": "CO-002", "industry": "Finance",
+        "current_sf_occupied": 15_000, "lease_expiry_months": 18,
+        "current_building_class": "Class B",
+    }
+
+    with patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}):
+        with patch("openai.OpenAI", return_value=mock_client):
+            result = generate_property_outreach(
+                property_dict=p, outreach_type="tenant_match",
+                direction="tenant_side", tenant_dict=t,
+            )
+    assert "fits your" in result["email_body"].lower()
