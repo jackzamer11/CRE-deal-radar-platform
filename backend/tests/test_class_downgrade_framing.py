@@ -505,3 +505,86 @@ def test_postprocess_injects_fallback_when_stripped_to_one_body_para():
     assert "reston" in result.lower()
     # No triple (or more) consecutive newlines — cleanup step ran.
     assert "\n\n\n" not in result
+
+
+# ── Steps 3-7: new cleanup rules ─────────────────────────────────────────────
+
+def test_postprocess_strips_redundant_timing_key():
+    """
+    Step 3: When a paragraph contains both 'timing is crucial' and 'timing is key',
+    the sentence with 'timing is key' is removed and 'timing is crucial' stays.
+    """
+    body = (
+        "Hi Alex,\n\n"
+        "The timing is crucial for your search. "
+        "With your lease expiring soon and given the timing is key in this market, you should act now.\n\n"
+        "Options in Reston are available.\n\n"
+        "Are you free this week or next?"
+    )
+    result = _run_postprocess(body)
+    assert "timing is key" not in result.lower(), (
+        f"'timing is key' should have been stripped; got:\n{result}"
+    )
+    assert "timing is crucial" in result.lower(), (
+        f"'timing is crucial' should remain; got:\n{result}"
+    )
+
+
+def test_postprocess_strips_fit_for_sentence():
+    """
+    Step 4: Sentences containing 'how this could be a fit for' are stripped.
+    """
+    body = (
+        "Hi Alex,\n\n"
+        "With your lease expiring in 14 months, now is the time to explore options.\n\n"
+        "I wanted to reach out to see how this could be a fit for your team at Acme Tech.\n\n"
+        "Are you free this week or next?"
+    )
+    result = _run_postprocess(body)
+    assert "how this could be a fit for" not in result.lower(), (
+        f"'how this could be a fit for' should have been stripped; got:\n{result}"
+    )
+
+
+def test_postprocess_truncates_trailing_content_after_close():
+    """
+    Step 5: Anything after 'Are you free this week or next?' on the same line
+    is stripped — hard stop at the ask.
+    """
+    body = (
+        "Hi Alex,\n\n"
+        "With your lease expiring in 14 months, the timing is right to explore.\n\n"
+        "Options in Reston have been moving quickly.\n\n"
+        "Are you free this week or next? I look forward to connecting with you soon."
+    )
+    result = _run_postprocess(body)
+    assert "are you free this week or next?" in result.lower(), (
+        f"Closing ask must still be present; got:\n{result}"
+    )
+    assert "i look forward to connecting" not in result.lower(), (
+        f"Trailing content after ask should have been stripped; got:\n{result}"
+    )
+
+
+def test_postprocess_appends_property_reference_to_second_body_para():
+    """
+    Step 7: The second substantive body paragraph must end with the canonical
+    property-reference sentence if it isn't already there.
+    """
+    body = (
+        "Hi Alex,\n\n"
+        "With your lease expiring in 14 months, Reston market timing is critical.\n\n"
+        "Options in Reston have been moving quickly and there is strong demand.\n\n"
+        "Are you free this week or next?"
+    )
+    result = _run_postprocess(body)
+    assert "there's an office property in reston" in result.lower(), (
+        f"Property reference not found in result:\n{result}"
+    )
+    assert "worth a look" in result.lower(), (
+        f"'worth a look' anchor not found in result:\n{result}"
+    )
+    # Must appear only once — no double-append.
+    assert result.lower().count("worth a look") == 1, (
+        f"Property reference was appended more than once:\n{result}"
+    )

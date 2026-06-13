@@ -1358,16 +1358,13 @@ def generate_property_outreach(
                 merged.append(para)
         email_body = "\n\n".join(merged)
 
-        # Step 3: If the post-processor stripped too aggressively and fewer than
-        # 2 substantive body paragraphs remain (excluding the standalone greeting,
-        # the hardcoded Jack Zamer intro, and the signature), inject a market-
-        # context fallback paragraph before the closing ask so the email always
-        # has at least opener + market-context + close.
+        # Shared helpers reused by Steps 3–7.
         _GREETING_ONLY = _re.compile(r'^(?:hi|dear|hello)\b', _re.IGNORECASE)
         _SIGNATURE_ONLY = _re.compile(
             r'^(?:thank\s+you|best\s*(?:regards)?|sincerely|warm\s+regards|thanks,|cheers)',
             _re.IGNORECASE,
         )
+        _CLOSE_PAT = _re.compile(r'are\s+you\s+free\s+this\s+week', _re.IGNORECASE)
 
         def _is_framing(p: str) -> bool:
             s = p.strip()
@@ -1379,6 +1376,49 @@ def generate_property_outreach(
                 return True
             return bool(_SIGNATURE_ONLY.match(s))
 
+        # Step 3: Strip the "timing is key" sentence from any paragraph that
+        # already contains "timing is crucial" — two timing clichés in the
+        # same paragraph cancel each other out.
+        _timing_key_re = _re.compile(
+            r'[^.!?]*\btiming\s+is\s+key\b[^.!?]*[.!?]',
+            _re.IGNORECASE,
+        )
+        _paras3 = email_body.split("\n\n")
+        for _i3, _p3 in enumerate(_paras3):
+            if "timing is crucial" in _p3.lower() and "timing is key" in _p3.lower():
+                _hit3 = _timing_key_re.search(_p3)
+                if _hit3:
+                    print(f"[downgrade-strip] removed redundant timing: {_hit3.group().strip()}")
+                _paras3[_i3] = _timing_key_re.sub("", _p3)
+                _paras3[_i3] = _re.sub(r"  +", " ", _paras3[_i3]).strip()
+        email_body = "\n\n".join(_paras3)
+
+        # Step 4: Strip sentences containing "how this could be a fit for" —
+        # implies a specific space match which breaks the lease-first framing rule.
+        _fit_for_re = _re.compile(
+            r'[^.!?]*\bhow\s+this\s+could\s+be\s+a\s+fit\s+for\b[^.!?]*[.!?]',
+            _re.IGNORECASE,
+        )
+        _fit_hits = _fit_for_re.findall(email_body)
+        for _hit4 in _fit_hits:
+            print(f"[downgrade-strip] removed fit-for sentence: {_hit4.strip()}")
+        if _fit_hits:
+            email_body = _fit_for_re.sub("", email_body)
+            email_body = _re.sub(r"  +", " ", email_body).strip()
+
+        # Step 5: Hard stop at the closing ask — strip anything that follows
+        # "Are you free this week or next?" on the same line.
+        email_body = _re.sub(
+            r'(Are\s+you\s+free\s+this\s+week\s+or\s+next\?)[^\n]*',
+            r'\1',
+            email_body,
+            flags=_re.IGNORECASE,
+        )
+
+        # Step 6: If stripping reduced the email to fewer than 2 substantive body
+        # paragraphs (excluding the standalone greeting, the hardcoded Jack Zamer
+        # intro, and the signature), inject a market-context fallback before the
+        # closing ask so the email always has opener + market-context + close.
         body_paras_after = [p for p in email_body.split("\n\n") if not _is_framing(p)]
         if len(body_paras_after) < 2:
             vac = _submarket_vacancy(submarket) or property_dict.get("vacancy_pct")
@@ -1387,7 +1427,6 @@ def generate_property_outreach(
                     f"With {submarket}'s vacancy rate at {float(vac):.1f}%, quality options are "
                     f"moving quickly — it's worth a conversation before the window closes."
                 )
-                _CLOSE_PAT = _re.compile(r'are\s+you\s+free\s+this\s+week', _re.IGNORECASE)
                 p_list = email_body.split("\n\n")
                 close_idx = next(
                     (i for i, p in enumerate(p_list) if _CLOSE_PAT.search(p)),
@@ -1404,6 +1443,28 @@ def generate_property_outreach(
                 else:
                     p_list.append(fallback_mid)
                 email_body = "\n\n".join(p_list)
+
+        # Step 7: Ensure the second substantive body paragraph ends with the
+        # canonical property-reference sentence so every class-downgrade email
+        # anchors to the specific opportunity. Pull submarket + avail_sf from
+        # property_dict (same values used in _build_tenant_side); round to nearest 100.
+        _raw_avail = property_dict.get("sf_avail") or 0
+        _avail_sf = round(_raw_avail / 100) * 100 if _raw_avail else 0
+        if _avail_sf > 0 and submarket:
+            _prop_ref = (
+                f"there's an office property in {submarket} with approximately "
+                f"{_avail_sf:,} SF available that's worth a look."
+            )
+            _p_list7 = email_body.split("\n\n")
+            _content_idx = [
+                i for i, p in enumerate(_p_list7)
+                if not _is_framing(p) and not _CLOSE_PAT.search(p)
+            ]
+            if len(_content_idx) >= 2:
+                _sec_idx = _content_idx[1]
+                if "worth a look" not in _p_list7[_sec_idx].lower():
+                    _p_list7[_sec_idx] = _p_list7[_sec_idx].rstrip() + " " + _prop_ref
+                    email_body = "\n\n".join(_p_list7)
 
         # Collapse triple-or-more newlines left by sentence stripping.
         email_body = _re.sub(r'\n{3,}', '\n\n', email_body)
