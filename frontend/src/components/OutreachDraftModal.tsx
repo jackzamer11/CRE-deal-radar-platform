@@ -169,7 +169,13 @@ export default function OutreachDraftModal(props: Props) {
   const [intelFindings, setIntelFindings] = useState<IntelFinding[]>([])
 
   // ── Recipient ────────────────────────────────────────────────────────────────
-  const initialRecipientName  = entity_type === 'property' ? (props.recipient_name  ?? '') : ''
+  // Fix 3: the recipient field is shown on the tenant outreach modal too. For a
+  // company it pre-fills from the contact on file (primary_contact_name); the email
+  // has no contact-on-file field, so it stays empty and surfaces the warning — the
+  // same behavior as the Daily Briefing modal when a contact email isn't on record.
+  const initialRecipientName  = entity_type === 'property'
+    ? (props.recipient_name  ?? '')
+    : (props.company.primary_contact_name ?? '')
   const initialRecipientEmail = entity_type === 'property' ? (props.recipient_email ?? '') : ''
   const [recipientName,  setRecipientName]  = useState(initialRecipientName)
   const [recipientEmail, setRecipientEmail] = useState(initialRecipientEmail)
@@ -764,9 +770,8 @@ export default function OutreachDraftModal(props: Props) {
                   )}
                 </div>
 
-                {/* RECIPIENT (Change 7) */}
-                {entity_type === 'property' && (
-                  <div className="border border-surface-border rounded-lg p-3 space-y-2">
+                {/* RECIPIENT (Change 7; Fix 3 — also shown on the tenant outreach modal) */}
+                <div className="border border-surface-border rounded-lg p-3 space-y-2">
                     <div className="text-[11px] font-semibold text-ink-secondary uppercase tracking-wider">Recipient</div>
                     <div className="grid grid-cols-2 gap-2">
                       <input
@@ -790,8 +795,7 @@ export default function OutreachDraftModal(props: Props) {
                         Add recipient before sending — contact not on file
                       </div>
                     )}
-                  </div>
-                )}
+                </div>
 
                 {/* Leading-with label — property_side only */}
                 {direction === 'property_side' && leadingTenantName && (

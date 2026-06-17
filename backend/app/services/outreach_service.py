@@ -8,6 +8,7 @@ it does not invoke GPT-4o directly.
 Requires OPENAI_API_KEY in the environment.
 """
 import os
+import re
 from typing import Optional
 
 from app.services.rep_classification import classify_rep, MAJOR_BROKER_FIRMS
@@ -33,6 +34,28 @@ _SIGNATURE_INSTRUCTION = (
     "(after the last paragraph, on a new line):\n\n"
     "Thank you,\n\nJack Zamer\nVice President, The Commercial Real Estate Group\n571-205-6228"
 )
+
+
+# Street-address guard — tenant-side copy shows submarket + class only, never a
+# property street address. Matches "<number> <words> <street-suffix>" (e.g.
+# "100 Test Ave", "1750 Tysons Boulevard"). "12 months" / phone numbers do not match.
+_STREET_SUFFIX = (
+    r"(?:St|Street|Ave|Avenue|Blvd|Boulevard|Rd|Road|Dr|Drive|Ln|Lane|Way|Ct|Court|"
+    r"Pkwy|Parkway|Pike|Plaza|Sq|Square|Ter|Terrace|Cir|Circle|Hwy|Highway|Suite|Ste)\b\.?"
+)
+_STREET_ADDRESS_RE = re.compile(
+    rf"\b\d{{1,6}}\s+(?:[A-Za-z0-9.'-]+\s+){{0,4}}{_STREET_SUFFIX}",
+    re.IGNORECASE,
+)
+
+
+def _strip_street_address(body: str) -> str:
+    """Defensive guard: remove any street-address token a model may have echoed so
+    tenant-side copy never shows a property street address (submarket + class only)."""
+    if not body:
+        return body
+    cleaned = _STREET_ADDRESS_RE.sub("", body)
+    return re.sub(r"[ \t]{2,}", " ", cleaned)
 
 
 def _should_cite_vacancy_tenant_side(avg_vacancy: Optional[float]) -> bool:
@@ -218,7 +241,6 @@ def generate_outreach(company: dict) -> dict:
     contact_title = company.get("primary_contact_title") or ""
     tenant_rep    = company.get("tenant_representative") or ""
     rep_class     = classify_rep(tenant_rep)
-    current_rent  = company.get("current_rent_psf")
     future_flag   = company.get("future_move_flag")
     future_type   = company.get("future_move_type") or ""
     trajectory    = (company.get("lease_trajectory") or "AUTO").upper()
@@ -239,16 +261,8 @@ def generate_outreach(company: dict) -> dict:
     # SF needed = real occupied SF only. When unknown, never substitute an estimate.
     sf_line = f"{current_sf:,} SF occupied" if current_sf else "SF unknown — do not state or estimate a square footage"
 
-    rent_line = "in-place rent unknown"
-    if current_rent and market_rent:
-        diff = round(current_rent - market_rent, 2)
-        sign = "+" if diff >= 0 else ""
-        ctx  = ("above market — renegotiation pressure likely at renewal" if diff > 2
-                else "below market — favorable rate they'll want to preserve" if diff < -2
-                else "at-market")
-        rent_line = f"${current_rent:.2f}/SF in-place vs ${market_rent:.2f}/SF market ({sign}${diff:.2f} — {ctx})"
-    elif market_rent:
-        rent_line = f"in-place rate unknown; {submarket} market benchmark ${market_rent:.2f}/SF (per CBRE Q1 2026)"
+    # Fix 1: the per-tenant rent-gap figure is no longer surfaced — tenant emails
+    # lead with lease timing and the market window, not an in-place-vs-market stat.
 
     if show_vacancy:
         vacancy_str = f"{avg_vacancy:.1f}%"
@@ -284,114 +298,83 @@ def generate_outreach(company: dict) -> dict:
         trajectory_note = "Tenant is in steady-state mode. Focus on lease timing and market rate opportunity, not expansion."
 
     # ── Rep framing ────────────────────────────────────────────────────────────
+    # Fix 1: the represented-vs-unrepresented pivot stays, but it leads with the
+    # market window and lease timing — never with a per-tenant rent-gap figure.
     if rep_class == "MAJOR":
         rep_instruction = (
-            f"Tenant is already represented by {tenant_rep} (major brokerage). "
-            "Do NOT pitch direct representation. "
-            f"Pivot to market resource framing: position yourself as a {submarket}-specialist complement. "
-            "REQUIRED: Reference at least one quantitative comparison vs. the NoVA average. "
-            f"Example: '{submarket} vacancy is sitting at {avg_vacancy:.1f}% — "
-            f"well above the {NOVA_AVG_VACANCY:.1f}% NoVA average (per CBRE Q1 2026) — "
-            "which means landlords have lost negotiating leverage. "
-            f"Recent NoVA renewals are seeing {NOVA_AVG_FREE_RENT}+ months free rent "
-            f"and ${NOVA_AVG_TI}+/SF TI on average.' "
-            "Never position yourself against a major firm."
-        ) if avg_vacancy and show_vacancy else (
-            f"Tenant is already represented by {tenant_rep} (major brokerage). "
-            "Do NOT pitch direct representation. "
-            f"Pivot to market resource framing: position yourself as a {submarket}-specialist complement. "
-            "REQUIRED: Reference the rent comparison vs. the NoVA average. "
-            f"Example: '{submarket} market rent is ${market_rent:.2f}/SF vs the ${NOVA_AVG_RENT:.2f}/SF NoVA average — "
-            "which creates leverage in renewal negotiations.' "
-            "Never position yourself against a major firm."
-        ) if avg_vacancy else (
-            f"Tenant is already represented by {tenant_rep} (major brokerage). "
-            "Pivot to market resource framing. Never pitch direct representation."
+            f"This tenant is already represented by {tenant_rep} (a major brokerage). Do NOT pitch "
+            f"direct representation and never position yourself against the incumbent firm. Offer "
+            f"yourself as a {submarket}-specialist second read on the current market window — "
+            f"sublease supply, flight-to-quality, and landlord concessions — not a competing relationship."
         )
     elif rep_class == "OTHER":
         rep_instruction = (
-            f"Tenant has a regional rep on record ({tenant_rep}). Lead with your specific "
-            f"{submarket} deal flow knowledge; let value open the door."
+            f"This tenant has a regional rep on record ({tenant_rep}). Lead with your specific "
+            f"{submarket} market knowledge and let the value open the door — do not disparage the rep."
         )
     else:
         rep_instruction = (
-            "Tenant has NO broker rep on record. Pitch direct tenant representation explicitly and confidently. "
-            "REQUIRED: Reference one specific market dislocation. "
-            + (f"Example: reference the {submarket} market rate of ${market_rent:.2f}/SF vs the "
-               f"${NOVA_AVG_RENT:.2f}/SF NoVA average (per CBRE Q1 2026)." if market_rent else "")
+            "This tenant has NO broker representation on record. You may offer to represent them "
+            "directly, but lead with the lease-timing window and what the market means for them — "
+            "keep the ask low-pressure, never aggressive."
         )
 
     contraction_note = (
         "Tenant shows right-sizing signals. Acknowledge gracefully. Do not project expansion."
     ) if contraction else ""
 
-    # ── Pain probe ────────────────────────────────────────────────────────────
-    if rep_class == "MAJOR":
-        _pp_context = "MAJOR firm rep — probe for intel needs, not pain."
-        _pp_example = (
-            f"What kind of market intel would actually be useful to your team right now — "
-            f"recent {submarket} comp activity, sublease availability, or landlord concession behavior?"
-        )
-    elif trajectory == "CONTRACTING":
-        _sf_ref = f"from {current_sf:,} SF " if current_sf else ""
-        _pp_context = "Tenant is contracting — probe for the driver."
-        _pp_example = f"What drove the right-sizing {_sf_ref}— was that cost-driven, hybrid policy, or part of a broader restructure?"
-    elif trajectory == "GROWING":
-        _growth_ref = f"at +{growth_pct:.0f}% YoY " if growth_pct else ""
-        _pp_context = "Tenant is growing — probe for the growth driver."
-        _pp_example = f"What's driving the team expansion {_growth_ref}— new contract wins, M&A, or organic growth?"
-    else:
-        _sf_ref = f"across {current_sf:,} SF " if current_sf else ""
-        _pp_context = "Probe for current space-planning pressures."
-        _pp_example = f"What's the biggest pressure on your space planning {_sf_ref}this cycle — cost, talent attraction, hybrid model, or location?"
-
-    pain_probe_rule = (
-        f"PAIN PROBE — STRICT RULES: "
-        f"(a) Write EXACTLY ONE open-ended question. Zero setup sentences. Zero pitching before the question. "
-        f"(b) The question MUST reference at least one specific data point from the tenant record. "
-        f"(c) FORBIDDEN: pitching language, multi-sentence setup, binary yes/no questions, generic questions. "
-        f"(d) Context: {_pp_context} "
-        f"(e) CORRECT example: \"{_pp_example}\" "
-        f"(f) BAD example: 'A premium {submarket} address can support talent retention. Are you facing any specific challenges?' "
-        f"Write ONE sharp, data-anchored open question only."
+    # ── NoVA market-window framing (Fix 1) ────────────────────────────────────
+    # Tenant emails lead with lease timing and what the current NoVA office market
+    # window means for the tenant — rising sublease supply, flight-to-quality, and
+    # landlord concessions (free rent, TI allowances, blend-and-extend). They do
+    # NOT lead with, or feature, a per-tenant rent-gap figure.
+    market_window = (
+        f"the NoVA office market currently favors tenants: sublease supply is rising, there is a "
+        f"clear flight-to-quality, and landlords are competing with concession packages — averaging "
+        f"{NOVA_AVG_FREE_RENT}+ months of free rent and ${NOVA_AVG_TI}+/SF in TI allowances "
+        f"(per CBRE Q1 2026), plus blend-and-extend flexibility for tenants who engage ahead of expiry"
+    )
+    # Tight-supply reinforcement — only cited when submarket vacancy is below the
+    # tenant-side threshold (scarcity signal that sharpens the flight-to-quality window).
+    tight_supply_line = (
+        f"Note that {submarket} vacancy is only {avg_vacancy:.1f}%, so the best space gets spoken for early."
+        if show_vacancy and avg_vacancy is not None else ""
     )
 
-    rent_ref = (
-        f"${market_rent:.2f}/SF vs ${NOVA_AVG_RENT:.2f}/SF NoVA avg"
-        if market_rent else f"submarket rent vs ${NOVA_AVG_RENT:.2f}/SF NoVA avg"
-    )
     rules = [
-        "Cite '(per CBRE Q1 2026)' on the FIRST market statistic in each message (email and call script).",
+        # ── Email structure (Fix 1) ──────────────────────────────────────────
         (
-            f"Email body: MINIMUM 6 sentences, MAXIMUM 150 words (excluding signature block). "
-            f"Subject line under 9 words. "
-            + (
-                f"REQUIRED in email body — both of these comparisons must appear: "
-                f"(i) submarket vacancy vs NoVA average with the specific percentage-point delta; "
-                f"(ii) submarket rent vs NoVA average — pattern: "
-                f"'[Submarket] market rent is {rent_ref} — a [premium/discount] of $X reflecting [reason]'. "
-                f"Both comparisons are mandatory regardless of rep status."
-                if show_vacancy else
-                f"REQUIRED in email body: submarket rent vs NoVA average — pattern: "
-                f"'[Submarket] market rent is {rent_ref} — a [premium/discount] of $X reflecting [reason]'. "
-                f"Do NOT cite the submarket vacancy rate — submarket vacancy is above the tenant-side citation threshold."
-            )
+            "EMAIL BODY — follow this order exactly: "
+            f"(1) LEAD with their lease timing: their lease is up in {lease_str} in {submarket}, and a "
+            f"renewal-or-relocate decision is best driven early — open on this, not on any statistic. "
+            f"(2) Explain what the market window means for THEM: {market_window}. "
+            + (f"{tight_supply_line} " if tight_supply_line else "")
+            + "Do NOT lead with — or feature — a per-tenant rent figure or a rent-gap stat. "
+            "(3) Include exactly ONE short, open-ended pain-probe question about their current space situation. "
+            "(4) Close low-pressure. "
+            "Body MINIMUM 6 sentences, MAXIMUM 150 words (excluding the signature block); subject under 9 words."
         ),
-        (
-            "Call script OPENING, CORE MESSAGE, and CLOSE: MINIMUM 3 sentences each with specific data. "
-            + (
-                "CORE MESSAGE must include both submarket rent vs NoVA average and vacancy comparison."
-                if show_vacancy else
-                "CORE MESSAGE must include submarket rent vs NoVA average. "
-                "Do NOT cite the submarket vacancy rate in tenant-side outreach."
-            )
-        ),
-        pain_probe_rule,
+        "Cite '(per CBRE Q1 2026)' on the FIRST market statistic only — do not repeat the citation.",
+        # Broker name + NoVA specialty appear exactly once each (Fix 1)
+        "Do NOT introduce yourself by name anywhere in the email body — your name appears ONLY in the "
+        "signature block, exactly once. State your Northern Virginia office specialty exactly once, "
+        "briefly; never repeat 'exclusively NoVA office' or any similar phrasing.",
+        "Reference ONLY the submarket and months-to-expiry. NEVER include a street address.",
         f'Greeting: use "{greeting}" — format "Hi {greeting},"',
-        "FORBIDDEN phrases: 'happy to discuss', 'let me know if interested', 'feel free to reach out', "
-        "and NEVER suggest specific days of the week. "
-        "Close with: 'I'd welcome a brief call at your convenience.'",
+        "FORBIDDEN phrases: 'happy to discuss', 'let me know if interested', 'feel free to reach out'; "
+        "NEVER suggest specific days of the week. Close with: 'I'd welcome a brief call at your convenience.'",
         rep_instruction,
+        # ── Call script (Fix 2): tenant-rep discovery structure ──────────────
+        (
+            "CALL SCRIPT — write a tenant-rep discovery call with four distinct sections: "
+            "OPENING — a brief, warm intro and ask permission to ask a few quick questions. "
+            "CORE MESSAGE — a natural sequence of discovery questions: how their current space is "
+            "fitting, what they're paying in rent now, their growth trajectory, floor-plan needs, "
+            "parking count, in-office vs hybrid work model, whether they've started looking yet, and "
+            "who else is involved in the decision. "
+            "PAIN PROBE — one question that surfaces their single biggest real-estate headache. "
+            "THE CLOSE — offer a free, no-obligation market read on their options; apply no pressure."
+        ),
         _industry_pain(industry),
     ]
     if trajectory_note:
@@ -412,10 +395,10 @@ RULES:
 Return valid JSON only — no markdown fences, no extra text:
 {{
   "call_script": {{
-    "opening": "...",
-    "core_message": "...",
-    "pain_probe": "...",
-    "the_close": "..."
+    "opening": "warm intro + permission to ask a few questions",
+    "core_message": "discovery questions: current space fit, current rent, growth trajectory, floor-plan needs, parking count, work model, whether they've started looking, who else decides",
+    "pain_probe": "one question surfacing their biggest real-estate headache",
+    "the_close": "offer a free, no-obligation market read"
   }},
   "email": {{
     "subject": "...",
@@ -452,7 +435,6 @@ Return valid JSON only — no markdown fences, no extra text:
         f"  Headcount:      {headcount or 'unknown'} employees\n"
         f"  Growth rate:    {growth_str} YoY\n"
         f"  SF footprint:   {sf_line}\n"
-        f"  Rent situation: {rent_line}\n"
         f"  Lease expiry:   {lease_str}\n"
         f"  Broker rep:     {tenant_rep or 'NONE ON RECORD'} [{rep_class}]\n"
         + (f"  {future_line}\n" if future_line else "")
@@ -469,7 +451,6 @@ Return valid JSON only — no markdown fences, no extra text:
     )
 
     import json
-    from app.services.property_outreach_service import _inject_hardcoded_sentences
     full_user = user_prompt + intel_section
     response = client.chat.completions.create(
         model="gpt-4o",
@@ -482,7 +463,10 @@ Return valid JSON only — no markdown fences, no extra text:
     )
     result = json.loads(response.choices[0].message.content.strip())
     result["projected_sf"] = projected_sf
-    # Fix 1 & Fix 6: inject hardcoded intro and social proof post-LLM
+    # Fix 1: do NOT inject a hardcoded broker intro or social-proof line on tenant
+    # emails. The broker name appears exactly once — in the signature block — and the
+    # NoVA-office specialty is stated once in the body. As a defensive guard, drop any
+    # street-address line the model may have echoed (tenant side shows submarket only).
     if isinstance(result.get("email"), dict) and result["email"].get("body"):
-        result["email"]["body"] = _inject_hardcoded_sentences(result["email"]["body"])
+        result["email"]["body"] = _strip_street_address(result["email"]["body"])
     return result
