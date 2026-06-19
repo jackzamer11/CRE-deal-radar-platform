@@ -25,6 +25,12 @@ class Settings(BaseSettings):
     nova_avg_hold_years: float = 7.0
     cramped_sf_per_head: int = 150
 
+    # CoStar Tenant Locations import — minimum "SF Occupied" floor.
+    # Rows whose SF Occupied is below this value are dropped (filtered_size).
+    # Default 0 = no floor (import everything). Override via the env var
+    # TENANT_MIN_OCCUPIED_SF. Rows with missing/blank SF always pass the floor.
+    TENANT_MIN_OCCUPIED_SF: int = 0
+
     # Submarket reference data (avg asking $/SF for comps)
     submarket_avg_psf: dict = {
         "Arlington (Clarendon)": 310,

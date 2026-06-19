@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.database import get_db
 from app.models.company import Company
 from app.models.outreach_log import OutreachLog
@@ -77,9 +78,11 @@ COSTAR_TENANT_COLS = [
     "Next Break Date", "Rent/SF/year", "Future Move", "Future Move Type",
 ]
 
-# Minimum occupied square footage for a tenant location to be imported.
-# Rows with "SF Occupied" below this threshold are dropped (filtered_size).
-MIN_SF_OCCUPIED = 1500
+# The minimum occupied-square-footage floor for a tenant location to be
+# imported lives in settings.TENANT_MIN_OCCUPIED_SF (config.py, default 0 =
+# no floor). It is read at request time so the setting / env var can change
+# the behaviour without a code edit. Rows with missing/blank "SF Occupied"
+# always pass the floor — see Filter 3 in costar_tenant_import below.
 
 
 # ── CoStar tenant import helpers ──────────────────────────────────────────────
@@ -406,9 +409,10 @@ async def costar_tenant_import(
     Import a CoStar Tenant Locations export (.csv or .xlsx).
 
     Filter pipeline:
-      1. State != VA             → filtered_state
-      2. Submarket unmapped      → filtered_submarket  (tracks unmapped_submarkets)
-      3. SF Occupied < 1,500     → filtered_size
+      1. State != VA                              → filtered_state
+      2. Submarket unmapped                       → filtered_submarket  (tracks unmapped_submarkets)
+      3. SF Occupied < TENANT_MIN_OCCUPIED_SF     → filtered_size
+         (blank/missing SF Occupied always passes; default floor is 0)
 
     Dedupe key: (Tenant Name, Address) — case-insensitive, whitespace-trimmed.
     Auto-links to an existing Property when Address matches exactly.
@@ -465,9 +469,11 @@ async def costar_tenant_import(
             filtered_submarket += 1
             continue
 
-        # Filter 3: SF Occupied >= MIN_SF_OCCUPIED
+        # Filter 3: SF Occupied >= TENANT_MIN_OCCUPIED_SF (read live from settings).
+        # Null-safe: a missing/blank/unparseable SF Occupied passes the floor
+        # rather than crashing or being silently dropped.
         sf_occ = _cs_float(row, "SF Occupied")
-        if sf_occ is None or sf_occ < MIN_SF_OCCUPIED:
+        if sf_occ is not None and sf_occ < settings.TENANT_MIN_OCCUPIED_SF:
             filtered_size += 1
             continue
 
