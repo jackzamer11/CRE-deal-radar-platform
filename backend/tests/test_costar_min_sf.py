@@ -1,13 +1,16 @@
 """
-CoStar Tenant Locations import — minimum SF Occupied threshold.
+CoStar Tenant Locations import — minimum SF Occupied floor (configurable).
 
-Guards the size filter in /api/companies/costar-import (companies.py, Filter 3):
-rows whose "SF Occupied" falls below MIN_SF_OCCUPIED are dropped (counted in
-filtered_size), rows at or above it are kept and inserted.
+Guards Filter 3 in /api/companies/costar-import (companies.py): rows whose
+"SF Occupied" falls below settings.TENANT_MIN_OCCUPIED_SF are dropped (counted
+in filtered_size); rows at or above it — and rows with blank/missing SF — are
+kept.
 
-The threshold lives in the named constant MIN_SF_OCCUPIED (currently 1,500).
-These boundary tests assert behaviour at 1,499 (dropped) vs 1,500 (kept) and
-are pinned to the constant so they track future threshold changes.
+The floor is no longer a hardcoded constant. It lives in
+settings.TENANT_MIN_OCCUPIED_SF (config.py), defaults to 0 (no floor), and is
+read live at request time so the env var TENANT_MIN_OCCUPIED_SF can change the
+behaviour without a code edit. These tests assert the default-0 behaviour and
+that raising the floor reinstates the size filter.
 """
 import io
 
@@ -18,8 +21,9 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 import app.models  # noqa: F401 — registers core tables on Base.metadata
+from app.config import settings
 from app.database import Base, get_db
-from app.api.routes.companies import COSTAR_TENANT_COLS, MIN_SF_OCCUPIED
+from app.api.routes.companies import COSTAR_TENANT_COLS
 from app.models.company import Company
 
 
@@ -81,36 +85,28 @@ def _upload_csv(client, rows: list) -> dict:
     return resp.json()
 
 
-def test_constant_is_1500():
-    """The named threshold constant must be 1,500 (the new minimum)."""
-    assert MIN_SF_OCCUPIED == 1500
+def test_default_floor_is_zero():
+    """The configurable floor defaults to 0 (no size filter)."""
+    assert settings.TENANT_MIN_OCCUPIED_SF == 0
 
 
-def test_row_below_threshold_is_dropped(client, db_session):
-    """SF Occupied = 1,499 → just under MIN_SF_OCCUPIED → filtered out."""
-    result = _upload_csv(client, [_row("BelowCo", MIN_SF_OCCUPIED - 1)])
-
-    assert result["total_rows"] == 1
-    assert result["filtered_size"] == 1
-    assert result["inserted"] == 0
-    assert db_session.query(Company).filter_by(name="BelowCo").first() is None
-
-
-def test_row_at_threshold_is_kept(client, db_session):
-    """SF Occupied = 1,500 → exactly MIN_SF_OCCUPIED → kept and inserted."""
-    result = _upload_csv(client, [_row("AtCo", MIN_SF_OCCUPIED)])
+def test_small_row_kept_by_default(client, db_session):
+    """With the default floor of 0, a tiny SF Occupied row is still kept."""
+    result = _upload_csv(client, [_row("TinyCo", 1)])
 
     assert result["total_rows"] == 1
     assert result["filtered_size"] == 0
     assert result["inserted"] == 1
-    assert db_session.query(Company).filter_by(name="AtCo").first() is not None
+    assert db_session.query(Company).filter_by(name="TinyCo").first() is not None
 
 
-def test_boundary_split_in_one_import(client, db_session):
-    """In a single import the 1,499 row drops and the 1,500 row survives."""
+def test_floor_override_drops_below_and_keeps_at(client, db_session, monkeypatch):
+    """Raising TENANT_MIN_OCCUPIED_SF reinstates the size filter at the boundary."""
+    monkeypatch.setattr(settings, "TENANT_MIN_OCCUPIED_SF", 1500)
+
     result = _upload_csv(client, [
-        _row("DropCo", MIN_SF_OCCUPIED - 1),
-        _row("KeepCo", MIN_SF_OCCUPIED),
+        _row("DropCo", 1499),
+        _row("KeepCo", 1500),
     ])
 
     assert result["total_rows"] == 2
