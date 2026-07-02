@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { X, Users, ChevronRight } from 'lucide-react'
-import { createCompany, updateCompanyMedical, updateCompanySfOccupied, updateCompanyBuildingClass, updateCompanyLease } from '../api/client'
+import { createCompany, updateCompanyMedical, updateCompanySfOccupied, updateCompanyBuildingClass, updateCompanyLease, updateCompanyRents } from '../api/client'
 import type { CompanyOut } from '../types'
 
 const SUBMARKETS = [
@@ -45,6 +45,8 @@ const defaultForm = {
   current_sf_occupied:   '',
   current_building_class: '',
   lease_expiry_months:   '',
+  effective_rent_psf:    '',
+  building_asking_rent_psf: '',
   primary_contact_name:  '',
   primary_contact_title: '',
   primary_contact_phone: '',
@@ -68,6 +70,8 @@ function companyToForm(data: CompanyOut): FormState {
     current_sf_occupied:   data.current_sf_occupied != null ? String(data.current_sf_occupied) : '',
     current_building_class: data.current_building_class ?? '',
     lease_expiry_months:   data.lease_expiry_months != null ? String(data.lease_expiry_months) : '',
+    effective_rent_psf:    data.effective_rent_psf != null ? String(data.effective_rent_psf) : '',
+    building_asking_rent_psf: data.building_asking_rent_psf != null ? String(data.building_asking_rent_psf) : '',
     primary_contact_name:  data.primary_contact_name ?? '',
     primary_contact_title: data.primary_contact_title ?? '',
     primary_contact_phone: data.primary_contact_phone ?? '',
@@ -146,6 +150,10 @@ export default function AddCompanyModal({ onClose, onSaved, editCompanyId, initi
         const sfVal = form.current_sf_occupied ? parseInt(form.current_sf_occupied) : null
         await updateCompanySfOccupied(editCompanyId!, sfVal)
         await updateCompanyBuildingClass(editCompanyId!, form.current_building_class || null)
+        await updateCompanyRents(editCompanyId!, {
+          effective_rent_psf:       form.effective_rent_psf ? parseFloat(form.effective_rent_psf) : null,
+          building_asking_rent_psf: form.building_asking_rent_psf ? parseFloat(form.building_asking_rent_psf) : null,
+        })
         if (form.lease_expiry_months) {
           await updateCompanyLease(editCompanyId!, {
             lease_expiry_months: parseInt(form.lease_expiry_months),
@@ -166,6 +174,8 @@ export default function AddCompanyModal({ onClose, onSaved, editCompanyId, initi
           current_sf_occupied:   form.current_sf_occupied ? parseInt(form.current_sf_occupied) : undefined,
           current_building_class: form.current_building_class || undefined,
           lease_expiry_months:   form.lease_expiry_months ? parseInt(form.lease_expiry_months) : undefined,
+          effective_rent_psf:    form.effective_rent_psf ? parseFloat(form.effective_rent_psf) : undefined,
+          building_asking_rent_psf: form.building_asking_rent_psf ? parseFloat(form.building_asking_rent_psf) : undefined,
           primary_contact_name:  form.primary_contact_name || undefined,
           primary_contact_title: form.primary_contact_title || undefined,
           primary_contact_phone: form.primary_contact_phone || undefined,
@@ -336,6 +346,16 @@ export default function AddCompanyModal({ onClose, onSaved, editCompanyId, initi
                 <Field label="SF Occupied (CoStar)" hint="real occupied SF — never estimated; leave blank if unknown">
                   <input className={inputCls} type="number" placeholder="e.g. 5500"
                     value={form.current_sf_occupied} onChange={set('current_sf_occupied')} />
+                </Field>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <Field label="Effective Rent ($/SF/yr)" hint="actual effective rent — from Lease Activity import or manual">
+                  <input className={inputCls} type="number" step="0.01" min="0" placeholder="e.g. 34.50"
+                    value={form.effective_rent_psf} onChange={set('effective_rent_psf')} />
+                </Field>
+                <Field label="Building Asking Rent ($/SF/yr)" hint="asking rent quoted at their building">
+                  <input className={inputCls} type="number" step="0.01" min="0" placeholder="e.g. 38.00"
+                    value={form.building_asking_rent_psf} onChange={set('building_asking_rent_psf')} />
                 </Field>
               </div>
               <Field label="Months Until Lease Expiry" hint="most important signal — be precise">

@@ -408,6 +408,18 @@ def ensure_companies(cur: sqlite3.Cursor) -> int:
     except Exception as _exc:
         print(f"  ! companies.is_medical add skipped: {_exc}")
 
+    # ── Rent economics for the tenant-side rent-gap ladder ─────────────────
+    # effective_rent_psf: actual effective rent ($/SF/yr) from the Lease
+    # Activity import ("Effective Rent (Annual)") or manual entry.
+    # building_asking_rent_psf: asking rent quoted at the tenant's building
+    # ($/SF/yr), manual entry. Both nullable; each ADD COLUMN is individually
+    # guarded so a partially-migrated DB never aborts startup.
+    for _rent_col in ("effective_rent_psf", "building_asking_rent_psf"):
+        try:
+            added += _add_column(cur, "companies", _rent_col, "REAL")
+        except Exception as _exc:
+            print(f"  ! companies.{_rent_col} add skipped: {_exc}")
+
     # ── Single SF field: current_sf_occupied (real occupied SF, never calculated) ──
     # Replaces the legacy current_sf / estimated_sf_needed pair. Add idempotently,
     # then port any existing legacy value across so no real SF data is lost on the

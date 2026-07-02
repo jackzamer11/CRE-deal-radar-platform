@@ -4,7 +4,8 @@ import {
   Users, Filter, X, TrendingUp, Clock, MapPin, Plus, RefreshCw,
   Upload, Pencil, Check, AlertTriangle, Zap, Send, Building2, Trash2,
 } from 'lucide-react'
-import { getCompanies, getCompany, updateCompanyLease, updateCompanyBuildingClass, unsnoozeCompany, deleteCompany } from '../api/client'
+import { getCompanies, getCompany, updateCompanyLease, updateCompanyBuildingClass, unsnoozeCompany, deleteCompany, getBenchmarks } from '../api/client'
+import type { SubmarketBenchmark } from '../api/client'
 import type { CompanyListOut, CompanyOut, RepClass } from '../types'
 import { PriorityBadge, MedicalBadge } from '../components/PriorityBadge'
 import ScoreBadge from '../components/ScoreBadge'
@@ -99,6 +100,9 @@ export default function Companies() {
   const [buildingClassSaving, setBuildingClassSaving] = useState(false)
   const [editCompanyTarget, setEditCompanyTarget]   = useState<CompanyOut | null>(null)
   const [showSnoozedOnly, setShowSnoozedOnly]       = useState(false)
+  // CBRE submarket benchmarks (vacancy + asking rent) for the Submarket Intel
+  // section. Null-safe: a failed fetch just renders '—' values.
+  const [benchmarks, setBenchmarks] = useState<Record<string, SubmarketBenchmark> | null>(null)
 
   // Lease expiry inline edit state
   const [editingLease, setEditingLease]     = useState(false)
@@ -126,6 +130,11 @@ export default function Companies() {
   }
 
   useEffect(() => { load() }, [submarket, priority, expansionOnly, repFilter, topOutreachMode])
+
+  // Fetch CBRE submarket benchmarks once for the Submarket Intel section.
+  useEffect(() => {
+    getBenchmarks().then(b => setBenchmarks(b.submarkets)).catch(() => {})
+  }, [])
 
   // Auto-open detail panel from URL param ?selected=CO-001
   useEffect(() => {
@@ -747,6 +756,40 @@ export default function Companies() {
                   </div>
                 </div>
               </div>
+
+              {/* Submarket Intel — CBRE benchmarks + tenant rent economics */}
+              {(() => {
+                const bench = selected.current_submarket ? benchmarks?.[selected.current_submarket] ?? null : null
+                return (
+                  <div className="bg-surface-muted rounded-lg p-3">
+                    <div className="text-[10px] text-ink-muted uppercase tracking-wider mb-2">Submarket Intel</div>
+                    <div className="space-y-2">
+                      <Row label="Submarket" value={selected.current_submarket || '—'} />
+                      <Row
+                        label="Submarket Vacancy"
+                        value={bench != null ? `${bench.vacancy_pct.toFixed(1)}%` : '—'}
+                      />
+                      <Row
+                        label="Submarket Asking Rent"
+                        value={bench != null ? `$${bench.market_rent_psf.toFixed(2)}/SF` : '—'}
+                      />
+                      <Row
+                        label="Lease Expiry"
+                        value={selected.lease_expiry_months != null ? `${selected.lease_expiry_months} months` : '—'}
+                      />
+                      {selected.effective_rent_psf != null && (
+                        <Row label="Effective Rent" value={`$${selected.effective_rent_psf.toFixed(2)}/SF`} />
+                      )}
+                      {selected.building_asking_rent_psf != null && (
+                        <Row label="Building Asking Rent" value={`$${selected.building_asking_rent_psf.toFixed(2)}/SF`} />
+                      )}
+                      {bench != null && (
+                        <div className="text-[9px] text-ink-muted pt-0.5">{bench.source}</div>
+                      )}
+                    </div>
+                  </div>
+                )
+              })()}
 
               <div className="bg-surface-muted rounded-lg p-3">
                 <div className="text-[10px] text-ink-muted uppercase tracking-wider mb-2">Opportunity Score</div>

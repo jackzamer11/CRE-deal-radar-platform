@@ -68,6 +68,15 @@ class Company(Base):
     # CoStar Tenant enrichment fields
     tenant_representative = Column(String, nullable=True)
     current_rent_psf = Column(Float, nullable=True)
+    # Rent economics for the tenant-side rent-gap ladder. Plain fields on the
+    # company record — no property/building linking. Null = unknown.
+    # effective_rent_psf: the tenant's actual effective rent ($/SF/yr), sourced
+    # from the CoStar Lease Activity import ("Effective Rent (Annual)", stored
+    # as-is) or entered manually.
+    # building_asking_rent_psf: asking rent currently quoted at the tenant's
+    # building ($/SF/yr), entered manually.
+    effective_rent_psf = Column(Float, nullable=True)
+    building_asking_rent_psf = Column(Float, nullable=True)
     future_move_flag = Column(Boolean, nullable=True)
     future_move_type = Column(String, nullable=True)
     linked_property_id = Column(Integer, nullable=True)

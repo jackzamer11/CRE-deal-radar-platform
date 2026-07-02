@@ -147,6 +147,9 @@ export interface CompanyListOut {
   current_submarket: string | null
   current_sf_occupied: number | null
   current_rent_psf: number | null
+  // Rent-gap ladder inputs (plain company fields; null = unknown)
+  effective_rent_psf: number | null
+  building_asking_rent_psf: number | null
   lease_expiry_months: number | null
   lease_expiry_date: string | null
   lease_expiry_source: string | null

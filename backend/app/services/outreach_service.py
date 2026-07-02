@@ -12,7 +12,12 @@ import re
 from typing import Optional
 
 from app.services.rep_classification import classify_rep, MAJOR_BROKER_FIRMS
-from app.config import NOVA_OFFICE_BENCHMARKS, SUBMARKET_BENCHMARKS, TENANT_VACANCY_CITE_THRESHOLD
+from app.config import (
+    NOVA_OFFICE_BENCHMARKS,
+    RENT_GAP_PIVOT_YEAR,
+    SUBMARKET_BENCHMARKS,
+    TENANT_VACANCY_CITE_THRESHOLD,
+)
 
 NOVA_AVG_RENT        = NOVA_OFFICE_BENCHMARKS["avg_market_rent_psf"]
 NOVA_AVG_VACANCY     = NOVA_OFFICE_BENCHMARKS["avg_vacancy_pct"]
@@ -62,6 +67,94 @@ def _should_cite_vacancy_tenant_side(avg_vacancy: Optional[float]) -> bool:
     """Tenant-side emails cite the vacancy line only when submarket vacancy is strictly
     below TENANT_VACANCY_CITE_THRESHOLD — tight supply is the relevant signal for tenants."""
     return avg_vacancy is not None and avg_vacancy < TENANT_VACANCY_CITE_THRESHOLD
+
+
+# ── Rent-gap ladder (deterministic — appears in BOTH email and call script) ────
+#
+# Four rungs, sharpest set field wins:
+#   (a) effective + building asking both set → direct gap claim vs building asking
+#   (b) effective set, building null         → direct gap claim vs submarket asking
+#   (c) effective null, building set         → hedge framing off building asking
+#   (d) both null                            → hedge framing off submarket asking
+# When neither field nor a submarket benchmark exists, there is no rent line
+# (return None) — never a crash, never an invented number.
+
+# Full-service positioning + free-lease-analysis close: injected verbatim on
+# every rung so the lines survive regeneration (same pattern as the property
+# outreach service's hardcoded sentences).
+FULL_SERVICE_LINE = (
+    "When I look at a lease, I review the full economics — TI allowance, "
+    "base-year op-ex, taxes, and escalations — not just the space match, "
+    "and it costs you nothing as the tenant."
+)
+FREE_ANALYSIS_LINE = (
+    "If it would be useful, I'll put together a free lease analysis of your "
+    "current terms — no obligation either way."
+)
+
+
+def build_rent_gap_line(
+    effective_rent_psf: Optional[float],
+    building_asking_rent_psf: Optional[float],
+    submarket: Optional[str],
+) -> Optional[str]:
+    """Return the rent line for the tenant email + call script, or None.
+
+    Pure and null-safe: zero/negative/blank values count as unset; an unknown
+    submarket simply removes the submarket rungs.
+    """
+    eff  = effective_rent_psf if (effective_rent_psf or 0) > 0 else None
+    bldg = building_asking_rent_psf if (building_asking_rent_psf or 0) > 0 else None
+    submarket_asking = SUBMARKET_MARKET_RENT.get(submarket or "")
+
+    # (a) direct gap claim: effective vs building asking
+    if eff is not None and bldg is not None:
+        gap = abs(eff - bldg)
+        return (
+            f"You're at ${eff:.2f}/SF effective against ${bldg:.2f}/SF asking in your "
+            f"building right now — that's a ${gap:.2f}/SF gap on your lease, and it's "
+            f"exactly the number to pin down before you renew."
+        )
+    # (b) direct gap claim: effective vs submarket asking
+    if eff is not None and submarket_asking is not None:
+        gap = abs(eff - submarket_asking)
+        return (
+            f"You're at ${eff:.2f}/SF effective against ${submarket_asking:.2f}/SF asking in "
+            f"{submarket} right now — that's a ${gap:.2f}/SF gap on your lease, and it's "
+            f"exactly the number to pin down before you renew."
+        )
+    # (c) hedge framing off building asking
+    if bldg is not None:
+        return (
+            f"Asking rents in your building are quoting around ${bldg:.2f}/SF right now — "
+            f"a lot of tenants who signed before {RENT_GAP_PIVOT_YEAR} are sitting above that. "
+            f"I don't know where your lease lands, but that gap is exactly what I check."
+        )
+    # (d) hedge framing off submarket asking
+    if submarket_asking is not None:
+        return (
+            f"Asking rents in {submarket} are quoting around ${submarket_asking:.2f}/SF right now — "
+            f"a lot of tenants who signed before {RENT_GAP_PIVOT_YEAR} are sitting above that. "
+            f"I don't know where your lease lands, but that gap is exactly what I check."
+        )
+    return None
+
+
+def _insert_paragraph_before_ask(body: str, sentence: Optional[str]) -> str:
+    """Insert `sentence` as its own paragraph before the closing ask (or the
+    signature block when no ask is present). No-op when the sentence is empty
+    or already present — regeneration never duplicates it."""
+    if not sentence or not body or sentence in body:
+        return body
+    paras = body.split("\n\n")
+    idx = next((i for i, p in enumerate(paras) if "I'd welcome a brief call" in p), None)
+    if idx is None:
+        idx = next((i for i, p in enumerate(paras) if p.strip().startswith("Thank you")), None)
+    if idx is None:
+        paras.append(sentence)
+    else:
+        paras.insert(idx, sentence)
+    return "\n\n".join(paras)
 
 
 def _industry_pain(industry: str) -> str:
@@ -261,8 +354,14 @@ def generate_outreach(company: dict) -> dict:
     # SF needed = real occupied SF only. When unknown, never substitute an estimate.
     sf_line = f"{current_sf:,} SF occupied" if current_sf else "SF unknown — do not state or estimate a square footage"
 
-    # Fix 1: the per-tenant rent-gap figure is no longer surfaced — tenant emails
-    # lead with lease timing and the market window, not an in-place-vs-market stat.
+    # Rent-gap ladder: the one rent line both the email and the call script carry.
+    # Sharpest set field wins (effective → building asking → submarket asking);
+    # None when no rent reference exists at all (never an invented number).
+    rent_line = build_rent_gap_line(
+        company.get("effective_rent_psf"),
+        company.get("building_asking_rent_psf"),
+        submarket,
+    )
 
     if show_vacancy:
         vacancy_str = f"{avg_vacancy:.1f}%"
@@ -342,17 +441,19 @@ def generate_outreach(company: dict) -> dict:
     )
 
     rules = [
-        # ── Email structure (Fix 1) ──────────────────────────────────────────
+        # ── Email structure ──────────────────────────────────────────────────
         (
             "EMAIL BODY — follow this order exactly: "
             f"(1) LEAD with their lease timing: their lease is up in {lease_str} in {submarket}, and a "
             f"renewal-or-relocate decision is best driven early — open on this, not on any statistic. "
-            f"(2) Explain what the market window means for THEM: {market_window}. "
+            + (f"(2) Include this exact rent sentence VERBATIM as its own sentence early in the body: "
+               f"\"{rent_line}\" " if rent_line else "")
+            + f"(3) Explain what the market window means for THEM: {market_window}. "
             + (f"{tight_supply_line} " if tight_supply_line else "")
-            + "Do NOT lead with — or feature — a per-tenant rent figure or a rent-gap stat. "
-            "(3) Include exactly ONE short, open-ended pain-probe question about their current space situation. "
-            "(4) Close low-pressure. "
-            "Body MINIMUM 6 sentences, MAXIMUM 150 words (excluding the signature block); subject under 9 words."
+            + f"(4) Include this full-service positioning sentence VERBATIM: \"{FULL_SERVICE_LINE}\" "
+            "(5) Include exactly ONE short, open-ended pain-probe question about their current space situation. "
+            f"(6) Close low-pressure with the free lease analysis offer VERBATIM: \"{FREE_ANALYSIS_LINE}\" "
+            "Body MINIMUM 6 sentences, MAXIMUM 170 words (excluding the signature block); subject under 9 words."
         ),
         "Cite '(per CBRE Q1 2026)' on the FIRST market statistic only — do not repeat the citation.",
         # Broker name + NoVA specialty appear exactly once each (Fix 1)
@@ -364,16 +465,23 @@ def generate_outreach(company: dict) -> dict:
         "FORBIDDEN phrases: 'happy to discuss', 'let me know if interested', 'feel free to reach out'; "
         "NEVER suggest specific days of the week. Close with: 'I'd welcome a brief call at your convenience.'",
         rep_instruction,
-        # ── Call script (Fix 2): tenant-rep discovery structure ──────────────
+        # ── Call script: tenant-rep discovery structure ───────────────────────
         (
             "CALL SCRIPT — write a tenant-rep discovery call with four distinct sections: "
-            "OPENING — a brief, warm intro and ask permission to ask a few quick questions. "
+            "OPENING — open with their lease timing "
+            + (f"(their lease is expiring in about {lease_mo} months — say so up front), "
+               if lease_mo is not None else "(reference their upcoming lease expiry), ")
+            + "then a brief, warm intro and ask permission to ask a few quick questions. "
             "CORE MESSAGE — a natural sequence of discovery questions: how their current space is "
             "fitting, what they're paying in rent now, their growth trajectory, floor-plan needs, "
             "parking count, in-office vs hybrid work model, whether they've started looking yet, and "
             "who else is involved in the decision. "
+            + (f"Include this exact rent sentence VERBATIM in the core message: \"{rent_line}\" "
+               if rent_line else "")
+            + f"Also include the full-service positioning sentence VERBATIM: \"{FULL_SERVICE_LINE}\" "
             "PAIN PROBE — one question that surfaces their single biggest real-estate headache. "
-            "THE CLOSE — offer a free, no-obligation market read on their options; apply no pressure."
+            f"THE CLOSE — close with the free lease analysis offer VERBATIM: \"{FREE_ANALYSIS_LINE}\" "
+            "Apply no pressure."
         ),
         _industry_pain(industry),
     ]
@@ -463,10 +571,55 @@ Return valid JSON only — no markdown fences, no extra text:
     )
     result = json.loads(response.choices[0].message.content.strip())
     result["projected_sf"] = projected_sf
-    # Fix 1: do NOT inject a hardcoded broker intro or social-proof line on tenant
-    # emails. The broker name appears exactly once — in the signature block — and the
-    # NoVA-office specialty is stated once in the body. As a defensive guard, drop any
-    # street-address line the model may have echoed (tenant side shows submarket only).
-    if isinstance(result.get("email"), dict) and result["email"].get("body"):
-        result["email"]["body"] = _strip_street_address(result["email"]["body"])
+
+    # ── Deterministic rent-ladder guarantee (email + call script) ─────────────
+    # The lease-timing opener, rent line, full-service positioning, and free
+    # lease-analysis close are injected post-LLM whenever the model dropped
+    # them, so every rung of the ladder survives regeneration. Each insert is
+    # guarded by a presence check — verbatim model output is never duplicated.
+    email = result.get("email") if isinstance(result.get("email"), dict) else None
+    if email is not None and email.get("body"):
+        body = email["body"]
+        if lease_mo is not None and f"{lease_mo} month" not in body:
+            paras = body.split("\n\n")
+            timing_line = (
+                f"Your lease is expiring in about {lease_mo} months — that's the window "
+                f"where getting ahead of the decision still pays."
+            )
+            paras.insert(1 if len(paras) > 1 else len(paras), timing_line)
+            body = "\n\n".join(paras)
+        # Insertion order puts them rent line → positioning → analysis offer,
+        # each ahead of the closing ask.
+        body = _insert_paragraph_before_ask(body, rent_line)
+        body = _insert_paragraph_before_ask(body, FULL_SERVICE_LINE)
+        body = _insert_paragraph_before_ask(body, FREE_ANALYSIS_LINE)
+        email["body"] = body
+
+    cs = result.get("call_script") if isinstance(result.get("call_script"), dict) else None
+    if cs is not None:
+        opening = cs.get("opening") or ""
+        if lease_mo is not None and f"{lease_mo} month" not in opening:
+            opening = (
+                f"I know your lease is expiring in about {lease_mo} months, "
+                f"so I'll keep this quick. " + opening
+            ).strip()
+        cs["opening"] = opening
+
+        core = cs.get("core_message") or ""
+        if rent_line and rent_line not in core:
+            core = core + ("\n\n" if core else "") + rent_line
+        if FULL_SERVICE_LINE not in core:
+            core = core + ("\n\n" if core else "") + FULL_SERVICE_LINE
+        cs["core_message"] = core
+
+        the_close = cs.get("the_close") or ""
+        if FREE_ANALYSIS_LINE not in the_close:
+            the_close = (the_close + " " if the_close else "") + FREE_ANALYSIS_LINE
+        cs["the_close"] = the_close
+
+    # The broker name appears exactly once — in the signature block. As a defensive
+    # guard, drop any street-address token the model may have echoed (tenant side
+    # shows submarket only).
+    if email is not None and email.get("body"):
+        email["body"] = _strip_street_address(email["body"])
     return result
