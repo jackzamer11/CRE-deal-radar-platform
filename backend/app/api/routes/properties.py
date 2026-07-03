@@ -1658,6 +1658,7 @@ def log_property_outreach(
         email_subject=payload.email_subject,
         email_body=payload.email_body,
         call_script_opening=payload.call_script_opening,
+        call_script_hook=payload.call_script_hook,
         call_script_core=payload.call_script_core,
         call_script_pain_probe=payload.call_script_pain_probe,
         call_script_close=payload.call_script_close,

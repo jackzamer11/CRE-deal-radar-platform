@@ -139,7 +139,11 @@ export const updateCompanyMedical = (
 
 export const updateCompanyRents = (
   companyId: string,
-  payload: { effective_rent_psf: number | null; building_asking_rent_psf: number | null },
+  payload: {
+    effective_rent_psf: number | null
+    starting_rent_psf: number | null
+    building_asking_rent_psf: number | null
+  },
 ): Promise<CompanyOut> =>
   api.patch(`/companies/${companyId}/rents`, payload).then(r => r.data)
 
@@ -150,7 +154,7 @@ export const logOutreach = (
   companyId: string,
   payload: {
     email_subject: string; email_body: string
-    call_script_opening: string; call_script_core: string
+    call_script_opening: string; call_script_hook?: string | null; call_script_core: string
     call_script_pain_probe: string; call_script_close: string
     projected_sf: number | null; score_at_generation: number
     priority_at_generation: string; email_sent: boolean; call_made: boolean
@@ -192,7 +196,7 @@ export const logPropertyOutreach = (
   propertyId: string,
   payload: {
     email_subject: string; email_body: string
-    call_script_opening: string; call_script_core: string
+    call_script_opening: string; call_script_hook?: string | null; call_script_core: string
     call_script_pain_probe: string; call_script_close: string
     projected_sf: number | null; score_at_generation: number
     priority_at_generation: string; email_sent: boolean; call_made: boolean
@@ -221,6 +225,7 @@ export interface OutreachDraftPayload {
   subject: string
   body: string
   call_script_opening?: string | null
+  call_script_hook?: string | null
   call_script_core?: string | null
   call_script_pain_probe?: string | null
   call_script_close?: string | null

@@ -73,9 +73,13 @@ class Company(Base):
     # effective_rent_psf: the tenant's actual effective rent ($/SF/yr), sourced
     # from the CoStar Lease Activity import ("Effective Rent (Annual)", stored
     # as-is) or entered manually.
+    # starting_rent_psf: the rent the lease STARTED at ($/SF/yr), sourced from
+    # the Lease Activity import ("Starting Rent (Annual)", stored as-is) or
+    # entered manually — feeds the escalation-creep rungs of the ladder.
     # building_asking_rent_psf: asking rent currently quoted at the tenant's
     # building ($/SF/yr), entered manually.
     effective_rent_psf = Column(Float, nullable=True)
+    starting_rent_psf = Column(Float, nullable=True)
     building_asking_rent_psf = Column(Float, nullable=True)
     future_move_flag = Column(Boolean, nullable=True)
     future_move_type = Column(String, nullable=True)

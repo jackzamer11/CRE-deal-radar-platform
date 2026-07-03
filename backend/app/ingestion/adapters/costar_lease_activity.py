@@ -9,11 +9,13 @@ Exact CoStar Lease Activity export column names (verified from actual export):
   "Space Use"        — filter to "Office" only
   "Submarket Name"   — for logging
 
-Tenant effective-rent pass (optional columns — the pass is skipped when absent):
+Tenant rent pass (optional columns — the pass is skipped when absent):
   "Tenant Name"              — matched to Company by NAME (exact after
                                normalization only; no fuzzy guessing)
   "Effective Rent (Annual)"  — $/SF, stored on effective_rent_psf AS-IS
                                (no escalation or vintage adjustment)
+  "Starting Rent (Annual)"   — $/SF, stored on starting_rent_psf AS-IS
+Existing values are never overwritten by either column.
 """
 import re
 import io
@@ -72,8 +74,10 @@ def run_costar_lease_activity_import(file_bytes: bytes, filename: str, db) -> di
     update in_place_rent_psf for properties that currently have no rent data.
 
     Additionally name-matches each row's "Tenant Name" to a Company and stores
-    "Effective Rent (Annual)" $/SF on effective_rent_psf, as-is. Exact
-    normalized name match only — unmatched rows are reported, never guessed.
+    "Effective Rent (Annual)" $/SF on effective_rent_psf and "Starting Rent
+    (Annual)" $/SF on starting_rent_psf, as-is (existing values never
+    overwritten). Exact normalized name match only — unmatched rows are
+    reported, never guessed.
 
     Returns:
         {"updated": N, "skipped_no_match": N, "skipped_existing": N, "errors": [],
@@ -120,14 +124,19 @@ def run_costar_lease_activity_import(file_bytes: bytes, filename: str, db) -> di
         if p.address
     ]
 
-    # ── Tenant effective-rent pass setup ───────────────────────────────────
+    # ── Tenant rent pass setup ─────────────────────────────────────────────
     # Name-match "Tenant Name" → Company (exact after normalization — the same
     # canonicalization the Lease Comps import uses; no fuzzy guessing) and
-    # store "Effective Rent (Annual)" on effective_rent_psf as-is.
+    # store each present rent column on its company attribute as-is.
     from app.models.company import Company
     from app.services.lease_comps_service import _compact_key
 
-    has_tenant_cols = "Tenant Name" in df.columns and "Effective Rent (Annual)" in df.columns
+    TENANT_RENT_COLS = {
+        "Effective Rent (Annual)": "effective_rent_psf",
+        "Starting Rent (Annual)":  "starting_rent_psf",
+    }
+    present_rent_cols = [c for c in TENANT_RENT_COLS if c in df.columns]
+    has_tenant_cols = "Tenant Name" in df.columns and bool(present_rent_cols)
     comp_by_key: dict = {}
     if has_tenant_cols:
         for c in db.query(Company).all():
@@ -136,8 +145,8 @@ def run_costar_lease_activity_import(file_bytes: bytes, filename: str, db) -> di
                 comp_by_key[key] = c
 
     tenant_skips: list[dict] = []      # {"tenant_name": ..., "reason": ...}
-    # company.id → (signed_date, effective_rent, tenant_name); latest signing wins
-    best_tenant: dict[int, tuple[date, float, str]] = {}
+    # (company.id, attr) → (signed_date, value, tenant_name); latest signing wins
+    best_tenant: dict[tuple[int, str], tuple[date, float, str]] = {}
 
     # Collect best rent-per-property (most recent Lease Signed Date wins)
     best: dict[int, tuple[date, float]] = {}  # property.id → (signed_date, rent)
@@ -156,32 +165,46 @@ def run_costar_lease_activity_import(file_bytes: bytes, filename: str, db) -> di
             except Exception:
                 row_signed_date = None
 
-        # ── Tenant effective-rent pass (runs on every Office row) ───────────
+        # ── Tenant rent pass (runs on every Office row) ──────────────────────
         if has_tenant_cols:
             tenant_name = (row.get("Tenant Name") or "").strip()
-            eff_rent = _parse_psf(row.get("Effective Rent (Annual)"))
+            parsed: dict = {}        # company attr → parsed value
+            unparseable: list = []   # rent columns whose non-blank cell failed to parse
+            for col in present_rent_cols:
+                raw = row.get(col)
+                if raw is None or not str(raw).strip():
+                    continue  # blank cell — datum simply absent for this row
+                val = _parse_psf(raw)
+                if val is None:
+                    unparseable.append(col)
+                else:
+                    parsed[TENANT_RENT_COLS[col]] = val
+
             if not tenant_name:
-                if row.get("Effective Rent (Annual)"):
+                if parsed or unparseable:
                     tenant_skips.append({
                         "tenant_name": "(blank)",
                         "reason": "missing Tenant Name",
                     })
-            elif eff_rent is None:
-                tenant_skips.append({
-                    "tenant_name": tenant_name,
-                    "reason": "missing/unparseable Effective Rent (Annual)",
-                })
             else:
-                comp = comp_by_key.get(_compact_key(tenant_name))
-                if comp is None:
+                for col in unparseable:
                     tenant_skips.append({
                         "tenant_name": tenant_name,
-                        "reason": "no matching tenant company by name",
+                        "reason": f"missing/unparseable {col}",
                     })
-                else:
-                    cur = best_tenant.get(comp.id)
-                    if cur is None or (row_signed_date or date.min) >= cur[0]:
-                        best_tenant[comp.id] = (row_signed_date or date.min, eff_rent, tenant_name)
+                if parsed:
+                    comp = comp_by_key.get(_compact_key(tenant_name))
+                    if comp is None:
+                        tenant_skips.append({
+                            "tenant_name": tenant_name,
+                            "reason": "no matching tenant company by name",
+                        })
+                    else:
+                        for attr, val in parsed.items():
+                            k = (comp.id, attr)
+                            cur = best_tenant.get(k)
+                            if cur is None or (row_signed_date or date.min) >= cur[0]:
+                                best_tenant[k] = (row_signed_date or date.min, val, tenant_name)
 
         if not raw_addr or not raw_rent:
             continue
@@ -229,35 +252,37 @@ def run_costar_lease_activity_import(file_bytes: bytes, filename: str, db) -> di
         prop.in_place_rent_source = "costar_lease_activity"
         updated += 1
 
-    # ── Apply tenant effective rents (as-is; never overwrite an existing value) ──
-    tenants_matched = 0
-    for cid, (_, eff_rent, tenant_name) in best_tenant.items():
+    # ── Apply tenant rents (as-is; never overwrite an existing value) ──────
+    matched_company_ids: set = set()
+    for (cid, attr), (_, val, tenant_name) in best_tenant.items():
         comp = db.query(Company).filter(Company.id == cid).first()
         if comp is None:
             continue
-        if comp.effective_rent_psf is not None:
+        if getattr(comp, attr) is not None:
             tenant_skips.append({
                 "tenant_name": tenant_name,
-                "reason": "effective_rent_psf already set — not overwritten",
+                "reason": f"{attr} already set — not overwritten",
             })
             continue
-        comp.effective_rent_psf = eff_rent
-        tenants_matched += 1
+        setattr(comp, attr, val)
+        matched_company_ids.add(cid)
+    tenants_matched = len(matched_company_ids)
 
     db.commit()
 
     # Summary: N matched, N skipped, skipped names with reasons.
     if has_tenant_cols:
         print(
-            f"[lease-activity] effective rents: {tenants_matched} matched, "
-            f"{len(tenant_skips)} skipped"
+            f"[lease-activity] tenant rents ({', '.join(present_rent_cols)}): "
+            f"{tenants_matched} matched, {len(tenant_skips)} skipped"
         )
         for s in tenant_skips:
             print(f"  - skipped {s['tenant_name']}: {s['reason']}")
     else:
         print(
-            "[lease-activity] no 'Tenant Name' + 'Effective Rent (Annual)' columns "
-            "in this export — tenant effective-rent pass skipped"
+            "[lease-activity] no 'Tenant Name' + rent columns "
+            "('Effective Rent (Annual)' / 'Starting Rent (Annual)') in this "
+            "export — tenant rent pass skipped"
         )
 
     return {

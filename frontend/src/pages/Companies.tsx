@@ -780,6 +780,9 @@ export default function Companies() {
                       {selected.effective_rent_psf != null && (
                         <Row label="Effective Rent" value={`$${selected.effective_rent_psf.toFixed(2)}/SF`} />
                       )}
+                      {selected.starting_rent_psf != null && (
+                        <Row label="Starting Rent" value={`$${selected.starting_rent_psf.toFixed(2)}/SF`} />
+                      )}
                       {selected.building_asking_rent_psf != null && (
                         <Row label="Building Asking Rent" value={`$${selected.building_asking_rent_psf.toFixed(2)}/SF`} />
                       )}

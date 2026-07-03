@@ -46,6 +46,7 @@ const defaultForm = {
   current_building_class: '',
   lease_expiry_months:   '',
   effective_rent_psf:    '',
+  starting_rent_psf:     '',
   building_asking_rent_psf: '',
   primary_contact_name:  '',
   primary_contact_title: '',
@@ -71,6 +72,7 @@ function companyToForm(data: CompanyOut): FormState {
     current_building_class: data.current_building_class ?? '',
     lease_expiry_months:   data.lease_expiry_months != null ? String(data.lease_expiry_months) : '',
     effective_rent_psf:    data.effective_rent_psf != null ? String(data.effective_rent_psf) : '',
+    starting_rent_psf:     data.starting_rent_psf != null ? String(data.starting_rent_psf) : '',
     building_asking_rent_psf: data.building_asking_rent_psf != null ? String(data.building_asking_rent_psf) : '',
     primary_contact_name:  data.primary_contact_name ?? '',
     primary_contact_title: data.primary_contact_title ?? '',
@@ -152,6 +154,7 @@ export default function AddCompanyModal({ onClose, onSaved, editCompanyId, initi
         await updateCompanyBuildingClass(editCompanyId!, form.current_building_class || null)
         await updateCompanyRents(editCompanyId!, {
           effective_rent_psf:       form.effective_rent_psf ? parseFloat(form.effective_rent_psf) : null,
+          starting_rent_psf:        form.starting_rent_psf ? parseFloat(form.starting_rent_psf) : null,
           building_asking_rent_psf: form.building_asking_rent_psf ? parseFloat(form.building_asking_rent_psf) : null,
         })
         if (form.lease_expiry_months) {
@@ -175,6 +178,7 @@ export default function AddCompanyModal({ onClose, onSaved, editCompanyId, initi
           current_building_class: form.current_building_class || undefined,
           lease_expiry_months:   form.lease_expiry_months ? parseInt(form.lease_expiry_months) : undefined,
           effective_rent_psf:    form.effective_rent_psf ? parseFloat(form.effective_rent_psf) : undefined,
+          starting_rent_psf:     form.starting_rent_psf ? parseFloat(form.starting_rent_psf) : undefined,
           building_asking_rent_psf: form.building_asking_rent_psf ? parseFloat(form.building_asking_rent_psf) : undefined,
           primary_contact_name:  form.primary_contact_name || undefined,
           primary_contact_title: form.primary_contact_title || undefined,
@@ -352,6 +356,10 @@ export default function AddCompanyModal({ onClose, onSaved, editCompanyId, initi
                 <Field label="Effective Rent ($/SF/yr)" hint="actual effective rent — from Lease Activity import or manual">
                   <input className={inputCls} type="number" step="0.01" min="0" placeholder="e.g. 34.50"
                     value={form.effective_rent_psf} onChange={set('effective_rent_psf')} />
+                </Field>
+                <Field label="Starting Rent ($/SF/yr)" hint="rent the lease started at — from Lease Activity import or manual">
+                  <input className={inputCls} type="number" step="0.01" min="0" placeholder="e.g. 28.50"
+                    value={form.starting_rent_psf} onChange={set('starting_rent_psf')} />
                 </Field>
                 <Field label="Building Asking Rent ($/SF/yr)" hint="asking rent quoted at their building">
                   <input className={inputCls} type="number" step="0.01" min="0" placeholder="e.g. 38.00"

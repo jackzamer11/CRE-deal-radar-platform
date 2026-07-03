@@ -48,6 +48,7 @@ class CompanyBase(BaseModel):
     current_rent_psf: Optional[float] = None
     # Rent-gap ladder inputs (plain company fields; null = unknown)
     effective_rent_psf: Optional[float] = None
+    starting_rent_psf: Optional[float] = None
     building_asking_rent_psf: Optional[float] = None
     future_move_flag: Optional[bool] = None
     future_move_type: Optional[str] = None
@@ -124,6 +125,7 @@ class CompanyListOut(BaseModel):
     current_rent_psf: Optional[float] = None
     # Rent-gap ladder inputs (plain company fields; null = unknown)
     effective_rent_psf: Optional[float] = None
+    starting_rent_psf: Optional[float] = None
     building_asking_rent_psf: Optional[float] = None
     current_submarket: Optional[str] = None
 

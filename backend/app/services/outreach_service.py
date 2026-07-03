@@ -71,12 +71,15 @@ def _should_cite_vacancy_tenant_side(avg_vacancy: Optional[float]) -> bool:
 
 # ── Rent-gap ladder (deterministic — appears in BOTH email and call script) ────
 #
-# Four rungs, sharpest set field wins:
-#   (a) effective + building asking both set → direct gap claim vs building asking
-#   (b) effective set, building null         → direct gap claim vs submarket asking
-#   (c) effective null, building set         → hedge framing off building asking
-#   (d) both null                            → hedge framing off submarket asking
-# When neither field nor a submarket benchmark exists, there is no rent line
+# Six rungs, sharpest set field wins (effective > starting > hedge; within each,
+# building asking > submarket asking):
+#   (1) effective + building asking          → direct gap claim vs building asking
+#   (2) effective, no building               → direct gap claim vs submarket asking
+#   (3) starting + building, no effective    → escalation-creep line vs building asking
+#   (4) starting alone (no building)         → escalation-creep line vs submarket asking
+#   (5) building asking only                 → hedge framing off building asking
+#   (6) nothing set                          → hedge framing off submarket asking
+# When no field nor a submarket benchmark exists, there is no rent line
 # (return None) — never a crash, never an invented number.
 
 # Full-service positioning + free-lease-analysis close: injected verbatim on
@@ -93,8 +96,22 @@ FREE_ANALYSIS_LINE = (
 )
 
 
+def _creep_line(starting: float, asking: float, quoted_by: str) -> str:
+    """Rungs 3-4 escalation-creep line. quoted_by is "your building's" (rung 3
+    — this exact wording is spec-locked) or "<submarket> is" (rung 4)."""
+    return (
+        f"I see your lease started at ${starting:.2f}/SF, and {quoted_by} quoting "
+        f"${asking:.2f} right now. By the nature of things — annual escalations, "
+        f"operating expense pass-throughs — your rent's likely crept closer to that "
+        f"asking number by now, and that's exactly the kind of thing that's easy to "
+        f"miss until the decision to renew or relocate is already on top of you. "
+        f"I'd like to dig in and show you exactly where you stand."
+    )
+
+
 def build_rent_gap_line(
     effective_rent_psf: Optional[float],
+    starting_rent_psf: Optional[float],
     building_asking_rent_psf: Optional[float],
     submarket: Optional[str],
 ) -> Optional[str]:
@@ -103,11 +120,12 @@ def build_rent_gap_line(
     Pure and null-safe: zero/negative/blank values count as unset; an unknown
     submarket simply removes the submarket rungs.
     """
-    eff  = effective_rent_psf if (effective_rent_psf or 0) > 0 else None
-    bldg = building_asking_rent_psf if (building_asking_rent_psf or 0) > 0 else None
+    eff      = effective_rent_psf if (effective_rent_psf or 0) > 0 else None
+    starting = starting_rent_psf if (starting_rent_psf or 0) > 0 else None
+    bldg     = building_asking_rent_psf if (building_asking_rent_psf or 0) > 0 else None
     submarket_asking = SUBMARKET_MARKET_RENT.get(submarket or "")
 
-    # (a) direct gap claim: effective vs building asking
+    # (1) direct gap claim: effective vs building asking — wins outright
     if eff is not None and bldg is not None:
         gap = abs(eff - bldg)
         return (
@@ -115,7 +133,7 @@ def build_rent_gap_line(
             f"building right now — that's a ${gap:.2f}/SF gap on your lease, and it's "
             f"exactly the number to pin down before you renew."
         )
-    # (b) direct gap claim: effective vs submarket asking
+    # (2) direct gap claim: effective vs submarket asking
     if eff is not None and submarket_asking is not None:
         gap = abs(eff - submarket_asking)
         return (
@@ -123,14 +141,20 @@ def build_rent_gap_line(
             f"{submarket} right now — that's a ${gap:.2f}/SF gap on your lease, and it's "
             f"exactly the number to pin down before you renew."
         )
-    # (c) hedge framing off building asking
+    # (3) escalation-creep: starting vs building asking (no effective on record)
+    if starting is not None and bldg is not None:
+        return _creep_line(starting, bldg, "your building's")
+    # (4) escalation-creep: starting alone, vs submarket asking
+    if starting is not None and submarket_asking is not None:
+        return _creep_line(starting, submarket_asking, f"{submarket} is")
+    # (5) hedge framing off building asking
     if bldg is not None:
         return (
             f"Asking rents in your building are quoting around ${bldg:.2f}/SF right now — "
             f"a lot of tenants who signed before {RENT_GAP_PIVOT_YEAR} are sitting above that. "
             f"I don't know where your lease lands, but that gap is exactly what I check."
         )
-    # (d) hedge framing off submarket asking
+    # (6) hedge framing off submarket asking
     if submarket_asking is not None:
         return (
             f"Asking rents in {submarket} are quoting around ${submarket_asking:.2f}/SF right now — "
@@ -354,14 +378,19 @@ def generate_outreach(company: dict) -> dict:
     # SF needed = real occupied SF only. When unknown, never substitute an estimate.
     sf_line = f"{current_sf:,} SF occupied" if current_sf else "SF unknown — do not state or estimate a square footage"
 
-    # Rent-gap ladder: the one rent line both the email and the call script carry.
-    # Sharpest set field wins (effective → building asking → submarket asking);
-    # None when no rent reference exists at all (never an invented number).
+    # Rent-gap ladder: the ONE rent line both the email and the call script carry
+    # (identical rung for identical data — computed once here). Six rungs, sharpest
+    # set field wins; None when no rent reference exists (never an invented number).
     rent_line = build_rent_gap_line(
         company.get("effective_rent_psf"),
+        company.get("starting_rent_psf"),
         company.get("building_asking_rent_psf"),
         submarket,
     )
+    # THE HOOK — the call script's rent-ladder beat between OPENING and CORE
+    # MESSAGE. Built deterministically so the rung line and the full-service
+    # positioning live ONLY here (never in CORE MESSAGE).
+    hook_text = f"{rent_line} {FULL_SERVICE_LINE}" if rent_line else FULL_SERVICE_LINE
 
     if show_vacancy:
         vacancy_str = f"{avg_vacancy:.1f}%"
@@ -467,18 +496,18 @@ def generate_outreach(company: dict) -> dict:
         rep_instruction,
         # ── Call script: tenant-rep discovery structure ───────────────────────
         (
-            "CALL SCRIPT — write a tenant-rep discovery call with four distinct sections: "
+            "CALL SCRIPT — write a tenant-rep discovery call with five distinct sections: "
             "OPENING — open with their lease timing "
             + (f"(their lease is expiring in about {lease_mo} months — say so up front), "
                if lease_mo is not None else "(reference their upcoming lease expiry), ")
             + "then a brief, warm intro and ask permission to ask a few quick questions. "
-            "CORE MESSAGE — a natural sequence of discovery questions: how their current space is "
+            f"THE HOOK — the rent beat, delivered between the opening and the discovery "
+            f"questions. It must be EXACTLY this text and nothing else: \"{hook_text}\" "
+            "CORE MESSAGE — discovery questions ONLY: how their current space is "
             "fitting, what they're paying in rent now, their growth trajectory, floor-plan needs, "
             "parking count, in-office vs hybrid work model, whether they've started looking yet, and "
-            "who else is involved in the decision. "
-            + (f"Include this exact rent sentence VERBATIM in the core message: \"{rent_line}\" "
-               if rent_line else "")
-            + f"Also include the full-service positioning sentence VERBATIM: \"{FULL_SERVICE_LINE}\" "
+            "who else is involved in the decision. Do NOT restate any rent statistic, rent-gap "
+            "claim, or full-service positioning here — that lives ONLY in THE HOOK. "
             "PAIN PROBE — one question that surfaces their single biggest real-estate headache. "
             f"THE CLOSE — close with the free lease analysis offer VERBATIM: \"{FREE_ANALYSIS_LINE}\" "
             "Apply no pressure."
@@ -503,10 +532,11 @@ RULES:
 Return valid JSON only — no markdown fences, no extra text:
 {{
   "call_script": {{
-    "opening": "warm intro + permission to ask a few questions",
-    "core_message": "discovery questions: current space fit, current rent, growth trajectory, floor-plan needs, parking count, work model, whether they've started looking, who else decides",
+    "opening": "lease timing + warm intro + permission to ask a few questions",
+    "the_hook": "the exact hook text from the rules — verbatim, nothing else",
+    "core_message": "discovery questions ONLY: current space fit, current rent, growth trajectory, floor-plan needs, parking count, work model, whether they've started looking, who else decides — no rent stats, no full-service pitch",
     "pain_probe": "one question surfacing their biggest real-estate headache",
-    "the_close": "offer a free, no-obligation market read"
+    "the_close": "the free lease analysis offer"
   }},
   "email": {{
     "subject": "...",
@@ -605,11 +635,18 @@ Return valid JSON only — no markdown fences, no extra text:
             ).strip()
         cs["opening"] = opening
 
+        # THE HOOK is fully deterministic — the rung line + full-service
+        # positioning, always overwritten so regeneration can't drift it.
+        cs["the_hook"] = hook_text
+
+        # CORE MESSAGE carries discovery questions ONLY. Strip the ladder line
+        # and the full-service pitch if the model echoed them — positioning
+        # lives exclusively in THE HOOK.
         core = cs.get("core_message") or ""
-        if rent_line and rent_line not in core:
-            core = core + ("\n\n" if core else "") + rent_line
-        if FULL_SERVICE_LINE not in core:
-            core = core + ("\n\n" if core else "") + FULL_SERVICE_LINE
+        for banned in (rent_line, FULL_SERVICE_LINE):
+            if banned and banned in core:
+                core = core.replace(banned, "")
+        core = re.sub(r"\n{3,}", "\n\n", core).strip()
         cs["core_message"] = core
 
         the_close = cs.get("the_close") or ""

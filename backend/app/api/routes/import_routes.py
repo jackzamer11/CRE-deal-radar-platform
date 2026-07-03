@@ -17,8 +17,9 @@ async def import_costar_lease_activity(
     """
     Upload a CoStar Lease Activity export (.xlsx or .csv).
     Updates in_place_rent_psf for matched properties that have no existing rent
-    data, and effective_rent_psf on name-matched tenant companies from the
-    "Effective Rent (Annual)" column (stored as-is; exact name match only).
+    data, and effective_rent_psf / starting_rent_psf on name-matched tenant
+    companies from the "Effective Rent (Annual)" / "Starting Rent (Annual)"
+    columns (stored as-is; exact name match only; never overwrites).
     Returns {updated, skipped_no_match, skipped_existing, errors,
              tenants_matched, tenants_skipped, tenant_skips}.
     """

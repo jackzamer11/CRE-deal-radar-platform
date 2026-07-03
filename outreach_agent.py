@@ -154,6 +154,7 @@ def log_outreach_via_api(company_id: str, draft: dict) -> Optional[int]:
         "email_subject":          draft["email_subject"],
         "email_body":             draft["email_body"],
         "call_script_opening":    script["opening"],
+        "call_script_hook":       script.get("the_hook") or None,
         "call_script_core":       script["core_message"],
         "call_script_pain_probe": script["pain_probe"],
         "call_script_close":      script["the_close"],
@@ -174,6 +175,7 @@ def log_property_outreach_via_api(property_id: str, draft: dict) -> Optional[int
         "email_subject":          draft["email_subject"],
         "email_body":             draft["email_body"],
         "call_script_opening":    script["opening"],
+        "call_script_hook":       script.get("the_hook") or None,
         "call_script_core":       script["core_message"],
         "call_script_pain_probe": script["pain_probe"],
         "call_script_close":      script["the_close"],
@@ -269,6 +271,9 @@ TENANT CALL SCRIPT
 
 OPENING:
 {script['opening']}
+
+THE HOOK:
+{script.get('the_hook', '')}
 
 CORE MESSAGE:
 {script['core_message']}

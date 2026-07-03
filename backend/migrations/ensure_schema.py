@@ -149,6 +149,7 @@ def ensure_outreach_log(cur: sqlite3.Cursor) -> int:
                 email_subject          TEXT,
                 email_body             TEXT,
                 call_script_opening    TEXT,
+                call_script_hook       TEXT,
                 call_script_core       TEXT,
                 call_script_pain_probe TEXT,
                 call_script_close      TEXT,
@@ -184,6 +185,11 @@ def ensure_outreach_log(cur: sqlite3.Cursor) -> int:
     added = 0
     added += _add_column(cur, "outreach_log", "property_id",   "INTEGER REFERENCES properties(id)")
     added += _add_column(cur, "outreach_log", "outreach_type", "TEXT DEFAULT 'tenant'")
+    # THE HOOK call-script section (rent-ladder beat). Guarded like is_medical.
+    try:
+        added += _add_column(cur, "outreach_log", "call_script_hook", "TEXT")
+    except Exception as _exc:
+        print(f"  ! outreach_log.call_script_hook add skipped: {_exc}")
     return added
 
 
@@ -240,6 +246,11 @@ def ensure_outreach_drafts(cur: sqlite3.Cursor) -> int:
     if cur.fetchone():
         added += _add_column(cur, "outreach_drafts", "direction", "TEXT DEFAULT 'property_side'")
         added += _add_column(cur, "outreach_drafts", "intelligence_findings", "TEXT")
+        # THE HOOK call-script section (rent-ladder beat). Guarded like is_medical.
+        try:
+            added += _add_column(cur, "outreach_drafts", "call_script_hook", "TEXT")
+        except Exception as _exc:
+            print(f"  ! outreach_drafts.call_script_hook add skipped: {_exc}")
         return added
     cur.execute("""
         CREATE TABLE outreach_drafts (
@@ -251,6 +262,7 @@ def ensure_outreach_drafts(cur: sqlite3.Cursor) -> int:
             subject          TEXT NOT NULL,
             body             TEXT NOT NULL,
             call_script_opening    TEXT,
+            call_script_hook       TEXT,
             call_script_core       TEXT,
             call_script_pain_probe TEXT,
             call_script_close      TEXT,
@@ -316,7 +328,7 @@ def fix_outreach_log_company_id_nullable(cur: sqlite3.Cursor) -> int:
     canonical_cols = [
         "id", "company_id", "property_id", "outreach_type", "generated_at",
         "email_subject", "email_body",
-        "call_script_opening", "call_script_core",
+        "call_script_opening", "call_script_hook", "call_script_core",
         "call_script_pain_probe", "call_script_close",
         "projected_sf", "score_at_generation", "priority_at_generation",
         "marked_contacted", "email_sent", "call_made",
@@ -341,6 +353,7 @@ def fix_outreach_log_company_id_nullable(cur: sqlite3.Cursor) -> int:
             email_subject          TEXT,
             email_body             TEXT,
             call_script_opening    TEXT,
+            call_script_hook       TEXT,
             call_script_core       TEXT,
             call_script_pain_probe TEXT,
             call_script_close      TEXT,
@@ -411,10 +424,12 @@ def ensure_companies(cur: sqlite3.Cursor) -> int:
     # ── Rent economics for the tenant-side rent-gap ladder ─────────────────
     # effective_rent_psf: actual effective rent ($/SF/yr) from the Lease
     # Activity import ("Effective Rent (Annual)") or manual entry.
+    # starting_rent_psf: rent the lease started at ($/SF/yr) from the Lease
+    # Activity import ("Starting Rent (Annual)") or manual entry.
     # building_asking_rent_psf: asking rent quoted at the tenant's building
-    # ($/SF/yr), manual entry. Both nullable; each ADD COLUMN is individually
+    # ($/SF/yr), manual entry. All nullable; each ADD COLUMN is individually
     # guarded so a partially-migrated DB never aborts startup.
-    for _rent_col in ("effective_rent_psf", "building_asking_rent_psf"):
+    for _rent_col in ("effective_rent_psf", "starting_rent_psf", "building_asking_rent_psf"):
         try:
             added += _add_column(cur, "companies", _rent_col, "REAL")
         except Exception as _exc:

@@ -233,6 +233,7 @@ class CompanyManualCreate(BaseModel):
     current_building_class: Optional[str] = None
     lease_expiry_months: Optional[int] = None
     effective_rent_psf: Optional[float] = None
+    starting_rent_psf: Optional[float] = None
     building_asking_rent_psf: Optional[float] = None
     primary_contact_name: Optional[str] = None
     primary_contact_title: Optional[str] = None
@@ -343,6 +344,7 @@ def create_company(payload: CompanyManualCreate, db: Session = Depends(get_db)):
         lease_expiry_months   = payload.lease_expiry_months,
         lease_expiry_date     = lease_expiry_date_val,
         effective_rent_psf    = payload.effective_rent_psf,
+        starting_rent_psf     = payload.starting_rent_psf,
         building_asking_rent_psf = payload.building_asking_rent_psf,
         primary_contact_name  = payload.primary_contact_name,
         primary_contact_title = payload.primary_contact_title,
@@ -897,8 +899,9 @@ def update_sf_occupied(
 
 
 class RentFieldsUpdate(BaseModel):
-    # Both nullable: clearing a field back to unknown is a valid edit.
+    # All nullable: clearing a field back to unknown is a valid edit.
     effective_rent_psf: Optional[float] = None
+    starting_rent_psf: Optional[float] = None
     building_asking_rent_psf: Optional[float] = None
 
 
@@ -909,18 +912,21 @@ def update_rent_fields(
     db: Session = Depends(get_db),
 ):
     """Set or clear the tenant's rent economics: effective_rent_psf (actual
-    effective rent $/SF/yr) and building_asking_rent_psf (asking rent quoted at
-    their building $/SF/yr). Drives the rent-gap ladder in tenant outreach."""
+    effective rent $/SF/yr), starting_rent_psf (rent the lease started at
+    $/SF/yr), and building_asking_rent_psf (asking rent quoted at their
+    building $/SF/yr). Drives the rent-gap ladder in tenant outreach."""
     company = db.query(Company).filter(Company.company_id == company_id).first()
     if not company:
         raise HTTPException(status_code=404, detail="Company not found")
     for field_name, value in (
         ("effective_rent_psf", payload.effective_rent_psf),
+        ("starting_rent_psf", payload.starting_rent_psf),
         ("building_asking_rent_psf", payload.building_asking_rent_psf),
     ):
         if value is not None and value < 0:
             raise HTTPException(status_code=422, detail=f"{field_name} must be >= 0")
     company.effective_rent_psf       = payload.effective_rent_psf
+    company.starting_rent_psf        = payload.starting_rent_psf
     company.building_asking_rent_psf = payload.building_asking_rent_psf
     company.last_modified_by_user    = datetime.utcnow()
     db.commit()
@@ -996,6 +1002,7 @@ def draft_outreach(company_id: str, db: Session = Depends(get_db)):
         "tenant_representative":company.tenant_representative,
         "current_rent_psf":     company.current_rent_psf,
         "effective_rent_psf":   company.effective_rent_psf,
+        "starting_rent_psf":    company.starting_rent_psf,
         "building_asking_rent_psf": company.building_asking_rent_psf,
         "future_move_flag":     company.future_move_flag,
         "future_move_type":     company.future_move_type,
@@ -1020,6 +1027,7 @@ def draft_outreach(company_id: str, db: Session = Depends(get_db)):
         "email_body":    email.get("body", ""),
         "call_script": {
             "opening":     cs.get("opening", ""),
+            "the_hook":    cs.get("the_hook", ""),
             "core_message":cs.get("core_message", ""),
             "pain_probe":  cs.get("pain_probe", ""),
             "the_close":   cs.get("the_close", ""),
@@ -1047,6 +1055,7 @@ def log_outreach(
         email_subject          = payload.email_subject,
         email_body             = payload.email_body,
         call_script_opening    = payload.call_script_opening,
+        call_script_hook       = payload.call_script_hook,
         call_script_core       = payload.call_script_core,
         call_script_pain_probe = payload.call_script_pain_probe,
         call_script_close      = payload.call_script_close,
