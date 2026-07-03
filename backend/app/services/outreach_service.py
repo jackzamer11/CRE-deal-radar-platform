@@ -10,13 +10,14 @@ Requires OPENAI_API_KEY in the environment.
 import os
 import re
 from datetime import date
-from typing import Optional
+from typing import NamedTuple, Optional
 
 from app.services.rep_classification import classify_rep, MAJOR_BROKER_FIRMS
 from app.config import (
     NOVA_OFFICE_BENCHMARKS,
     SUBMARKET_BENCHMARKS,
     TENANT_VACANCY_CITE_THRESHOLD,
+    is_provisional_submarket,
 )
 
 NOVA_AVG_RENT        = NOVA_OFFICE_BENCHMARKS["avg_market_rent_psf"]
@@ -69,22 +70,39 @@ def _should_cite_vacancy_tenant_side(avg_vacancy: Optional[float]) -> bool:
     return avg_vacancy is not None and avg_vacancy < TENANT_VACANCY_CITE_THRESHOLD
 
 
-# ── Rent-gap ladder (deterministic — appears in BOTH email and call script) ────
+# ── Rent-gap ladder (deterministic — drives the email rent line AND the call
+#    sheet's ANGLE line, so the two never tell different stories) ──────────────
 #
 # Six rungs, sharpest set field wins (effective > starting > hedge; within each,
 # building asking > submarket asking):
-#   (1) effective + building asking          → direct gap claim vs building asking
-#   (2) effective, no building               → direct gap claim vs submarket asking
-#   (3) starting + building, no effective    → escalation-creep line vs building asking
-#   (4) starting alone (no building)         → escalation-creep line vs submarket asking
+#   (1) effective + building asking          → direction-framed line vs building asking
+#   (2) effective, no building               → direction-framed line vs submarket asking
+#   (3) starting + building, no effective    → direction-framed line vs building asking
+#   (4) starting alone (no building)         → direction-framed line vs submarket asking
 #   (5) building asking only                 → hedge framing off building asking
 #   (6) nothing set                          → hedge framing off submarket asking
-# The hedge rungs (5/6) anchor their lease-vintage clause to the tenant's REAL
-# lease_signed_year when known (phrasing scaled to actual elapsed time) and
-# fall back to vague tenure phrasing when unknown — never a fixed pivot year,
-# never a fabricated date.
-# When no field nor a submarket benchmark exists, there is no rent line
-# (return None) — never a crash, never an invented number.
+#
+# Direction (rungs 1-4): every rung that compares the tenant's number (effective
+# or starting) to a benchmark (building or submarket asking) checks direction
+# before choosing framing.
+#   tenant BELOW benchmark → "the market's moved since you signed" — factual,
+#     never implying the tenant is behind or overpaying. Rung 3's below branch
+#     keeps the spec-locked "crept closer to that asking number" wording.
+#   tenant ABOVE benchmark → neutral information framing: they are paying above
+#     current asking and it's worth confirming what that means before renewal —
+#     no blame, no manufactured urgency.
+# The hedge rungs (5/6) claim NO direction; their lease-vintage clause anchors
+# to the tenant's REAL lease_signed_year when known and falls back to vague
+# tenure phrasing when unknown — never a fixed pivot year, never a fabricated
+# date.
+#
+# Provisional submarkets (Fix 4): a submarket flagged provisional in
+# SUBMARKET_BENCHMARKS is a placeholder, so rungs 2/4/6 never select it — the
+# ladder falls through to the next applicable rung or returns None rather than
+# mailing a placeholder number to a real tenant.
+#
+# When no field nor a quotable submarket benchmark exists, there is no rent
+# line (return None) — never a crash, never an invented number.
 
 # Full-service positioning + free-lease-analysis close: injected verbatim on
 # every rung so the lines survive regeneration (same pattern as the property
@@ -100,9 +118,93 @@ FREE_ANALYSIS_LINE = (
 )
 
 
-def _creep_line(starting: float, asking: float, quoted_by: str) -> str:
-    """Rungs 3-4 escalation-creep line. quoted_by is "your building's" (rung 3
-    — this exact wording is spec-locked) or "<submarket> is" (rung 4)."""
+class RentStory(NamedTuple):
+    """The rung + direction the ladder selected for a tenant. Both the email
+    rent line and the call sheet's ANGLE line derive from the SAME selection."""
+    rung:            int             # 1-6
+    direction:       Optional[str]   # 'below' | 'above' (rungs 1-4); None on hedges
+    tenant_value:    Optional[float] # effective (1-2) or starting (3-4) rent $/SF
+    benchmark_value: float           # the asking rent compared against
+    benchmark_kind:  str             # 'building' | 'submarket'
+
+
+def _quotable_submarket_asking(submarket: Optional[str]) -> Optional[float]:
+    """Submarket asking rent usable in tenant-facing copy — None when unknown
+    OR when the benchmark is provisional (placeholder numbers are never mailed
+    to a real tenant; rungs 2/4/6 fall through instead)."""
+    if is_provisional_submarket(submarket):
+        return None
+    return SUBMARKET_MARKET_RENT.get(submarket or "")
+
+
+def select_rent_story(
+    effective_rent_psf: Optional[float],
+    starting_rent_psf: Optional[float],
+    building_asking_rent_psf: Optional[float],
+    submarket: Optional[str],
+) -> Optional[RentStory]:
+    """Pick the ladder rung + direction for a tenant, or None when no rent
+    reference exists. Pure and null-safe: zero/negative/blank values count as
+    unset; an unknown or provisional submarket removes rungs 2/4/6."""
+    eff      = effective_rent_psf if (effective_rent_psf or 0) > 0 else None
+    starting = starting_rent_psf if (starting_rent_psf or 0) > 0 else None
+    bldg     = building_asking_rent_psf if (building_asking_rent_psf or 0) > 0 else None
+    submarket_asking = _quotable_submarket_asking(submarket)
+
+    def _direction(tenant_value: float, benchmark: float) -> str:
+        return "above" if tenant_value > benchmark else "below"
+
+    if eff is not None and bldg is not None:
+        return RentStory(1, _direction(eff, bldg), eff, bldg, "building")
+    if eff is not None and submarket_asking is not None:
+        return RentStory(2, _direction(eff, submarket_asking), eff, submarket_asking, "submarket")
+    if starting is not None and bldg is not None:
+        return RentStory(3, _direction(starting, bldg), starting, bldg, "building")
+    if starting is not None and submarket_asking is not None:
+        return RentStory(4, _direction(starting, submarket_asking), starting, submarket_asking, "submarket")
+    if bldg is not None:
+        return RentStory(5, None, None, bldg, "building")
+    if submarket_asking is not None:
+        return RentStory(6, None, None, submarket_asking, "submarket")
+    return None
+
+
+def _direct_line(eff: float, asking: float, where: str, direction: str) -> str:
+    """Rungs 1-2 (effective vs asking), framed by direction."""
+    if direction == "above":
+        # Neutral information framing — no blame, no manufactured urgency.
+        return (
+            f"You're at ${eff:.2f}/SF effective against ${asking:.2f}/SF asking in "
+            f"{where} right now — you're paying above the current asking number, and "
+            f"it's worth confirming what that means for your options before your "
+            f"renewal conversation."
+        )
+    # BELOW asking — the market's moved since they signed; factual, never
+    # implying the tenant is behind or overpaying.
+    return (
+        f"You're at ${eff:.2f}/SF effective against ${asking:.2f}/SF asking in "
+        f"{where} right now — the market's moved since you signed, and it's worth "
+        f"knowing exactly where that leaves you before you renew."
+    )
+
+
+def _creep_line(starting: float, asking: float, quoted_by: str, direction: str) -> str:
+    """Rungs 3-4 (starting rent vs asking), framed by direction.
+
+    BELOW branch: the escalation-creep line. quoted_by is "your building's"
+    (rung 3 — this exact wording is spec-locked to THIS branch only) or
+    "<submarket> is" (rung 4).
+    ABOVE branch: the lease started above today's asking — neutral information
+    framing, no creep claim (escalations moving the rent further above asking
+    is not a story to manufacture urgency around).
+    """
+    if direction == "above":
+        return (
+            f"I see your lease started at ${starting:.2f}/SF, and {quoted_by} quoting "
+            f"${asking:.2f} right now — your lease began above today's asking number, "
+            f"and it's worth confirming what that means for your options before your "
+            f"renewal conversation. I'd like to dig in and show you exactly where you stand."
+        )
     return (
         f"I see your lease started at ${starting:.2f}/SF, and {quoted_by} quoting "
         f"${asking:.2f} right now. By the nature of things — annual escalations, "
@@ -143,53 +245,176 @@ def build_rent_gap_line(
     submarket: Optional[str],
     lease_signed_year: Optional[int] = None,
 ) -> Optional[str]:
-    """Return the rent line for the tenant email + call script, or None.
+    """Return the rent line for the tenant email, or None.
 
-    Pure and null-safe: zero/negative/blank values count as unset; an unknown
-    submarket simply removes the submarket rungs.
+    Pure and null-safe. Rung + direction come from select_rent_story — the same
+    selection that produces the call sheet's ANGLE line.
     """
-    eff      = effective_rent_psf if (effective_rent_psf or 0) > 0 else None
-    starting = starting_rent_psf if (starting_rent_psf or 0) > 0 else None
-    bldg     = building_asking_rent_psf if (building_asking_rent_psf or 0) > 0 else None
-    submarket_asking = SUBMARKET_MARKET_RENT.get(submarket or "")
+    story = select_rent_story(
+        effective_rent_psf, starting_rent_psf, building_asking_rent_psf, submarket
+    )
+    if story is None:
+        return None
 
-    # (1) direct gap claim: effective vs building asking — wins outright
-    if eff is not None and bldg is not None:
-        gap = abs(eff - bldg)
+    where     = "your building" if story.benchmark_kind == "building" else submarket
+    quoted_by = "your building's" if story.benchmark_kind == "building" else f"{submarket} is"
+
+    if story.rung in (1, 2):
+        return _direct_line(story.tenant_value, story.benchmark_value, where, story.direction)
+    if story.rung in (3, 4):
+        return _creep_line(story.tenant_value, story.benchmark_value, quoted_by, story.direction)
+    # Rungs 5/6 — hedge framing, no direction claimed, anchored to real vintage.
+    return (
+        f"Asking rents in {where} are quoting around ${story.benchmark_value:.2f}/SF right now — "
+        f"{_signed_reference(lease_signed_year)}. "
+        f"I don't know where your lease lands, but that gap is exactly what I check."
+    )
+
+
+def build_angle_line(
+    effective_rent_psf: Optional[float],
+    starting_rent_psf: Optional[float],
+    building_asking_rent_psf: Optional[float],
+    submarket: Optional[str],
+    lease_signed_year: Optional[int] = None,
+) -> str:
+    """The call sheet's ANGLE — one line stating which story the numbers
+    support, derived from the SAME rung + direction selection as the email rent
+    line. Internal reference for Jack mid-call, never read to the tenant."""
+    story = select_rent_story(
+        effective_rent_psf, starting_rent_psf, building_asking_rent_psf, submarket
+    )
+    if story is None:
+        return "No rent data on file — no rent angle; lead with lease timing and discovery."
+
+    where = "building" if story.benchmark_kind == "building" else f"{submarket}"
+    held = ""
+    if lease_signed_year and (date.today().year - int(lease_signed_year)) >= 2:
+        held = f", held since {lease_signed_year}"
+
+    if story.rung in (1, 2):
+        if story.direction == "below":
+            return (
+                f"Below-market lease{held} — effective ${story.tenant_value:.2f}/SF vs "
+                f"${story.benchmark_value:.2f}/SF {where} asking; the market's moved since they signed."
+            )
         return (
-            f"You're at ${eff:.2f}/SF effective against ${bldg:.2f}/SF asking in your "
-            f"building right now — that's a ${gap:.2f}/SF gap on your lease, and it's "
-            f"exactly the number to pin down before you renew."
+            f"Paying above current asking — effective ${story.tenant_value:.2f}/SF vs "
+            f"${story.benchmark_value:.2f}/SF {where} asking; neutral framing, confirm what "
+            f"it means before renewal."
         )
-    # (2) direct gap claim: effective vs submarket asking
-    if eff is not None and submarket_asking is not None:
-        gap = abs(eff - submarket_asking)
+    if story.rung in (3, 4):
+        if story.direction == "below":
+            return (
+                f"Below-market start{held} — started at ${story.tenant_value:.2f}/SF vs "
+                f"${story.benchmark_value:.2f}/SF {where} asking; escalations have likely "
+                f"crept the rent toward asking."
+            )
         return (
-            f"You're at ${eff:.2f}/SF effective against ${submarket_asking:.2f}/SF asking in "
-            f"{submarket} right now — that's a ${gap:.2f}/SF gap on your lease, and it's "
-            f"exactly the number to pin down before you renew."
+            f"Started above current asking — ${story.tenant_value:.2f}/SF vs "
+            f"${story.benchmark_value:.2f}/SF {where} asking; neutral framing, confirm what "
+            f"it means before renewal."
         )
-    # (3) escalation-creep: starting vs building asking (no effective on record)
-    if starting is not None and bldg is not None:
-        return _creep_line(starting, bldg, "your building's")
-    # (4) escalation-creep: starting alone, vs submarket asking
-    if starting is not None and submarket_asking is not None:
-        return _creep_line(starting, submarket_asking, f"{submarket} is")
-    # (5) hedge framing off building asking, anchored to the real lease vintage
-    if bldg is not None:
-        return (
-            f"Asking rents in your building are quoting around ${bldg:.2f}/SF right now — "
-            f"{_signed_reference(lease_signed_year)}. "
-            f"I don't know where your lease lands, but that gap is exactly what I check."
-        )
-    # (6) hedge framing off submarket asking, anchored to the real lease vintage
-    if submarket_asking is not None:
-        return (
-            f"Asking rents in {submarket} are quoting around ${submarket_asking:.2f}/SF right now — "
-            f"{_signed_reference(lease_signed_year)}. "
-            f"I don't know where your lease lands, but that gap is exactly what I check."
-        )
-    return None
+    return (
+        f"No tenant rent on file — hedge off {where} asking "
+        f"(${story.benchmark_value:.2f}/SF); claim no direction."
+    )
+
+
+# ── CALL SHEET (deterministic — reference material Jack glances at mid-call) ───
+#
+# Built entirely in code from tenant + benchmark data; NO LLM call. Sections:
+#   OPENING    — one talking-point cue: who Jack is + lease timing
+#   DATA       — labeled raw values; every missing value renders "not on file"
+#   ANGLE      — one line from the same rung + direction logic as the email
+#   DISCOVERY  — the core-message questions as a bulleted checklist
+#   PAIN PROBE — single-line cue
+#   THE CLOSE  — single-line cue (references the free lease analysis)
+# The sheet carries no prose framing — the email owns the framing language.
+
+NOT_ON_FILE = "not on file"
+PROVISIONAL_SUFFIX = "(provisional — verify before quoting)"
+
+DISCOVERY_QUESTIONS = (
+    "How is the current space fitting the team?",
+    "What are you paying in rent right now?",
+    "What's the growth trajectory for the next 12–24 months?",
+    "Any floor-plan needs changing?",
+    "How many parking spaces does the team need?",
+    "In-office or hybrid — what's the work model?",
+    "Have you started looking at options yet?",
+    "Who else is involved in the decision?",
+)
+
+PAIN_PROBE_CUE = "What's the single biggest real-estate headache on your plate right now?"
+
+
+def _sheet_money(value: Optional[float]) -> str:
+    return f"${value:.2f}/SF" if (value or 0) > 0 else NOT_ON_FILE
+
+
+def _sheet_count(value: Optional[int]) -> str:
+    return f"{int(value):,}" if (value or 0) > 0 else NOT_ON_FILE
+
+
+def build_call_sheet(company: dict) -> dict:
+    """Build the tenant CALL SHEET deterministically — never calls an LLM.
+
+    Null-safe on every field: missing values render "not on file", never blank,
+    never invented, never a 500. Returns the call_script dict:
+    {opening, data, angle, core_message, pain_probe, the_close}.
+    """
+    submarket = company.get("current_submarket") or ""
+    lease_mo  = company.get("lease_expiry_months")
+
+    # OPENING — a cue, not a script: who Jack is + lease timing.
+    timing = (
+        f"lease expiring in ~{lease_mo} months" if lease_mo is not None
+        else f"lease expiry {NOT_ON_FILE}"
+    )
+    opening = f"{AGENT_NAME}, {FIRM_NAME} — {timing}."
+
+    # DATA — raw values, labeled. Provisional submarket numbers are flagged.
+    bench = SUBMARKET_BENCHMARKS.get(submarket)
+    provisional = is_provisional_submarket(submarket)
+    vacancy_val = f"{bench['vacancy_pct']:.1f}%" if bench else NOT_ON_FILE
+    asking_val  = f"${bench['market_rent_psf']:.2f}/SF" if bench else NOT_ON_FILE
+    if bench and provisional:
+        vacancy_val += f" {PROVISIONAL_SUFFIX}"
+        asking_val  += f" {PROVISIONAL_SUFFIX}"
+
+    building_class = (company.get("current_building_class") or "").strip() or NOT_ON_FILE
+    signed_year    = company.get("lease_signed_year")
+
+    data_lines = [
+        f"Effective Rent: {_sheet_money(company.get('effective_rent_psf'))}",
+        f"Starting Rent: {_sheet_money(company.get('starting_rent_psf'))}",
+        f"Building Asking Rent: {_sheet_money(company.get('building_asking_rent_psf'))}",
+        f"Lease Signed Year: {int(signed_year) if signed_year else NOT_ON_FILE}",
+        f"Lease Expires (months): {lease_mo if lease_mo is not None else NOT_ON_FILE}",
+        f"SF Occupied: {_sheet_count(company.get('current_sf_occupied'))}",
+        f"Headcount: {_sheet_count(company.get('current_headcount'))}",
+        f"Building Class: {building_class}",
+        f"Submarket Vacancy %: {vacancy_val}",
+        f"Submarket Asking Rent: {asking_val}",
+    ]
+
+    angle = build_angle_line(
+        company.get("effective_rent_psf"),
+        company.get("starting_rent_psf"),
+        company.get("building_asking_rent_psf"),
+        submarket,
+        lease_signed_year=signed_year,
+    )
+
+    return {
+        "opening":      opening,
+        "data":         "\n".join(data_lines),
+        "angle":        angle,
+        "core_message": "\n".join(f"• {q}" for q in DISCOVERY_QUESTIONS),
+        "pain_probe":   PAIN_PROBE_CUE,
+        "the_close":    FREE_ANALYSIS_LINE,
+    }
 
 
 def _insert_paragraph_before_ask(body: str, sentence: Optional[str]) -> str:
@@ -352,13 +577,16 @@ def search_company_intelligence(company_name: str) -> list:
 
 def generate_outreach(company: dict) -> dict:
     """
-    Build GPT-4o outreach draft for a company dict.
+    Build the tenant outreach package: a GPT-4o email draft plus the
+    deterministic CALL SHEET (built in code — the call-sheet portion makes
+    NO LLM call; GPT-4o generates the email only).
 
     Returns:
         {
             "email": {"subject": ..., "body": ...},
-            "call_script": {"opening": ..., "core_message": ...,
-                            "pain_probe": ..., "the_close": ...},
+            "call_script": {"opening": ..., "data": ..., "angle": ...,
+                            "core_message": ..., "pain_probe": ...,
+                            "the_close": ...},
             "projected_sf": int | None,
         }
 
@@ -390,8 +618,13 @@ def generate_outreach(company: dict) -> dict:
     future_type   = company.get("future_move_type") or ""
     trajectory    = (company.get("lease_trajectory") or "AUTO").upper()
 
-    market_rent  = SUBMARKET_MARKET_RENT.get(submarket)
-    avg_vacancy  = SUBMARKET_AVG_VACANCY.get(submarket)
+    # Provisional submarkets (Fix 4): placeholder benchmarks are never quoted in
+    # tenant email copy — drop them from the prompt context entirely so a
+    # placeholder number can't be mailed to a real tenant. (The CALL SHEET still
+    # shows them, flagged "(provisional — verify before quoting)".)
+    submarket_provisional = is_provisional_submarket(submarket)
+    market_rent  = SUBMARKET_MARKET_RENT.get(submarket) if not submarket_provisional else None
+    avg_vacancy  = SUBMARKET_AVG_VACANCY.get(submarket) if not submarket_provisional else None
     show_vacancy = _should_cite_vacancy_tenant_side(avg_vacancy)
 
     rent_vs_nova    = round(market_rent - NOVA_AVG_RENT, 2)    if market_rent  else None
@@ -406,9 +639,11 @@ def generate_outreach(company: dict) -> dict:
     # SF needed = real occupied SF only. When unknown, never substitute an estimate.
     sf_line = f"{current_sf:,} SF occupied" if current_sf else "SF unknown — do not state or estimate a square footage"
 
-    # Rent-gap ladder: the ONE rent line both the email and the call script carry
-    # (identical rung for identical data — computed once here). Six rungs, sharpest
-    # set field wins; None when no rent reference exists (never an invented number).
+    # Rent-gap ladder: the email's rent line. Six rungs, sharpest set field
+    # wins, direction-framed; None when no rent reference exists (never an
+    # invented number). The CALL SHEET's ANGLE line derives from the SAME
+    # select_rent_story selection, so email and call sheet never tell
+    # different stories for the same tenant.
     rent_line = build_rent_gap_line(
         company.get("effective_rent_psf"),
         company.get("starting_rent_psf"),
@@ -416,10 +651,6 @@ def generate_outreach(company: dict) -> dict:
         submarket,
         lease_signed_year=company.get("lease_signed_year"),
     )
-    # THE HOOK — the call script's rent-ladder beat between OPENING and CORE
-    # MESSAGE. Built deterministically so the rung line and the full-service
-    # positioning live ONLY here (never in CORE MESSAGE).
-    hook_text = f"{rent_line} {FULL_SERVICE_LINE}" if rent_line else FULL_SERVICE_LINE
 
     if show_vacancy:
         vacancy_str = f"{avg_vacancy:.1f}%"
@@ -523,24 +754,8 @@ def generate_outreach(company: dict) -> dict:
         "FORBIDDEN phrases: 'happy to discuss', 'let me know if interested', 'feel free to reach out'; "
         "NEVER suggest specific days of the week. Close with: 'I'd welcome a brief call at your convenience.'",
         rep_instruction,
-        # ── Call script: tenant-rep discovery structure ───────────────────────
-        (
-            "CALL SCRIPT — write a tenant-rep discovery call with five distinct sections: "
-            "OPENING — open with their lease timing "
-            + (f"(their lease is expiring in about {lease_mo} months — say so up front), "
-               if lease_mo is not None else "(reference their upcoming lease expiry), ")
-            + "then a brief, warm intro and ask permission to ask a few quick questions. "
-            f"THE HOOK — the rent beat, delivered between the opening and the discovery "
-            f"questions. It must be EXACTLY this text and nothing else: \"{hook_text}\" "
-            "CORE MESSAGE — discovery questions ONLY: how their current space is "
-            "fitting, what they're paying in rent now, their growth trajectory, floor-plan needs, "
-            "parking count, in-office vs hybrid work model, whether they've started looking yet, and "
-            "who else is involved in the decision. Do NOT restate any rent statistic, rent-gap "
-            "claim, or full-service positioning here — that lives ONLY in THE HOOK. "
-            "PAIN PROBE — one question that surfaces their single biggest real-estate headache. "
-            f"THE CLOSE — close with the free lease analysis offer VERBATIM: \"{FREE_ANALYSIS_LINE}\" "
-            "Apply no pressure."
-        ),
+        # The call side is a deterministic CALL SHEET built in code
+        # (build_call_sheet) — the model generates the EMAIL only.
         _industry_pain(industry),
     ]
     if trajectory_note:
@@ -560,13 +775,6 @@ RULES:
 
 Return valid JSON only — no markdown fences, no extra text:
 {{
-  "call_script": {{
-    "opening": "lease timing + warm intro + permission to ask a few questions",
-    "the_hook": "the exact hook text from the rules — verbatim, nothing else",
-    "core_message": "discovery questions ONLY: current space fit, current rent, growth trajectory, floor-plan needs, parking count, work model, whether they've started looking, who else decides — no rent stats, no full-service pitch",
-    "pain_probe": "one question surfacing their biggest real-estate headache",
-    "the_close": "the free lease analysis offer"
-  }},
   "email": {{
     "subject": "...",
     "body": "..."
@@ -582,12 +790,20 @@ Return valid JSON only — no markdown fences, no extra text:
         f"  Avg lease term:    7 years"
     )
 
-    submarket_context = (
-        f"SUBMARKET BENCHMARKS — {submarket} (CBRE Q1 2026):\n"
-        f"  Market rent:       ${market_rent:.2f}/SF/yr NNN  ({rent_vs_nova_str})\n"
-        + (f"  Submarket vacancy: {vacancy_str}" if show_vacancy else
-           "  [Submarket vacancy is above the tenant-side citation threshold — do not cite in email copy]")
-    ) if market_rent else f"SUBMARKET: {submarket} (no benchmark data)"
+    if market_rent:
+        submarket_context = (
+            f"SUBMARKET BENCHMARKS — {submarket} (CBRE Q1 2026):\n"
+            f"  Market rent:       ${market_rent:.2f}/SF/yr NNN  ({rent_vs_nova_str})\n"
+            + (f"  Submarket vacancy: {vacancy_str}" if show_vacancy else
+               "  [Submarket vacancy is above the tenant-side citation threshold — do not cite in email copy]")
+        )
+    elif submarket_provisional:
+        submarket_context = (
+            f"SUBMARKET: {submarket} (benchmark is provisional/placeholder — do NOT "
+            f"quote any submarket rent or vacancy figure in the email)"
+        )
+    else:
+        submarket_context = f"SUBMARKET: {submarket} (no benchmark data)"
 
     user_prompt = (
         f"Generate personalized outreach for this NoVA office tenant:\n\n"
@@ -631,7 +847,7 @@ Return valid JSON only — no markdown fences, no extra text:
     result = json.loads(response.choices[0].message.content.strip())
     result["projected_sf"] = projected_sf
 
-    # ── Deterministic rent-ladder guarantee (email + call script) ─────────────
+    # ── Deterministic rent-ladder guarantee (email) ───────────────────────────
     # The lease-timing opener, rent line, full-service positioning, and free
     # lease-analysis close are injected post-LLM whenever the model dropped
     # them, so every rung of the ladder survives regeneration. Each insert is
@@ -654,34 +870,10 @@ Return valid JSON only — no markdown fences, no extra text:
         body = _insert_paragraph_before_ask(body, FREE_ANALYSIS_LINE)
         email["body"] = body
 
-    cs = result.get("call_script") if isinstance(result.get("call_script"), dict) else None
-    if cs is not None:
-        opening = cs.get("opening") or ""
-        if lease_mo is not None and f"{lease_mo} month" not in opening:
-            opening = (
-                f"I know your lease is expiring in about {lease_mo} months, "
-                f"so I'll keep this quick. " + opening
-            ).strip()
-        cs["opening"] = opening
-
-        # THE HOOK is fully deterministic — the rung line + full-service
-        # positioning, always overwritten so regeneration can't drift it.
-        cs["the_hook"] = hook_text
-
-        # CORE MESSAGE carries discovery questions ONLY. Strip the ladder line
-        # and the full-service pitch if the model echoed them — positioning
-        # lives exclusively in THE HOOK.
-        core = cs.get("core_message") or ""
-        for banned in (rent_line, FULL_SERVICE_LINE):
-            if banned and banned in core:
-                core = core.replace(banned, "")
-        core = re.sub(r"\n{3,}", "\n\n", core).strip()
-        cs["core_message"] = core
-
-        the_close = cs.get("the_close") or ""
-        if FREE_ANALYSIS_LINE not in the_close:
-            the_close = (the_close + " " if the_close else "") + FREE_ANALYSIS_LINE
-        cs["the_close"] = the_close
+    # ── CALL SHEET — fully deterministic, built from tenant + benchmark data.
+    # Whatever the model returned for a call script (it isn't asked for one) is
+    # discarded; the sheet can never drift from the data or the email's story.
+    result["call_script"] = build_call_sheet(company)
 
     # The broker name appears exactly once — in the signature block. As a defensive
     # guard, drop any street-address token the model may have echoed (tenant side

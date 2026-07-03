@@ -155,7 +155,8 @@ export const logOutreach = (
   companyId: string,
   payload: {
     email_subject: string; email_body: string
-    call_script_opening: string; call_script_hook?: string | null; call_script_core: string
+    call_script_opening: string; call_script_hook?: string | null
+    call_script_data?: string | null; call_script_core: string
     call_script_pain_probe: string; call_script_close: string
     projected_sf: number | null; score_at_generation: number
     priority_at_generation: string; email_sent: boolean; call_made: boolean
@@ -197,7 +198,8 @@ export const logPropertyOutreach = (
   propertyId: string,
   payload: {
     email_subject: string; email_body: string
-    call_script_opening: string; call_script_hook?: string | null; call_script_core: string
+    call_script_opening: string; call_script_hook?: string | null
+    call_script_data?: string | null; call_script_core: string
     call_script_pain_probe: string; call_script_close: string
     projected_sf: number | null; score_at_generation: number
     priority_at_generation: string; email_sent: boolean; call_made: boolean
@@ -227,6 +229,7 @@ export interface OutreachDraftPayload {
   body: string
   call_script_opening?: string | null
   call_script_hook?: string | null
+  call_script_data?: string | null
   call_script_core?: string | null
   call_script_pain_probe?: string | null
   call_script_close?: string | null
@@ -443,6 +446,8 @@ export interface SubmarketBenchmark {
   market_rent_psf: number
   vacancy_pct: number
   source: string
+  /** True = placeholder/proxy numbers, not measured CBRE data — verify before quoting */
+  provisional?: boolean
 }
 
 export const getBenchmarks = (): Promise<{

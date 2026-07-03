@@ -179,8 +179,11 @@ export interface CompanyListOut {
 
 export interface OutreachCallScript {
   opening: string
-  /** THE HOOK — rent-ladder beat between OPENING and CORE MESSAGE (tenant scripts) */
-  the_hook?: string
+  /** DATA — CALL SHEET block of labeled raw values (tenant sheets only; "not on file" when missing) */
+  data?: string
+  /** ANGLE — one line from the same rung + direction logic as the email rent line (tenant sheets only) */
+  angle?: string
+  /** DISCOVERY checklist on tenant sheets; prose core message on property scripts */
   core_message: string
   pain_probe: string
   the_close: string
@@ -207,7 +210,10 @@ export interface OutreachLog {
   email_subject: string
   email_body: string
   call_script_opening: string
+  /** ANGLE line (reused column — legacy rows hold THE HOOK prose) */
   call_script_hook?: string | null
+  /** DATA block of the CALL SHEET (labeled raw values) */
+  call_script_data?: string | null
   call_script_core: string
   call_script_pain_probe: string
   call_script_close: string
@@ -452,7 +458,10 @@ export interface OutreachDraftRecord {
   subject: string
   body: string
   call_script_opening: string | null
+  /** ANGLE line (reused column — legacy rows hold THE HOOK prose) */
   call_script_hook?: string | null
+  /** DATA block of the CALL SHEET (labeled raw values) */
+  call_script_data?: string | null
   call_script_core: string | null
   call_script_pain_probe: string | null
   call_script_close: string | null

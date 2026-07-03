@@ -148,6 +148,16 @@ NOVA_OFFICE_BENCHMARKS = {
 
 # All values measured — CBRE Northern Virginia Office Figures Q1 2026, Figure 10
 # (vacancy %, avg direct asking rate $/SF FSG/yr).
+#
+# "provisional" flag: True marks an entry whose numbers are a placeholder/proxy
+# rather than measured CBRE data for that submarket. Entries WITHOUT the key
+# default to real (measured) — see is_provisional_submarket(). Effects:
+#   - the tenant CALL SHEET and the Submarket Intel card append
+#     "(provisional — verify before quoting)" to that submarket's numbers
+#   - tenant email generation never quotes a provisional submarket's asking
+#     rent (rent-ladder rungs 2/4/6 fall through to the next applicable rung,
+#     or the rent line is dropped, rather than mailing a placeholder number
+#     to a real tenant)
 SUBMARKET_BENCHMARKS = {
     "Arlington (Clarendon)":      {"market_rent_psf": 42.93, "vacancy_pct": 26.5,  "source": "CBRE Q1 2026 Fig. 10 (Clarendon/Courthouse)"},
     "Arlington (Rosslyn)":        {"market_rent_psf": 46.85, "vacancy_pct": 20.6,  "source": "CBRE Q1 2026 Fig. 10"},
@@ -166,9 +176,18 @@ SUBMARKET_BENCHMARKS = {
     "Springfield":                {"market_rent_psf": 36.22, "vacancy_pct": 16.8,  "source": "CBRE Q1 2026 Fig. 10"},
     "Herndon":                    {"market_rent_psf": 34.49, "vacancy_pct": 29.0,  "source": "CBRE Q1 2026 Fig. 10"},
     # Proxy = CBRE "Fairfax Center" submarket, nearest measured equivalent;
-    # revisit when CBRE publishes Centreville-specific data.
-    "Centreville":                {"market_rent_psf": 30.49, "vacancy_pct": 27.2,  "source": "CBRE Q1 2026 Fig. 10 (Fairfax Center proxy)"},
+    # revisit when CBRE publishes Centreville-specific data. Marked provisional:
+    # these are placeholder numbers, not measured Centreville data.
+    "Centreville":                {"market_rent_psf": 30.49, "vacancy_pct": 27.2,  "source": "CBRE Q1 2026 Fig. 10 (Fairfax Center proxy)", "provisional": True},
 }
+
+
+def is_provisional_submarket(submarket) -> bool:
+    """True when the submarket's benchmark numbers are placeholders (proxy data),
+    not measured CBRE data. Entries without the flag default to real. Unknown
+    submarkets return False (there is nothing to quote either way)."""
+    entry = SUBMARKET_BENCHMARKS.get(submarket or "")
+    return bool(entry and entry.get("provisional", False))
 
 
 # ---------------------------------------------------------------------------
