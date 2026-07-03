@@ -435,6 +435,14 @@ def ensure_companies(cur: sqlite3.Cursor) -> int:
         except Exception as _exc:
             print(f"  ! companies.{_rent_col} add skipped: {_exc}")
 
+    # lease_signed_year: year the current lease was signed (Lease Activity
+    # "Signed" column or manual) — anchors the rent-ladder hedge rungs to the
+    # tenant's real lease vintage. Guarded like the rent columns above.
+    try:
+        added += _add_column(cur, "companies", "lease_signed_year", "INTEGER")
+    except Exception as _exc:
+        print(f"  ! companies.lease_signed_year add skipped: {_exc}")
+
     # ── Single SF field: current_sf_occupied (real occupied SF, never calculated) ──
     # Replaces the legacy current_sf / estimated_sf_needed pair. Add idempotently,
     # then port any existing legacy value across so no real SF data is lost on the

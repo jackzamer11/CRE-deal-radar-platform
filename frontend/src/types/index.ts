@@ -151,6 +151,7 @@ export interface CompanyListOut {
   effective_rent_psf: number | null
   starting_rent_psf: number | null
   building_asking_rent_psf: number | null
+  lease_signed_year: number | null
   lease_expiry_months: number | null
   lease_expiry_date: string | null
   lease_expiry_source: string | null

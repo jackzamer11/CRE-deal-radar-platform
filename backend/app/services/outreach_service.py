@@ -9,12 +9,12 @@ Requires OPENAI_API_KEY in the environment.
 """
 import os
 import re
+from datetime import date
 from typing import Optional
 
 from app.services.rep_classification import classify_rep, MAJOR_BROKER_FIRMS
 from app.config import (
     NOVA_OFFICE_BENCHMARKS,
-    RENT_GAP_PIVOT_YEAR,
     SUBMARKET_BENCHMARKS,
     TENANT_VACANCY_CITE_THRESHOLD,
 )
@@ -79,6 +79,10 @@ def _should_cite_vacancy_tenant_side(avg_vacancy: Optional[float]) -> bool:
 #   (4) starting alone (no building)         → escalation-creep line vs submarket asking
 #   (5) building asking only                 → hedge framing off building asking
 #   (6) nothing set                          → hedge framing off submarket asking
+# The hedge rungs (5/6) anchor their lease-vintage clause to the tenant's REAL
+# lease_signed_year when known (phrasing scaled to actual elapsed time) and
+# fall back to vague tenure phrasing when unknown — never a fixed pivot year,
+# never a fabricated date.
 # When no field nor a submarket benchmark exists, there is no rent line
 # (return None) — never a crash, never an invented number.
 
@@ -109,11 +113,35 @@ def _creep_line(starting: float, asking: float, quoted_by: str) -> str:
     )
 
 
+def _signed_reference(lease_signed_year: Optional[int]) -> str:
+    """Lease-vintage clause of the rung 5/6 hedge lines.
+
+    Known signing year → phrasing scaled to the ACTUAL elapsed time (a lease
+    signed this year is never described as sitting above the market). Unknown
+    year → vague tenure phrasing with no year cited. Never a fabricated date.
+    """
+    if not lease_signed_year:
+        return "a lot of tenants who've been in place a while are sitting above that"
+    years_ago = max(0, date.today().year - int(lease_signed_year))
+    if years_ago <= 1:
+        return (
+            f"even a lease signed as recently as {lease_signed_year} can land "
+            f"differently against today's asking numbers"
+        )
+    if years_ago <= 3:
+        return (
+            f"a lot of leases signed a couple of years back, in {lease_signed_year}, "
+            f"are sitting above that"
+        )
+    return f"a lot of leases signed back in {lease_signed_year} are sitting above that"
+
+
 def build_rent_gap_line(
     effective_rent_psf: Optional[float],
     starting_rent_psf: Optional[float],
     building_asking_rent_psf: Optional[float],
     submarket: Optional[str],
+    lease_signed_year: Optional[int] = None,
 ) -> Optional[str]:
     """Return the rent line for the tenant email + call script, or None.
 
@@ -147,18 +175,18 @@ def build_rent_gap_line(
     # (4) escalation-creep: starting alone, vs submarket asking
     if starting is not None and submarket_asking is not None:
         return _creep_line(starting, submarket_asking, f"{submarket} is")
-    # (5) hedge framing off building asking
+    # (5) hedge framing off building asking, anchored to the real lease vintage
     if bldg is not None:
         return (
             f"Asking rents in your building are quoting around ${bldg:.2f}/SF right now — "
-            f"a lot of tenants who signed before {RENT_GAP_PIVOT_YEAR} are sitting above that. "
+            f"{_signed_reference(lease_signed_year)}. "
             f"I don't know where your lease lands, but that gap is exactly what I check."
         )
-    # (6) hedge framing off submarket asking
+    # (6) hedge framing off submarket asking, anchored to the real lease vintage
     if submarket_asking is not None:
         return (
             f"Asking rents in {submarket} are quoting around ${submarket_asking:.2f}/SF right now — "
-            f"a lot of tenants who signed before {RENT_GAP_PIVOT_YEAR} are sitting above that. "
+            f"{_signed_reference(lease_signed_year)}. "
             f"I don't know where your lease lands, but that gap is exactly what I check."
         )
     return None
@@ -386,6 +414,7 @@ def generate_outreach(company: dict) -> dict:
         company.get("starting_rent_psf"),
         company.get("building_asking_rent_psf"),
         submarket,
+        lease_signed_year=company.get("lease_signed_year"),
     )
     # THE HOOK — the call script's rent-ladder beat between OPENING and CORE
     # MESSAGE. Built deterministically so the rung line and the full-service

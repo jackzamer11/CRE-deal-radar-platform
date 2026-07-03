@@ -15,7 +15,10 @@ Tenant rent pass (optional columns — the pass is skipped when absent):
   "Effective Rent (Annual)"  — $/SF, stored on effective_rent_psf AS-IS
                                (no escalation or vintage adjustment)
   "Starting Rent (Annual)"   — $/SF, stored on starting_rent_psf AS-IS
-Existing values are never overwritten by either column.
+  "Signed" (or "Lease Signed Date") — signing date; the YEAR is stored on
+                               lease_signed_year (anchors the rent-ladder
+                               hedge rungs to the real lease vintage)
+Existing values are never overwritten by any of these columns.
 """
 import re
 import io
@@ -74,10 +77,11 @@ def run_costar_lease_activity_import(file_bytes: bytes, filename: str, db) -> di
     update in_place_rent_psf for properties that currently have no rent data.
 
     Additionally name-matches each row's "Tenant Name" to a Company and stores
-    "Effective Rent (Annual)" $/SF on effective_rent_psf and "Starting Rent
-    (Annual)" $/SF on starting_rent_psf, as-is (existing values never
-    overwritten). Exact normalized name match only — unmatched rows are
-    reported, never guessed.
+    "Effective Rent (Annual)" $/SF on effective_rent_psf, "Starting Rent
+    (Annual)" $/SF on starting_rent_psf, and the year of the "Signed" /
+    "Lease Signed Date" column on lease_signed_year — all as-is (existing
+    values never overwritten). Exact normalized name match only — unmatched
+    rows are reported, never guessed.
 
     Returns:
         {"updated": N, "skipped_no_match": N, "skipped_existing": N, "errors": [],
@@ -135,8 +139,10 @@ def run_costar_lease_activity_import(file_bytes: bytes, filename: str, db) -> di
         "Effective Rent (Annual)": "effective_rent_psf",
         "Starting Rent (Annual)":  "starting_rent_psf",
     }
+    SIGNED_DATE_COLS = ("Lease Signed Date", "Lease Signed date", "Signed")
     present_rent_cols = [c for c in TENANT_RENT_COLS if c in df.columns]
-    has_tenant_cols = "Tenant Name" in df.columns and bool(present_rent_cols)
+    has_signed_col = any(c in df.columns for c in SIGNED_DATE_COLS)
+    has_tenant_cols = "Tenant Name" in df.columns and (bool(present_rent_cols) or has_signed_col)
     comp_by_key: dict = {}
     if has_tenant_cols:
         for c in db.query(Company).all():
@@ -154,7 +160,9 @@ def run_costar_lease_activity_import(file_bytes: bytes, filename: str, db) -> di
     for row in rows:
         raw_addr = (row.get("Property Address") or "").strip()
         raw_rent = row.get("Rent/SF/Yr") or row.get("Rent/SF/yr") or row.get("Rent/SF/YR")
-        raw_date = row.get("Lease Signed Date") or row.get("Lease Signed date")
+        raw_date = (
+            row.get("Lease Signed Date") or row.get("Lease Signed date") or row.get("Signed")
+        )
 
         # Parse signed date once — shared by the property and tenant passes.
         row_signed_date: Optional[date] = None
@@ -179,6 +187,12 @@ def run_costar_lease_activity_import(file_bytes: bytes, filename: str, db) -> di
                     unparseable.append(col)
                 else:
                     parsed[TENANT_RENT_COLS[col]] = val
+
+            # The signing YEAR is another per-row datum for the matched tenant
+            # (anchors the rent-ladder hedge rungs). Only a real parsed date
+            # yields a year — never inferred.
+            if row_signed_date is not None:
+                parsed["lease_signed_year"] = row_signed_date.year
 
             if not tenant_name:
                 if parsed or unparseable:
@@ -272,17 +286,18 @@ def run_costar_lease_activity_import(file_bytes: bytes, filename: str, db) -> di
 
     # Summary: N matched, N skipped, skipped names with reasons.
     if has_tenant_cols:
+        cols_desc = present_rent_cols + (["Signed"] if has_signed_col else [])
         print(
-            f"[lease-activity] tenant rents ({', '.join(present_rent_cols)}): "
+            f"[lease-activity] tenant rents ({', '.join(cols_desc)}): "
             f"{tenants_matched} matched, {len(tenant_skips)} skipped"
         )
         for s in tenant_skips:
             print(f"  - skipped {s['tenant_name']}: {s['reason']}")
     else:
         print(
-            "[lease-activity] no 'Tenant Name' + rent columns "
-            "('Effective Rent (Annual)' / 'Starting Rent (Annual)') in this "
-            "export — tenant rent pass skipped"
+            "[lease-activity] no 'Tenant Name' + rent/signed columns "
+            "('Effective Rent (Annual)' / 'Starting Rent (Annual)' / 'Signed') "
+            "in this export — tenant rent pass skipped"
         )
 
     return {

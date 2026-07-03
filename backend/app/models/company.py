@@ -81,6 +81,11 @@ class Company(Base):
     effective_rent_psf = Column(Float, nullable=True)
     starting_rent_psf = Column(Float, nullable=True)
     building_asking_rent_psf = Column(Float, nullable=True)
+    # Year the current lease was SIGNED, sourced from the Lease Activity import
+    # ("Signed" / "Lease Signed Date" column) or entered manually. Anchors the
+    # hedge rungs of the rent ladder to the tenant's real lease vintage —
+    # null = unknown (hedge copy stays vague, never cites a year).
+    lease_signed_year = Column(Integer, nullable=True)
     future_move_flag = Column(Boolean, nullable=True)
     future_move_type = Column(String, nullable=True)
     linked_property_id = Column(Integer, nullable=True)

@@ -50,6 +50,7 @@ class CompanyBase(BaseModel):
     effective_rent_psf: Optional[float] = None
     starting_rent_psf: Optional[float] = None
     building_asking_rent_psf: Optional[float] = None
+    lease_signed_year: Optional[int] = None
     future_move_flag: Optional[bool] = None
     future_move_type: Optional[str] = None
     linked_property_id: Optional[int] = None
@@ -127,6 +128,7 @@ class CompanyListOut(BaseModel):
     effective_rent_psf: Optional[float] = None
     starting_rent_psf: Optional[float] = None
     building_asking_rent_psf: Optional[float] = None
+    lease_signed_year: Optional[int] = None
     current_submarket: Optional[str] = None
 
     # Broker rep

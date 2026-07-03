@@ -143,6 +143,7 @@ export const updateCompanyRents = (
     effective_rent_psf: number | null
     starting_rent_psf: number | null
     building_asking_rent_psf: number | null
+    lease_signed_year: number | null
   },
 ): Promise<CompanyOut> =>
   api.patch(`/companies/${companyId}/rents`, payload).then(r => r.data)

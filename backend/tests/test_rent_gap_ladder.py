@@ -35,7 +35,7 @@ from sqlalchemy.pool import StaticPool
 import app.models                 # noqa: F401 — registers core tables on Base.metadata
 import app.models.outreach_log    # noqa: F401
 import app.models.outreach_draft  # noqa: F401
-from app.config import RENT_GAP_PIVOT_YEAR, SUBMARKET_BENCHMARKS
+from app.config import SUBMARKET_BENCHMARKS
 from app.database import Base
 import app.services.outreach_service as svc
 from app.services.outreach_service import (
@@ -43,6 +43,8 @@ from app.services.outreach_service import (
     FULL_SERVICE_LINE,
     build_rent_gap_line,
 )
+
+THIS_YEAR = date.today().year
 
 
 TYSONS_ASKING = SUBMARKET_BENCHMARKS["Tysons"]["market_rent_psf"]  # 39.10
@@ -70,11 +72,16 @@ def _creep_line(starting: float, ask: float, quoted_by: str) -> str:
     )
 
 
-def _hedge_line(ask: float, where: str) -> str:
+# Lease-vintage clause of the hedge line: vague when the signing year is
+# unknown; scaled to real elapsed time when known.
+VAGUE_TENURE_CLAUSE = "a lot of tenants who've been in place a while are sitting above that"
+
+
+def _hedge_line(ask: float, where: str, signed_clause: str = VAGUE_TENURE_CLAUSE) -> str:
     return (
-        f"Asking rents in {where} are quoting around ${ask:.2f}/SF right now — a lot of "
-        f"tenants who signed before {RENT_GAP_PIVOT_YEAR} are sitting above that. I don't "
-        f"know where your lease lands, but that gap is exactly what I check."
+        f"Asking rents in {where} are quoting around ${ask:.2f}/SF right now — "
+        f"{signed_clause}. I don't know where your lease lands, but that gap is "
+        f"exactly what I check."
     )
 
 
@@ -125,12 +132,66 @@ def test_starting_beats_hedge():
     assert build_rent_gap_line(None, 28.5, None, "Tysons") == RUNGS["4_starting_vs_submarket"][3]
 
 
-def test_hedge_rungs_cite_config_pivot_year():
-    assert str(RENT_GAP_PIVOT_YEAR) in build_rent_gap_line(None, None, 38.0, "Tysons")
-    assert str(RENT_GAP_PIVOT_YEAR) in build_rent_gap_line(None, None, None, "Tysons")
-    # Direct and creep rungs make their claim without the pivot-year hedge.
-    assert str(RENT_GAP_PIVOT_YEAR) not in build_rent_gap_line(45.0, None, 38.0, "Tysons")
-    assert str(RENT_GAP_PIVOT_YEAR) not in build_rent_gap_line(None, 28.5, 38.0, "Tysons")
+# ── Hedge rungs anchored to the tenant's REAL lease vintage ─────────────────────
+
+def test_hedge_null_year_uses_vague_phrasing_with_no_year_at_all():
+    """Unknown signing year → 'tenants who've been in place a while'; no
+    specific year is ever cited (nothing fabricated)."""
+    import re as _re
+    for line in (
+        build_rent_gap_line(None, None, 38.0, "Tysons"),
+        build_rent_gap_line(None, None, None, "Tysons"),
+    ):
+        assert VAGUE_TENURE_CLAUSE in line
+        assert not _re.search(r"\b(19|20)\d{2}\b", line), f"vague hedge cites a year: {line}"
+
+
+def test_hedge_old_signing_cites_year_back_in():
+    """Signed >= 4 years ago → 'signed back in [year]'."""
+    year = THIS_YEAR - 5
+    line = build_rent_gap_line(None, None, 38.0, "Tysons", lease_signed_year=year)
+    assert f"a lot of leases signed back in {year} are sitting above that" in line
+    line = build_rent_gap_line(None, None, None, "Tysons", lease_signed_year=year)
+    assert f"a lot of leases signed back in {year} are sitting above that" in line
+
+
+def test_hedge_couple_years_ago_scaled_phrasing():
+    """Signed 2-3 years ago → 'a couple of years back, in [year]'."""
+    year = THIS_YEAR - 2
+    line = build_rent_gap_line(None, None, 38.0, "Tysons", lease_signed_year=year)
+    assert f"a lot of leases signed a couple of years back, in {year}, are sitting above that" in line
+
+
+def test_hedge_recent_signing_is_not_described_as_above_market():
+    """The reported bug: a tenant who signed THIS year must never read
+    'signed before 2022' (or any claim their fresh lease sits above market)."""
+    line = build_rent_gap_line(None, None, 38.0, "Tysons", lease_signed_year=THIS_YEAR)
+    assert f"even a lease signed as recently as {THIS_YEAR} can land differently" in line
+    assert "sitting above that" not in line
+    assert "signed before" not in line
+    assert "2022" not in line
+
+
+def test_signed_year_does_not_touch_direct_or_creep_rungs():
+    """Rungs 1-4 are unaffected by lease_signed_year."""
+    year = THIS_YEAR - 5
+    assert build_rent_gap_line(45.0, None, 38.0, "Tysons", lease_signed_year=year) == \
+        RUNGS["1_effective_vs_building"][3]
+    assert build_rent_gap_line(None, 28.5, 38.0, "Tysons", lease_signed_year=year) == \
+        RUNGS["3_starting_vs_building"][3]
+
+
+def test_no_hardcoded_pivot_year_remains():
+    """RENT_GAP_PIVOT_YEAR is gone from config and '2022' never appears in any
+    rung output (all six, with and without a signing year)."""
+    import app.config as config_module
+    assert not hasattr(config_module, "RENT_GAP_PIVOT_YEAR")
+    for eff, starting, bldg, _ in RUNGS.values():
+        for signed in (None, THIS_YEAR):
+            line = build_rent_gap_line(eff, starting, bldg, "Tysons", lease_signed_year=signed)
+            assert line is not None
+            assert "2022" not in line
+            assert "signed before" not in line
 
 
 def test_no_rent_reference_yields_no_line():
@@ -201,8 +262,10 @@ _BARE_LLM_JSON = json.dumps({
 })
 
 
-def _company(effective=None, starting=None, building=None, submarket="Tysons", lease_mo=9):
+def _company(effective=None, starting=None, building=None, submarket="Tysons",
+             lease_mo=9, signed_year=None):
     return {
+        "lease_signed_year": signed_year,
         "name": "Acme Corp",
         "industry": "Technology",
         "current_headcount": 120,
@@ -341,6 +404,35 @@ def test_hook_and_rent_line_fed_to_model_prompt(monkeypatch):
     assert FREE_ANALYSIS_LINE in system_msg
 
 
+def test_generate_known_signed_year_uses_relative_phrasing(monkeypatch):
+    """End-to-end regression for the reported bug: a tenant who signed THIS
+    year gets phrasing anchored to that year — never 'signed before 2022' —
+    identically in the email body and THE HOOK."""
+    result = _generate(_company(signed_year=THIS_YEAR), monkeypatch)
+    expected = _hedge_line(
+        TYSONS_ASKING, "Tysons",
+        f"even a lease signed as recently as {THIS_YEAR} can land differently "
+        f"against today's asking numbers",
+    )
+    assert expected in result["email"]["body"]
+    assert expected in result["call_script"]["the_hook"]
+    for text in (result["email"]["body"], result["call_script"]["the_hook"]):
+        assert "2022" not in text
+        assert "signed before" not in text
+
+
+def test_generate_null_signed_year_uses_vague_phrasing(monkeypatch):
+    """No signing year on record → the vague tenure phrasing, and no year token
+    anywhere in the hedge/hook."""
+    import re as _re
+    result = _generate(_company(), monkeypatch)  # rung 6, no signed year
+    expected = _hedge_line(TYSONS_ASKING, "Tysons")
+    assert expected in result["email"]["body"]
+    assert expected in result["call_script"]["the_hook"]
+    assert VAGUE_TENURE_CLAUSE in result["call_script"]["the_hook"]
+    assert not _re.search(r"\b(19|20)\d{2}\b", result["call_script"]["the_hook"])
+
+
 def test_unknown_submarket_with_no_fields_never_500s_and_has_no_rent_line(monkeypatch):
     """Rung 6 with no benchmark → no rent line at all; THE HOOK degrades to the
     full-service positioning alone; no invented dollar figure anywhere."""
@@ -475,8 +567,12 @@ def test_import_never_overwrites_existing_effective_rent(db_session):
     result = run_costar_lease_activity_import(csv.encode(), "leases.csv", db_session)
     db_session.refresh(c)
     assert c.effective_rent_psf == pytest.approx(28.00)
-    assert result["tenants_matched"] == 0
-    assert any("not overwritten" in s["reason"] for s in result["tenant_skips"])
+    assert any(
+        s["reason"] == "effective_rent_psf already set — not overwritten"
+        for s in result["tenant_skips"]
+    )
+    # The signing YEAR from the same row is a new datum and is applied.
+    assert c.lease_signed_year == 2026
 
 
 def test_import_never_overwrites_existing_starting_rent(db_session):
@@ -486,11 +582,57 @@ def test_import_never_overwrites_existing_starting_rent(db_session):
     db_session.refresh(c)
     assert c.starting_rent_psf == pytest.approx(25.00)
     assert c.effective_rent_psf is None  # blank effective cell stays unset
-    assert result["tenants_matched"] == 0
     assert any(
         s["reason"] == "starting_rent_psf already set — not overwritten"
         for s in result["tenant_skips"]
     )
+
+
+def test_import_sets_lease_signed_year_from_signed_column(db_session):
+    """The 'Signed' column name (CoStar variant) parses; the YEAR lands on
+    lease_signed_year."""
+    c = _add_company(db_session, "Acme Corp")
+    csv = (
+        "Property Address,Rent/SF/Yr,Signed,Space Use,"
+        "Submarket Name,Tenant Name,Effective Rent (Annual)\n"
+        '100 Main St,$40.00,03/10/2026,Office,Tysons,Acme Corp,$33.75\n'
+    )
+    result = run_costar_lease_activity_import(csv.encode(), "leases.csv", db_session)
+    db_session.refresh(c)
+    assert c.lease_signed_year == 2026
+    assert c.effective_rent_psf == pytest.approx(33.75)
+    assert result["tenants_matched"] == 1
+
+
+def test_import_never_overwrites_existing_lease_signed_year(db_session):
+    from app.models.company import Company
+    c = _add_company(db_session, "Acme Corp")
+    c.lease_signed_year = 2019
+    db_session.commit()
+    csv = _CSV_HEADER + '100 Main St,$40.00,01/15/2026,Office,Tysons,Acme Corp,$33.75\n'
+    result = run_costar_lease_activity_import(csv.encode(), "leases.csv", db_session)
+    db_session.refresh(c)
+    assert c.lease_signed_year == 2019
+    assert c.effective_rent_psf == pytest.approx(33.75)
+    assert any(
+        s["reason"] == "lease_signed_year already set — not overwritten"
+        for s in result["tenant_skips"]
+    )
+
+
+def test_import_null_safe_without_signed_column(db_session):
+    """No signed-date column at all → rents still apply; year stays null."""
+    c = _add_company(db_session, "Acme Corp")
+    csv = (
+        "Property Address,Rent/SF/Yr,Space Use,"
+        "Submarket Name,Tenant Name,Effective Rent (Annual)\n"
+        '100 Main St,$40.00,Office,Tysons,Acme Corp,$33.75\n'
+    )
+    result = run_costar_lease_activity_import(csv.encode(), "leases.csv", db_session)
+    db_session.refresh(c)
+    assert c.effective_rent_psf == pytest.approx(33.75)
+    assert c.lease_signed_year is None
+    assert result["tenants_matched"] == 1
 
 
 def test_import_without_rent_columns_is_null_safe(db_session):

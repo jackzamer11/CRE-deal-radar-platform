@@ -786,6 +786,9 @@ export default function Companies() {
                       {selected.building_asking_rent_psf != null && (
                         <Row label="Building Asking Rent" value={`$${selected.building_asking_rent_psf.toFixed(2)}/SF`} />
                       )}
+                      {selected.lease_signed_year != null && (
+                        <Row label="Lease Signed" value={String(selected.lease_signed_year)} />
+                      )}
                       {bench != null && (
                         <div className="text-[9px] text-ink-muted pt-0.5">{bench.source}</div>
                       )}

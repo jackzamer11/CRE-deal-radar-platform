@@ -279,11 +279,6 @@ SF_FIT_MIN_POINTS  = 60.0
 OWNER_VACANCY_CITE_THRESHOLD  = 15.0  # owner-side: high vacancy signals leasing urgency
 TENANT_VACANCY_CITE_THRESHOLD = 10.0  # tenant-side: low vacancy signals tight supply
 
-# ---------------------------------------------------------------------------
-# Rent-gap pivot year (tenant-side outreach)
-# Tenants who signed BEFORE this year are typically sitting above today's
-# asking rents (post-2021 NoVA office repricing). Quoted verbatim in the
-# hedged rent-gap line of tenant emails and call scripts when the tenant's
-# own effective rent is unknown.
-# ---------------------------------------------------------------------------
-RENT_GAP_PIVOT_YEAR = 2022
+# NOTE: the former RENT_GAP_PIVOT_YEAR constant was removed. The rent-ladder
+# hedge rungs now anchor to each tenant's real lease_signed_year (or use vague
+# tenure phrasing when unknown) — see outreach_service._signed_reference.

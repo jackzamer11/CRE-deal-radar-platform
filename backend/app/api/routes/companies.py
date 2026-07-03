@@ -235,6 +235,7 @@ class CompanyManualCreate(BaseModel):
     effective_rent_psf: Optional[float] = None
     starting_rent_psf: Optional[float] = None
     building_asking_rent_psf: Optional[float] = None
+    lease_signed_year: Optional[int] = None
     primary_contact_name: Optional[str] = None
     primary_contact_title: Optional[str] = None
     primary_contact_phone: Optional[str] = None
@@ -346,6 +347,7 @@ def create_company(payload: CompanyManualCreate, db: Session = Depends(get_db)):
         effective_rent_psf    = payload.effective_rent_psf,
         starting_rent_psf     = payload.starting_rent_psf,
         building_asking_rent_psf = payload.building_asking_rent_psf,
+        lease_signed_year     = payload.lease_signed_year,
         primary_contact_name  = payload.primary_contact_name,
         primary_contact_title = payload.primary_contact_title,
         primary_contact_phone = payload.primary_contact_phone,
@@ -903,6 +905,7 @@ class RentFieldsUpdate(BaseModel):
     effective_rent_psf: Optional[float] = None
     starting_rent_psf: Optional[float] = None
     building_asking_rent_psf: Optional[float] = None
+    lease_signed_year: Optional[int] = None
 
 
 @router.patch("/{company_id}/rents", response_model=CompanyOut)
@@ -913,8 +916,9 @@ def update_rent_fields(
 ):
     """Set or clear the tenant's rent economics: effective_rent_psf (actual
     effective rent $/SF/yr), starting_rent_psf (rent the lease started at
-    $/SF/yr), and building_asking_rent_psf (asking rent quoted at their
-    building $/SF/yr). Drives the rent-gap ladder in tenant outreach."""
+    $/SF/yr), building_asking_rent_psf (asking rent quoted at their building
+    $/SF/yr), and lease_signed_year (year the current lease was signed).
+    Drives the rent-gap ladder in tenant outreach."""
     company = db.query(Company).filter(Company.company_id == company_id).first()
     if not company:
         raise HTTPException(status_code=404, detail="Company not found")
@@ -925,9 +929,12 @@ def update_rent_fields(
     ):
         if value is not None and value < 0:
             raise HTTPException(status_code=422, detail=f"{field_name} must be >= 0")
+    if payload.lease_signed_year is not None and not (1900 <= payload.lease_signed_year <= 2100):
+        raise HTTPException(status_code=422, detail="lease_signed_year must be a 4-digit year (1900-2100)")
     company.effective_rent_psf       = payload.effective_rent_psf
     company.starting_rent_psf        = payload.starting_rent_psf
     company.building_asking_rent_psf = payload.building_asking_rent_psf
+    company.lease_signed_year        = payload.lease_signed_year
     company.last_modified_by_user    = datetime.utcnow()
     db.commit()
     db.refresh(company)
@@ -1004,6 +1011,7 @@ def draft_outreach(company_id: str, db: Session = Depends(get_db)):
         "effective_rent_psf":   company.effective_rent_psf,
         "starting_rent_psf":    company.starting_rent_psf,
         "building_asking_rent_psf": company.building_asking_rent_psf,
+        "lease_signed_year":    company.lease_signed_year,
         "future_move_flag":     company.future_move_flag,
         "future_move_type":     company.future_move_type,
         "lease_trajectory":     company.lease_trajectory,
