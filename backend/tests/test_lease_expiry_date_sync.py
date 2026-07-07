@@ -61,6 +61,10 @@ def _desynced_company(company_id: str) -> Company:
         name="Desync Test Co",
         industry="Technology",
         current_headcount=40,
+        # Explicitly confirmed zero open positions — keeps hiring_velocity
+        # scoring (not abstaining) so this test's signals_scored_count isn't
+        # incidentally coupled to open_positions null-handling semantics.
+        open_positions=0,
         current_submarket="Tysons",
         tenant_representative="JLL",
         lease_expiry_date=expiry_date,

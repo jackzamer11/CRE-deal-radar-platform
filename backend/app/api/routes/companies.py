@@ -224,9 +224,10 @@ class CompanyManualCreate(BaseModel):
     name: str
     industry: str
     description: Optional[str] = None
-    current_headcount: int
+    current_headcount: Optional[int] = None
     headcount_12mo_ago: Optional[int] = None
-    open_positions: int = 0
+    # Null = never entered (abstain); 0 = explicitly confirmed zero.
+    open_positions: Optional[int] = None
     current_address: Optional[str] = None
     current_submarket: Optional[str] = None
     current_sf_occupied: Optional[int] = None
@@ -255,7 +256,7 @@ def _run_signals(company: Company) -> None:
 
     result = se.compute_tenant_opportunity_score(
         company.headcount_growth_pct,
-        company.open_positions or 0,
+        company.open_positions,          # None → hiring_velocity abstains correctly
         company.current_headcount,
         company.lease_expiry_months,
         company.current_sf_occupied,
@@ -295,9 +296,9 @@ def _run_signals(company: Company) -> None:
                 (company.current_headcount - company.headcount_12mo_ago)
                 / company.headcount_12mo_ago * 100, 1
             )
-        if company.current_headcount > 0:
+        if company.open_positions is not None and company.current_headcount > 0:
             company.hiring_velocity = round(
-                (company.open_positions or 0) / company.current_headcount * 100, 1
+                company.open_positions / company.current_headcount * 100, 1
             )
         if company.current_sf_occupied and company.current_headcount > 0:
             company.sf_per_head = round(company.current_sf_occupied / company.current_headcount, 1)
@@ -315,20 +316,20 @@ def create_company(payload: CompanyManualCreate, db: Session = Depends(get_db)):
     """Manually add a new company. Signals are computed immediately after creation."""
     company_id = _next_company_id(db)
 
-    # Derived fields
+    # Derived fields — null-safe: current_headcount may be left blank.
     growth_pct = None
-    if payload.headcount_12mo_ago and payload.headcount_12mo_ago > 0:
+    if payload.current_headcount and payload.headcount_12mo_ago and payload.headcount_12mo_ago > 0:
         growth_pct = round(
             (payload.current_headcount - payload.headcount_12mo_ago)
             / payload.headcount_12mo_ago * 100, 1
         )
 
     hiring_velocity = None
-    if payload.current_headcount > 0:
+    if payload.open_positions is not None and payload.current_headcount and payload.current_headcount > 0:
         hiring_velocity = round(payload.open_positions / payload.current_headcount * 100, 1)
 
     sf_per_head = None
-    if payload.current_sf_occupied and payload.current_headcount > 0:
+    if payload.current_sf_occupied and payload.current_headcount and payload.current_headcount > 0:
         sf_per_head = round(payload.current_sf_occupied / payload.current_headcount, 1)
 
     lease_expiry_date_val = None

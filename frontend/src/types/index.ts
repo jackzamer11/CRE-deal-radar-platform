@@ -248,7 +248,7 @@ export interface MatchedProperty {
 export interface CompanyOut extends CompanyListOut {
   description: string | null
   is_medical: boolean
-  open_positions: number
+  open_positions: number | null
   hiring_velocity: number | null
   current_sf_occupied: number | null
   current_building_class: string | null

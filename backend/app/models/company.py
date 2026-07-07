@@ -20,7 +20,9 @@ class Company(Base):
     current_headcount = Column(Integer, nullable=True)
     headcount_12mo_ago = Column(Integer, nullable=True)
     headcount_growth_pct = Column(Float, nullable=True)   # Computed
-    open_positions = Column(Integer, default=0)
+    # Nullable, no default: NULL = never entered (abstain in scoring);
+    # 0 = explicitly confirmed zero open positions (a deliberate score).
+    open_positions = Column(Integer, nullable=True)
     hiring_velocity = Column(Float, nullable=True)        # open_positions / headcount * 100
 
     # Location & Space

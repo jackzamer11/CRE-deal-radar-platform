@@ -406,6 +406,65 @@ def fix_outreach_log_company_id_nullable(cur: sqlite3.Cursor) -> int:
     return 1
 
 
+def ensure_nullable_columns(cur: sqlite3.Cursor, table: str, nullable_cols: set) -> int:
+    """Drop any NOT NULL constraint on the given columns of `table`, if present.
+
+    SQLite cannot ALTER COLUMN to drop NOT NULL, so this recreates the table
+    from its own PRAGMA-derived DDL (preserving every other constraint,
+    default, and index) with NOT NULL removed only from `nullable_cols`.
+    Idempotent: if none of the target columns are currently NOT NULL, this
+    is a no-op. Used so a column that has always been nullable=True at the
+    ORM level (e.g. open_positions, current_headcount) is guaranteed to
+    actually accept NULL on any live Docker-volume database that might
+    predate the current model definition.
+    """
+    # PRAGMA table_info columns (positional, default sqlite3 row factory —
+    # this connection does not use sqlite3.Row): cid, name, type, notnull, dflt_value, pk
+    cur.execute(f"PRAGMA table_info({table})")
+    cols = list(cur.fetchall())
+    if not cols:
+        return 0  # table doesn't exist yet
+
+    already_nullable = all(
+        not row[3] for row in cols if row[1] in nullable_cols
+    )
+    if already_nullable:
+        return 0
+
+    col_defs = []
+    for row in cols:
+        name, typ, notnull, dflt, pk = row[1], row[2] or "TEXT", row[3], row[4], row[5]
+        if name in nullable_cols:
+            notnull = 0
+        defn = f'"{name}" {typ}'
+        if pk:
+            defn += " PRIMARY KEY"
+        if notnull:
+            defn += " NOT NULL"
+        if dflt is not None:
+            defn += f" DEFAULT {dflt}"
+        col_defs.append(defn)
+
+    cur.execute(
+        f"SELECT name, sql FROM sqlite_master "
+        f"WHERE type='index' AND tbl_name='{table}' AND sql IS NOT NULL"
+    )
+    indexes = cur.fetchall()
+
+    old_table = f"_{table}_pre_nullable_fix"
+    cur.execute(f"ALTER TABLE {table} RENAME TO {old_table}")
+    cur.execute(f"CREATE TABLE {table} ({', '.join(col_defs)})")
+    col_names = ", ".join(f'"{r[1]}"' for r in cols)
+    cur.execute(f"INSERT INTO {table} ({col_names}) SELECT {col_names} FROM {old_table}")
+    cur.execute(f"DROP TABLE {old_table}")
+
+    for idx in indexes:
+        cur.execute(idx[1])
+
+    print(f"  ~ {table}.{{{', '.join(sorted(nullable_cols))}}}: removed NOT NULL constraint")
+    return 1
+
+
 def ensure_companies(cur: sqlite3.Cursor) -> int:
     """Add any columns the Company ORM model expects that may be missing."""
     added = 0
@@ -616,10 +675,36 @@ def run() -> None:
     tcf_added      = ensure_tenant_class_feedback(cur)
     bf_class_added = backfill_building_class_format(cur)
 
+    # ── Guarantee open_positions / current_headcount actually accept NULL ──────
+    # Both are nullable=True at the ORM level, but a Docker-volume DB created
+    # before that was true (or before open_positions dropped its default=0)
+    # could still carry a stale NOT NULL constraint. Guarded so a failure here
+    # never aborts startup.
+    try:
+        nullable_fixed = ensure_nullable_columns(
+            cur, "companies", {"open_positions", "current_headcount"}
+        )
+    except Exception as _exc:
+        import logging as _log
+        _log.getLogger(__name__).error(
+            "ensure_schema: ensure_nullable_columns(companies) failed (%s) — "
+            "startup will continue; re-run after investigating the error",
+            _exc,
+        )
+        try:
+            conn.rollback()
+            cur = conn.cursor()
+        except Exception:
+            pass
+        nullable_fixed = 0
+
     conn.commit()
     conn.close()
 
-    total = prop_added + comp_added + olog_added + olog_fixed + act_added + draft_added + bf_added + tcf_added + bf_class_added
+    total = (
+        prop_added + comp_added + olog_added + olog_fixed + act_added
+        + draft_added + bf_added + tcf_added + bf_class_added + nullable_fixed
+    )
     if total:
         print(f"ensure_schema: applied {total} column addition(s)/backfill(s).")
     else:
