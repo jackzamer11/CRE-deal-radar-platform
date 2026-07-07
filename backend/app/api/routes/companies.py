@@ -14,7 +14,7 @@ from app.database import get_db
 from app.models.company import Company
 from app.models.outreach_log import OutreachLog
 from app.models.property import Property
-from app.schemas.company import CompanyOut, CompanyListOut
+from app.schemas.company import CompanyOut, CompanyListOut, months_until_lease_expiry
 from app.schemas.property import MatchedProperty
 from app.schemas.outreach import OutreachDraft, OutreachLogCreate, OutreachLogOut, CallScript
 from app.services import signal_engine as se
@@ -244,6 +244,15 @@ class CompanyManualCreate(BaseModel):
 
 
 def _run_signals(company: Company) -> None:
+    # lease_expiry_months can go stale relative to lease_expiry_date (e.g. a
+    # direct data edit that only touched the date). Whenever a date is on
+    # record, re-derive months from it — the exact same calculation the
+    # display schemas use — so the scorer never abstains on a signal the UI
+    # is showing a real value for. Self-heals the column for any other
+    # consumer that reads it directly.
+    if company.lease_expiry_date:
+        company.lease_expiry_months = months_until_lease_expiry(company.lease_expiry_date)
+
     result = se.compute_tenant_opportunity_score(
         company.headcount_growth_pct,
         company.open_positions or 0,

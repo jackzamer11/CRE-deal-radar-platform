@@ -4,6 +4,19 @@ from typing import Optional, TYPE_CHECKING
 from pydantic import BaseModel, model_validator
 
 
+def months_until_lease_expiry(lease_expiry_date: date) -> int:
+    """Months from today until lease_expiry_date, floored at 0.
+
+    Single source of truth for deriving lease-expiry-months from a date —
+    used identically by the display schemas below (CompanyBase, CompanyListOut)
+    and by the scoring engine's input path (_run_signals / refresh_company_signals
+    in companies.py / pipeline.py), so a company's displayed expiry and its
+    scored expiry can never diverge.
+    """
+    today = date.today()
+    return max(0, (lease_expiry_date.year - today.year) * 12 + (lease_expiry_date.month - today.month))
+
+
 class CompanyBase(BaseModel):
     company_id: str
     name: str
@@ -29,9 +42,7 @@ class CompanyBase(BaseModel):
     @model_validator(mode="after")
     def _decay_lease_months(self) -> "CompanyBase":
         if self.lease_expiry_date:
-            today = date.today()
-            ld = self.lease_expiry_date
-            self.lease_expiry_months = max(0, (ld.year - today.year) * 12 + (ld.month - today.month))
+            self.lease_expiry_months = months_until_lease_expiry(self.lease_expiry_date)
         # Null-safe: None months → late_stage stays False.
         m = self.lease_expiry_months
         self.late_stage = m is not None and 0 < m <= 3
@@ -174,9 +185,7 @@ class CompanyListOut(BaseModel):
         from app.services.rep_classification import classify_rep
         self.rep_class = classify_rep(self.tenant_representative)
         if self.lease_expiry_date:
-            today = date.today()
-            ld = self.lease_expiry_date
-            self.lease_expiry_months = max(0, (ld.year - today.year) * 12 + (ld.month - today.month))
+            self.lease_expiry_months = months_until_lease_expiry(self.lease_expiry_date)
         # Null-safe: None months → late_stage stays False.
         m = self.lease_expiry_months
         self.late_stage = m is not None and 0 < m <= 3
