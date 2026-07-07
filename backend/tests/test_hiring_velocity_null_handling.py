@@ -154,7 +154,12 @@ def test_create_company_open_positions_null_vs_zero_distinguishable(client):
     zero_body = resp_zero.json()
     assert zero_body["open_positions"] == 0
 
-    # sig_hiring_velocity abstains (0.0 stored) for the NULL case, but scores
-    # a deliberate 0.0 for the confirmed-zero case — same stored value, but
-    # signals_scored_count differs because one is an abstain and one is not.
-    assert blank_body["signals_scored_count"] < zero_body["signals_scored_count"]
+    # Post lease-expiry-only reweight, hiring_velocity no longer feeds the
+    # composite or signals_scored_count at all (only lease_expiry does), so
+    # the abstain-vs-confirmed-zero distinction for hiring_velocity is no
+    # longer visible via signals_scored_count — both companies here posted no
+    # lease_expiry_months, so both abstain on the one scoring signal.
+    # The pure-function distinguishability of NULL vs 0 open_positions is
+    # covered directly above by test_hiring_velocity_null_and_zero_are_distinguishable.
+    assert blank_body["signals_scored_count"] == 0
+    assert zero_body["signals_scored_count"] == 0

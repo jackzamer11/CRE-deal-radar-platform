@@ -284,10 +284,10 @@ def run_deal_creation(db: Session) -> dict:
         )
         tenant_composite = tenant_result["composite"]
 
-        # Skip companies with virtually no tenant signal (only geo_clustering base).
-        # geo_clustering always returns 15.0 when submarket is set; weight is 5%
-        # → composite = 15.0 when all other signals abstain. Threshold of 10 lets
-        # everyone with a submarket through and lets the scorer handle quality.
+        # Skip companies with virtually no tenant signal. opportunity_score is
+        # now driven solely by lease-expiry proximity (+ rep delta), so this
+        # mostly filters out companies with no lease_expiry_months at all and
+        # a major-firm rep penalty pushing the floor to 0.
         if tenant_composite < 10:
             continue
 

@@ -944,33 +944,41 @@ def compute_tenant_opportunity_score(
     nearby_company_count: int = 0,
 ) -> dict:
     """
-    Weighted composite of all 5 tenant opportunity signals, plus a rep adjustment.
+    Lease expiry proximity is the sole driver of opportunity_score (100%
+    weight) — it is the only signal with a hard, known deadline, and the
+    2026-07 recalibration removes the other four from the score math to
+    avoid diluting that urgency signal with softer proxies.
 
-    Weights:
-      Lease expiry proximity ....... 30%  (creates urgency / hard deadline)
-      Headcount growth ............. 25%  (predicts space need expansion)
-      Space utilization ............ 20%  (current squeeze pressure)
-      Hiring velocity .............. 20%  (near-term growth materialization)
-      Geographic clustering ........ 5%   (market activity context)
+    Headcount growth, hiring velocity, space utilization, and geographic
+    clustering still compute below and are returned in `breakdown` — they
+    remain visible on the company card as reference context — but no
+    longer feed the composite.
 
-    Post-composite: tenant_representative delta applied directly to composite.
-    Major-firm rep (JLL/CBRE/etc.) drops a HIGH tenant to WORKABLE.
+    Post-composite: tenant_representative delta applied directly to composite,
+    exactly as before. Major-firm rep (JLL/CBRE/etc.) drops a HIGH tenant to
+    WORKABLE.
+
+    With a single scoring signal, insufficient_data is True only when
+    lease_expiry_months itself is unknown — a company that abstains on
+    lease expiry has nothing left to fall back on, so it scores 0 and is
+    flagged insufficient (min_scored=1).
     """
-    scores = {
+    reference_scores = {
         "headcount_growth":  sig_headcount_growth(headcount_growth_pct),
         "hiring_velocity":   sig_hiring_velocity(open_positions, current_headcount),
-        "lease_expiry":      sig_lease_expiry_proximity(lease_expiry_months),
         "space_utilization": sig_space_utilization(current_sf, current_headcount),
         "geo_clustering":    sig_geo_clustering(current_submarket, nearby_company_count),
     }
-    weights = {
-        "headcount_growth":  0.25,
-        "hiring_velocity":   0.20,
-        "lease_expiry":      0.30,
-        "space_utilization": 0.20,
-        "geo_clustering":    0.05,
+    scores = {
+        "lease_expiry": sig_lease_expiry_proximity(lease_expiry_months),
     }
-    result = _weighted_composite(scores, weights)
+    weights = {
+        "lease_expiry": 1.0,
+    }
+    result = _weighted_composite(scores, weights, min_scored=1)
+    result["breakdown"].update(
+        {k: round(v, 1) if v is not None else None for k, v in reference_scores.items()}
+    )
 
     rep_delta = sig_tenant_rep(tenant_representative)
     result["composite"] = round(_clamp(result["composite"] + rep_delta), 2)

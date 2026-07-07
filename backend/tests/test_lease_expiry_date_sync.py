@@ -95,7 +95,9 @@ def test_run_signals_derives_months_from_date_when_column_is_null(db_session):
     )
     # The column self-heals to match what the date implies.
     assert company.lease_expiry_months == 6
-    assert company.signals_scored_count >= 3
+    # Post lease-expiry-only reweight, lease_expiry is the only scoring
+    # signal, so a scored (non-abstaining) company always has exactly 1.
+    assert company.signals_scored_count == 1
     assert company.insufficient_data is False
 
 
