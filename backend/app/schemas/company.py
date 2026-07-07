@@ -24,7 +24,8 @@ class CompanyBase(BaseModel):
     description: Optional[str] = None
     current_headcount: Optional[int] = None
     headcount_12mo_ago: Optional[int] = None
-    open_positions: int = 0
+    # Null = never entered (abstain); 0 = explicitly confirmed zero.
+    open_positions: Optional[int] = None
     current_address: Optional[str] = None
     current_submarket: Optional[str] = None
     # Real occupied SF (CoStar "SF Occupied" / manual). Never calculated. Null = unknown.

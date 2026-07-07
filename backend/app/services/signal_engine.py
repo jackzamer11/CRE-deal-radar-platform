@@ -474,16 +474,20 @@ def sig_headcount_growth(growth_pct: Optional[float]) -> Optional[float]:
     return _clamp(g * 2.0)
 
 
-def sig_hiring_velocity(open_positions: int, current_headcount: Optional[int]) -> Optional[float]:
+def sig_hiring_velocity(open_positions: Optional[int], current_headcount: Optional[int]) -> Optional[float]:
     """
     Open positions as % of current headcount.
     High hiring velocity = space need will materialize faster than
     the lease expiry clock suggests.
 
-    Returns None when headcount is unknown (abstain).
+    Returns None when open_positions was never entered, or headcount is
+    unknown (abstain). An explicit 0 open positions still scores — it is
+    a deliberate "confirmed zero," not a missing value.
 
     Formula: velocity = open_positions / current_headcount * 100
     """
+    if open_positions is None:
+        return None
     if not current_headcount or current_headcount <= 0:
         return None
     velocity = open_positions / current_headcount * 100.0
@@ -931,7 +935,7 @@ def sig_tenant_rep(tenant_representative: Optional[str]) -> float:
 
 def compute_tenant_opportunity_score(
     headcount_growth_pct: Optional[float],
-    open_positions: int,
+    open_positions: Optional[int],
     current_headcount: Optional[int],
     lease_expiry_months: Optional[int],
     current_sf: Optional[int],

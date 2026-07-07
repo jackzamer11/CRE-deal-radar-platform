@@ -130,7 +130,6 @@ export default function AddCompanyModal({ onClose, onSaved, editCompanyId, initi
 
   const canAdvance = () => {
     if (step === 'company') return form.name && form.industry
-    if (step === 'size')    return form.current_headcount
     return true
   }
 
@@ -172,9 +171,9 @@ export default function AddCompanyModal({ onClose, onSaved, editCompanyId, initi
           name:                  form.name,
           industry:              form.industry,
           description:           form.description || undefined,
-          current_headcount:     parseInt(form.current_headcount),
+          current_headcount:     form.current_headcount ? parseInt(form.current_headcount) : undefined,
           headcount_12mo_ago:    form.headcount_12mo_ago ? parseInt(form.headcount_12mo_ago) : undefined,
-          open_positions:        form.open_positions ? parseInt(form.open_positions) : 0,
+          open_positions:        form.open_positions ? parseInt(form.open_positions) : undefined,
           current_address:       form.current_address || undefined,
           current_submarket:     form.current_submarket || undefined,
           current_sf_occupied:   form.current_sf_occupied ? parseInt(form.current_sf_occupied) : undefined,
@@ -285,7 +284,7 @@ export default function AddCompanyModal({ onClose, onSaved, editCompanyId, initi
           {step === 'size' && (
             <div className="space-y-4">
               <div className="grid grid-cols-2 gap-4">
-                <Field label="Current Headcount" required>
+                <Field label="Current Headcount" hint="leave blank if unknown">
                   <input className={inputCls} type="number" placeholder="e.g. 45"
                     value={form.current_headcount} onChange={set('current_headcount')} />
                 </Field>

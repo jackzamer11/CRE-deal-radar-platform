@@ -195,13 +195,14 @@ def refresh_company_signals(db: Session, company: Company) -> None:
                 / company.headcount_12mo_ago * 100, 1
             )
 
-        company.hiring_velocity = round(
-            (company.open_positions or 0) / company.current_headcount * 100, 1
-        )
+        if company.open_positions is not None:
+            company.hiring_velocity = round(
+                company.open_positions / company.current_headcount * 100, 1
+            )
 
     result = se.compute_tenant_opportunity_score(
         company.headcount_growth_pct,
-        company.open_positions or 0,
+        company.open_positions,             # None → hiring_velocity abstains correctly
         company.current_headcount,          # None → signal abstains correctly
         company.lease_expiry_months,
         company.current_sf_occupied,
@@ -274,7 +275,7 @@ def run_deal_creation(db: Session) -> dict:
     for company in all_companies:
         tenant_result = se.compute_tenant_opportunity_score(
             company.headcount_growth_pct,
-            company.open_positions or 0,
+            company.open_positions,
             company.current_headcount,
             company.lease_expiry_months,
             company.current_sf_occupied,
