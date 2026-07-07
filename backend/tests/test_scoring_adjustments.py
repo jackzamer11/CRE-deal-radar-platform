@@ -6,12 +6,16 @@ Locks two deliberate changes to the tenant-opportunity engine:
   1. sig_tenant_rep: major-firm rep penalty softened from −25 to −15.
      The no-rep bonus (+10) and regional/other-rep penalty (−5) are
      UNCHANGED and pinned here so this edit can't silently drift them.
+     The rep delta is applied on top of the composite exactly as before —
+     unaffected by the later lease-expiry-only reweight.
 
   2. sig_space_utilization: the normal-utilization band — STRICTLY between
      150 and 210 SF/head — now scores a neutral 50.0 instead of a hard 0.0.
      Boundary contract: the cramped tiers own their upper edge (exactly
      150 → 35.0) and the oversized tiers own their lower edge (exactly
-     210 → 25.0); only the open interval (150, 210) is neutral.
+     210 → 25.0); only the open interval (150, 210) is neutral. This still
+     computes and is still returned in `breakdown` even though (per the
+     later lease-expiry-only reweight) it no longer feeds the composite.
 
 All inputs are fabricated in-memory — pure-function boundary pins only.
 No DB, no network, no CoStar.
@@ -41,14 +45,11 @@ def test_tenant_rep_deltas(rep, expected_delta):
 
 
 # ── Composite reflects −15 (not −25) for a major-firm-rep tenant ───────────────
-# Inputs chosen so every signal scores (no abstains) and the composite sits
-# mid-range, far from the 0/100 clamps:
-#   headcount_growth 30%          → 65.0  (weight .25 → 16.25)
-#   hiring velocity 10/50 = 20%   → 80.0  (weight .20 → 16.00)
-#   lease expiry 7 mo (peak)      → 100.0 (weight .30 → 30.00)
-#   utilization 5,000/50 = 100    → 80.0  (weight .20 → 16.00)
-#   geo clustering (1 nearby)     → 30.0  (weight .05 →  1.50)
-#   base composite                          = 79.75
+# Inputs chosen so every reference signal scores (no abstains), but only
+# lease_expiry feeds the composite post-reweight:
+#   lease expiry 7 mo (peak)      → 100.0 (weight 1.0 → base composite 100.0)
+#   headcount_growth / hiring_velocity / space_utilization / geo_clustering
+#     all compute too, but are reference-only and do not move the composite.
 _FULL_SIGNAL_KWARGS = dict(
     headcount_growth_pct=30.0,
     open_positions=10,
@@ -58,7 +59,7 @@ _FULL_SIGNAL_KWARGS = dict(
     current_submarket="Tysons",
     nearby_company_count=1,
 )
-_BASE_COMPOSITE = 79.75
+_BASE_COMPOSITE = 100.0  # pure lease-expiry-proximity score at 7 months (peak)
 
 
 def test_major_firm_rep_composite_reflects_minus_15_not_minus_25():
@@ -66,7 +67,7 @@ def test_major_firm_rep_composite_reflects_minus_15_not_minus_25():
         tenant_representative="JLL", **_FULL_SIGNAL_KWARGS,
     )
     assert result["breakdown"]["tenant_rep_adjustment"] == -15.0
-    assert result["composite"] == _BASE_COMPOSITE - 15.0   # 64.75
+    assert result["composite"] == _BASE_COMPOSITE - 15.0   # 85.0
     assert result["composite"] != _BASE_COMPOSITE - 25.0   # old −25 must be gone
 
 
@@ -75,7 +76,7 @@ def test_no_rep_composite_bonus_unchanged():
         tenant_representative=None, **_FULL_SIGNAL_KWARGS,
     )
     assert result["breakdown"]["tenant_rep_adjustment"] == 10.0
-    assert result["composite"] == _BASE_COMPOSITE + 10.0   # 89.75
+    assert result["composite"] == 100.0   # clamped: 100 base + 10 bonus
 
 
 def test_regional_rep_composite_penalty_unchanged():
@@ -83,7 +84,7 @@ def test_regional_rep_composite_penalty_unchanged():
         tenant_representative="Local Brokerage Partners", **_FULL_SIGNAL_KWARGS,
     )
     assert result["breakdown"]["tenant_rep_adjustment"] == -5.0
-    assert result["composite"] == _BASE_COMPOSITE - 5.0    # 74.75
+    assert result["composite"] == _BASE_COMPOSITE - 5.0    # 95.0
 
 
 # ── Space utilization: neutral band scores 50.0, not 0.0 ───────────────────────
@@ -134,9 +135,10 @@ def test_utilization_abstains_on_missing_inputs(sf, headcount):
     assert sig_space_utilization(sf, headcount) is None
 
 
-def test_composite_includes_neutral_utilization_not_zero():
-    """A tenant with normal utilization (180 SF/head) must have 50.0 flow into
-    the composite instead of the old hard 0.0 dragging it down."""
+def test_neutral_utilization_still_visible_but_no_longer_drives_composite():
+    """A tenant with normal utilization (180 SF/head) still shows 50.0 in the
+    breakdown for the company card, but — per the lease-expiry-only reweight —
+    it no longer flows into the composite at all."""
     result = compute_tenant_opportunity_score(
         headcount_growth_pct=30.0,
         open_positions=20,          # 20/100 = 20% velocity → 80.0
@@ -148,5 +150,5 @@ def test_composite_includes_neutral_utilization_not_zero():
         nearby_company_count=1,
     )
     assert result["breakdown"]["space_utilization"] == 50.0
-    # base = .25·65 + .20·80 + .30·100 + .20·50 + .05·30 = 73.75; +10 no-rep bonus
-    assert result["composite"] == 83.75
+    # composite is pure lease_expiry (100.0 at 7mo peak) + 10 no-rep bonus, clamped
+    assert result["composite"] == 100.0
