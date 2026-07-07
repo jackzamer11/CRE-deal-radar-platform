@@ -555,33 +555,23 @@ def sig_space_utilization(current_sf: Optional[int], current_headcount: Optional
 
     Both are actionable — either as tenant rep or as a signal to approach
     the current landlord about absorbing vacant space.
-
-    Band boundaries (exact): the cramped tiers own their UPPER edge
-    (sf_per_head <= 150 → 35.0, so exactly 150 scores 35.0) and the
-    oversized tiers own their LOWER edge (sf_per_head >= 210 → 25.0, so
-    exactly 210 scores 25.0). The strictly-open interval 150 < sf_per_head
-    < 210 is the normal-utilization band and scores a neutral 50.0 — it
-    carries no expansion or downsizing signal, but no longer zeroes out
-    the utilization component of the composite.
     """
     if not current_sf or not current_headcount or current_headcount <= 0:
         return None
     sf_per_head = current_sf / current_headcount
 
-    # Expansion signal (cramped) — inclusive upper edges
+    # Expansion signal (cramped)
     if sf_per_head <= 90:   return 100.0
     if sf_per_head <= 110:  return 80.0
     if sf_per_head <= 130:  return 58.0
     if sf_per_head <= 150:  return 35.0
 
-    # Downsizing signal — inclusive lower edges
+    # Downsizing signal
     if sf_per_head >= 280:  return 70.0
     if sf_per_head >= 240:  return 45.0
     if sf_per_head >= 210:  return 25.0
 
-    # Neutral band: strictly between 150 and 210 SF/head (both edges excluded
-    # — they belong to the adjacent tiers above)
-    return 50.0
+    return 0.0
 
 
 def sig_geo_clustering(
@@ -916,7 +906,7 @@ def sig_tenant_rep(tenant_representative: Optional[str]) -> float:
     Tenant representative adjustment — applied as a delta to the composite score.
 
     No rep on record    → +10  (uncontested; ideal for direct representation pitch)
-    Major-firm rep      → −15  (JLL/CBRE/etc. — hard to displace, but not unwinnable)
+    Major-firm rep      → −25  (JLL/CBRE/etc. make the deal effectively unwinnable)
     Regional/other rep  → −5   (existing relationship reduces win probability)
 
     Returns a signed delta, NOT a 0-100 signal score.
@@ -925,7 +915,7 @@ def sig_tenant_rep(tenant_representative: Optional[str]) -> float:
     if rep_class == "BLANK":
         return 10.0
     if rep_class == "MAJOR":
-        return -15.0
+        return -25.0
     return -5.0
 
 
@@ -950,7 +940,7 @@ def compute_tenant_opportunity_score(
       Geographic clustering ........ 5%   (market activity context)
 
     Post-composite: tenant_representative delta applied directly to composite.
-    Major-firm rep (JLL/CBRE/etc.) drops a HIGH tenant to WORKABLE.
+    Major-firm rep (JLL/CBRE/etc.) drops a HIGH tenant to WORKABLE or below.
     """
     scores = {
         "headcount_growth":  sig_headcount_growth(headcount_growth_pct),
