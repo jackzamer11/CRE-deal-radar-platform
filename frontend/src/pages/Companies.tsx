@@ -734,7 +734,7 @@ export default function Companies() {
                       {selected.rep_class === 'MAJOR' && (
                         <div>
                           <div className="text-xs text-red-400 font-medium">{selected.tenant_representative}</div>
-                          <div className="text-[10px] text-ink-muted">−25 score (major firm representation)</div>
+                          <div className="text-[10px] text-ink-muted">−15 score (major firm representation)</div>
                         </div>
                       )}
                       {selected.rep_class === 'OTHER' && (
