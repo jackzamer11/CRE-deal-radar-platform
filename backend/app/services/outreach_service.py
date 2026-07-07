@@ -152,7 +152,11 @@ def select_rent_story(
     submarket_asking = _quotable_submarket_asking(submarket)
 
     def _direction(tenant_value: float, benchmark: float) -> str:
-        return "above" if tenant_value > benchmark else "below"
+        # Equal counts as "above": the tenant is at parity with today's asking
+        # number, and after escalations/pass-throughs they are almost certainly
+        # paying more than a new tenant signing tomorrow — never "below," which
+        # would wrongly trigger the escalation-creep framing.
+        return "above" if tenant_value >= benchmark else "below"
 
     if eff is not None and bldg is not None:
         return RentStory(1, _direction(eff, bldg), eff, bldg, "building")
@@ -194,16 +198,18 @@ def _creep_line(starting: float, asking: float, quoted_by: str, direction: str) 
     BELOW branch: the escalation-creep line. quoted_by is "your building's"
     (rung 3 — this exact wording is spec-locked to THIS branch only) or
     "<submarket> is" (rung 4).
-    ABOVE branch: the lease started above today's asking — neutral information
-    framing, no creep claim (escalations moving the rent further above asking
-    is not a story to manufacture urgency around).
+    ABOVE branch: starting rent is at or above today's asking — the
+    overpaying-in-your-own-building angle. Hedged (never a specific current
+    rent we can't see): after escalations and pass-throughs, they're almost
+    certainly paying more today than a new tenant signing tomorrow.
     """
     if direction == "above":
         return (
             f"I see your lease started at ${starting:.2f}/SF, and {quoted_by} quoting "
-            f"${asking:.2f} right now — your lease began above today's asking number, "
-            f"and it's worth confirming what that means for your options before your "
-            f"renewal conversation. I'd like to dig in and show you exactly where you stand."
+            f"${asking:.2f} right now — after annual escalations and expense "
+            f"pass-throughs, you're almost certainly paying more today than a new "
+            f"tenant signing tomorrow. I'd like to dig in and show you exactly where "
+            f"you stand."
         )
     return (
         f"I see your lease started at ${starting:.2f}/SF, and {quoted_by} quoting "

@@ -8,17 +8,21 @@ each, building asking > submarket asking):
   (1) effective + building asking       → direction-framed line vs building asking
   (2) effective, no building            → direction-framed line vs submarket asking
   (3) starting + building, no effective → direction-framed line vs building asking
-        (BELOW branch = the spec-locked escalation-creep wording; ABOVE branch
-         = neutral "began above today's asking" framing)
+        (BELOW branch = the spec-locked escalation-creep wording, fires ONLY
+         when starting is strictly below asking; ABOVE branch — starting AT OR
+         ABOVE asking — = the overpaying-in-your-own-building angle: hedged
+         "almost certainly paying more today than a new tenant signing
+         tomorrow", never the creep line)
   (4) starting alone (no building)      → direction-framed line vs submarket asking
   (5) building asking only              → hedge framing off building asking (no direction)
   (6) nothing set                       → hedge framing off submarket asking (no direction)
 
-Direction contract (rungs 1-4): tenant number BELOW the benchmark → "the
-market's moved since you signed" framing, factual, never implying the tenant is
-behind or overpaying; tenant number ABOVE the benchmark → neutral information
-framing (paying above current asking, worth confirming before renewal), no
-blame, no manufactured urgency. Rungs 5/6 claim no direction and are untouched.
+Direction contract (rungs 1-4): tenant number STRICTLY BELOW the benchmark →
+"the market's moved since you signed" framing, factual, never implying the
+tenant is behind or overpaying; tenant number AT OR ABOVE the benchmark →
+neutral/hedged framing (never a specific current rent we can't see), no blame,
+no manufactured urgency. Equality counts as ABOVE, never as the below-branch
+creep claim. Rungs 5/6 claim no direction and are untouched.
 
 PARITY CONTRACT — deliberately rewritten from the old prose parity
 --------------------------------------------------------------------
@@ -99,9 +103,10 @@ def _creep_below(starting: float, ask: float, quoted_by: str) -> str:
 def _creep_above(starting: float, ask: float, quoted_by: str) -> str:
     return (
         f"I see your lease started at ${starting:.2f}/SF, and {quoted_by} quoting "
-        f"${ask:.2f} right now — your lease began above today's asking number, and "
-        f"it's worth confirming what that means for your options before your renewal "
-        f"conversation. I'd like to dig in and show you exactly where you stand."
+        f"${ask:.2f} right now — after annual escalations and expense "
+        f"pass-throughs, you're almost certainly paying more today than a new "
+        f"tenant signing tomorrow. I'd like to dig in and show you exactly where "
+        f"you stand."
     )
 
 
@@ -155,16 +160,28 @@ def test_below_direction_never_implies_tenant_is_behind():
 
 
 def test_above_direction_is_neutral_no_blame_no_urgency():
-    """ABOVE-benchmark framing is neutral information — paying above current
-    asking, worth confirming before renewal. No blame, no manufactured urgency,
-    and none of the below-branch claims."""
+    """ABOVE-benchmark framing is neutral information. No blame, no manufactured
+    urgency, and none of the below-branch claims, for any above-benchmark rung."""
     for key in ("1_above_building", "2_above_submarket", "3_above_building", "4_above_submarket"):
+        eff, starting, bldg, _ = RUNGS[key]
+        line = build_rent_gap_line(eff, starting, bldg, "Tysons")
+        for banned in ("market's moved", "crept closer", "easy to miss", "already on top of you"):
+            assert banned not in line, f"{key}: above branch says {banned!r}: {line}"
+
+    # Rungs 1/2 (effective vs asking): "paying above current asking, worth
+    # confirming before renewal."
+    for key in ("1_above_building", "2_above_submarket"):
         eff, starting, bldg, _ = RUNGS[key]
         line = build_rent_gap_line(eff, starting, bldg, "Tysons")
         assert "worth confirming" in line
         assert "above" in line
-        for banned in ("market's moved", "crept closer", "easy to miss", "already on top of you"):
-            assert banned not in line, f"{key}: above branch says {banned!r}: {line}"
+
+    # Rungs 3/4 (starting vs asking): the overpaying-in-your-own-building
+    # angle — hedged, never a specific current rent we can't see.
+    for key in ("3_above_building", "4_above_submarket"):
+        eff, starting, bldg, _ = RUNGS[key]
+        line = build_rent_gap_line(eff, starting, bldg, "Tysons")
+        assert "almost certainly paying more today than a new tenant signing tomorrow" in line
 
 
 def test_rung_3_exact_spec_wording_below_branch_only():
@@ -185,7 +202,32 @@ def test_rung_3_exact_spec_wording_below_branch_only():
     # Above branch (starting > building asking): different phrasing, no creep line.
     above = build_rent_gap_line(None, 45.0, 38.0, "Tysons")
     assert "crept closer to that asking number" not in above
-    assert "began above today's asking number" in above
+    assert "almost certainly paying more today than a new tenant signing tomorrow" in above
+
+
+def test_starting_strictly_below_asking_uses_creep_line():
+    """starting_rent_psf < building_asking_rent_psf → the below-branch creep
+    line ('crept closer to that asking number')."""
+    line = build_rent_gap_line(None, 28.5, 38.0, "Tysons")
+    assert "crept closer to that asking number" in line
+    assert "almost certainly paying more today" not in line
+
+
+def test_starting_equal_to_asking_uses_above_framing_never_creep():
+    """starting_rent_psf == building_asking_rent_psf must produce the
+    overpaying-in-your-own-building framing, never 'crept closer' — the exact
+    regression this fix locks."""
+    line = build_rent_gap_line(None, 38.0, 38.0, "Tysons")
+    assert "crept closer to that asking number" not in line
+    assert "almost certainly paying more today than a new tenant signing tomorrow" in line
+
+
+def test_starting_above_asking_uses_above_framing_never_creep():
+    """starting_rent_psf > building_asking_rent_psf → the overpaying-in-your-
+    own-building framing, never the below-branch creep line."""
+    line = build_rent_gap_line(None, 45.0, 38.0, "Tysons")
+    assert "crept closer to that asking number" not in line
+    assert "almost certainly paying more today than a new tenant signing tomorrow" in line
 
 
 def test_effective_wins_outright_over_starting():
@@ -412,9 +454,9 @@ def test_rung_numeric_parity_email_vs_call_sheet(rung, monkeypatch):
     ("2_below_submarket", "Below-market lease",         "market's moved since you signed"),
     ("2_above_submarket", "Paying above current asking", "paying above the current asking"),
     ("3_below_building",  "Below-market start",         "crept closer to that asking number"),
-    ("3_above_building",  "Started above current asking", "began above today's asking number"),
+    ("3_above_building",  "Started above current asking", "almost certainly paying more today"),
     ("4_below_submarket", "Below-market start",         "crept closer to that asking number"),
-    ("4_above_submarket", "Started above current asking", "began above today's asking number"),
+    ("4_above_submarket", "Started above current asking", "almost certainly paying more today"),
     ("5_building_hedge",  "hedge off building asking",   "I don't know where your lease lands"),
     ("6_submarket_hedge", "hedge off Tysons asking",     "I don't know where your lease lands"),
 ])
