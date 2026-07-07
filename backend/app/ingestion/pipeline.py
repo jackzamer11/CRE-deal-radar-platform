@@ -30,6 +30,7 @@ from app.models.opportunity import Opportunity
 from app.models.activity import ActivityLog
 from app.services import signal_engine as se
 from app.services.scoring_model import score_property
+from app.schemas.company import months_until_lease_expiry
 from app.services.deal_creation_engine import (
     create_opportunity_from_match,
     _is_nearby,
@@ -175,6 +176,15 @@ def refresh_property_signals(db: Session, prop: Property) -> None:
 
 def refresh_company_signals(db: Session, company: Company) -> None:
     """Full signal recompute for a single company."""
+    # lease_expiry_months can go stale relative to lease_expiry_date (e.g. a
+    # direct data edit that only touched the date). Whenever a date is on
+    # record, re-derive months from it — the exact same calculation the
+    # display schemas use — so the scorer never abstains on a signal the UI
+    # is showing a real value for. Self-heals the column for any other
+    # consumer that reads it directly.
+    if company.lease_expiry_date:
+        company.lease_expiry_months = months_until_lease_expiry(company.lease_expiry_date)
+
     if company.current_headcount:
         if company.current_sf_occupied:
             company.sf_per_head = round(company.current_sf_occupied / company.current_headcount, 1)
