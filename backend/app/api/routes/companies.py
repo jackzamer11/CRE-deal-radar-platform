@@ -232,6 +232,10 @@ class CompanyManualCreate(BaseModel):
     current_sf_occupied: Optional[int] = None
     current_building_class: Optional[str] = None
     lease_expiry_months: Optional[int] = None
+    effective_rent_psf: Optional[float] = None
+    starting_rent_psf: Optional[float] = None
+    building_asking_rent_psf: Optional[float] = None
+    lease_signed_year: Optional[int] = None
     primary_contact_name: Optional[str] = None
     primary_contact_title: Optional[str] = None
     primary_contact_phone: Optional[str] = None
@@ -340,6 +344,10 @@ def create_company(payload: CompanyManualCreate, db: Session = Depends(get_db)):
         sf_per_head           = sf_per_head,
         lease_expiry_months   = payload.lease_expiry_months,
         lease_expiry_date     = lease_expiry_date_val,
+        effective_rent_psf    = payload.effective_rent_psf,
+        starting_rent_psf     = payload.starting_rent_psf,
+        building_asking_rent_psf = payload.building_asking_rent_psf,
+        lease_signed_year     = payload.lease_signed_year,
         primary_contact_name  = payload.primary_contact_name,
         primary_contact_title = payload.primary_contact_title,
         primary_contact_phone = payload.primary_contact_phone,
@@ -892,6 +900,47 @@ def update_sf_occupied(
     return _company_out(company, db)
 
 
+class RentFieldsUpdate(BaseModel):
+    # All nullable: clearing a field back to unknown is a valid edit.
+    effective_rent_psf: Optional[float] = None
+    starting_rent_psf: Optional[float] = None
+    building_asking_rent_psf: Optional[float] = None
+    lease_signed_year: Optional[int] = None
+
+
+@router.patch("/{company_id}/rents", response_model=CompanyOut)
+def update_rent_fields(
+    company_id: str,
+    payload: RentFieldsUpdate,
+    db: Session = Depends(get_db),
+):
+    """Set or clear the tenant's rent economics: effective_rent_psf (actual
+    effective rent $/SF/yr), starting_rent_psf (rent the lease started at
+    $/SF/yr), building_asking_rent_psf (asking rent quoted at their building
+    $/SF/yr), and lease_signed_year (year the current lease was signed).
+    Drives the rent-gap ladder in tenant outreach."""
+    company = db.query(Company).filter(Company.company_id == company_id).first()
+    if not company:
+        raise HTTPException(status_code=404, detail="Company not found")
+    for field_name, value in (
+        ("effective_rent_psf", payload.effective_rent_psf),
+        ("starting_rent_psf", payload.starting_rent_psf),
+        ("building_asking_rent_psf", payload.building_asking_rent_psf),
+    ):
+        if value is not None and value < 0:
+            raise HTTPException(status_code=422, detail=f"{field_name} must be >= 0")
+    if payload.lease_signed_year is not None and not (1900 <= payload.lease_signed_year <= 2100):
+        raise HTTPException(status_code=422, detail="lease_signed_year must be a 4-digit year (1900-2100)")
+    company.effective_rent_psf       = payload.effective_rent_psf
+    company.starting_rent_psf        = payload.starting_rent_psf
+    company.building_asking_rent_psf = payload.building_asking_rent_psf
+    company.lease_signed_year        = payload.lease_signed_year
+    company.last_modified_by_user    = datetime.utcnow()
+    db.commit()
+    db.refresh(company)
+    return _company_out(company, db)
+
+
 class MedicalUpdate(BaseModel):
     is_medical: bool
 
@@ -959,6 +1008,10 @@ def draft_outreach(company_id: str, db: Session = Depends(get_db)):
         "primary_contact_title":company.primary_contact_title,
         "tenant_representative":company.tenant_representative,
         "current_rent_psf":     company.current_rent_psf,
+        "effective_rent_psf":   company.effective_rent_psf,
+        "starting_rent_psf":    company.starting_rent_psf,
+        "building_asking_rent_psf": company.building_asking_rent_psf,
+        "lease_signed_year":    company.lease_signed_year,
         "future_move_flag":     company.future_move_flag,
         "future_move_type":     company.future_move_type,
         "lease_trajectory":     company.lease_trajectory,
@@ -982,6 +1035,7 @@ def draft_outreach(company_id: str, db: Session = Depends(get_db)):
         "email_body":    email.get("body", ""),
         "call_script": {
             "opening":     cs.get("opening", ""),
+            "the_hook":    cs.get("the_hook", ""),
             "core_message":cs.get("core_message", ""),
             "pain_probe":  cs.get("pain_probe", ""),
             "the_close":   cs.get("the_close", ""),
@@ -1009,6 +1063,7 @@ def log_outreach(
         email_subject          = payload.email_subject,
         email_body             = payload.email_body,
         call_script_opening    = payload.call_script_opening,
+        call_script_hook       = payload.call_script_hook,
         call_script_core       = payload.call_script_core,
         call_script_pain_probe = payload.call_script_pain_probe,
         call_script_close      = payload.call_script_close,

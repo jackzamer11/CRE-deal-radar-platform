@@ -5,6 +5,9 @@ from pydantic import BaseModel
 
 class CallScript(BaseModel):
     opening:     str
+    # THE HOOK — rent-ladder beat between OPENING and CORE MESSAGE. Empty for
+    # script types that don't carry it (property-side scripts).
+    the_hook:    str = ""
     core_message: str
     pain_probe:  str
     the_close:   str
@@ -30,6 +33,7 @@ class OutreachLogCreate(BaseModel):
     email_subject:         str
     email_body:            str
     call_script_opening:   str
+    call_script_hook:      Optional[str] = None
     call_script_core:      str
     call_script_pain_probe: str
     call_script_close:     str
@@ -64,6 +68,7 @@ class OutreachLogOut(BaseModel):
     email_subject:         str
     email_body:            str
     call_script_opening:   str
+    call_script_hook:      Optional[str] = None
     call_script_core:      str
     call_script_pain_probe: str
     call_script_close:     str

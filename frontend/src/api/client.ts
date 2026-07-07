@@ -137,6 +137,17 @@ export const updateCompanyMedical = (
 ): Promise<CompanyOut> =>
   api.patch(`/companies/${companyId}/medical`, { is_medical }).then(r => r.data)
 
+export const updateCompanyRents = (
+  companyId: string,
+  payload: {
+    effective_rent_psf: number | null
+    starting_rent_psf: number | null
+    building_asking_rent_psf: number | null
+    lease_signed_year: number | null
+  },
+): Promise<CompanyOut> =>
+  api.patch(`/companies/${companyId}/rents`, payload).then(r => r.data)
+
 export const draftOutreach = (companyId: string): Promise<OutreachDraft> =>
   api.post(`/companies/${companyId}/draft-outreach`).then(r => r.data)
 
@@ -144,7 +155,7 @@ export const logOutreach = (
   companyId: string,
   payload: {
     email_subject: string; email_body: string
-    call_script_opening: string; call_script_core: string
+    call_script_opening: string; call_script_hook?: string | null; call_script_core: string
     call_script_pain_probe: string; call_script_close: string
     projected_sf: number | null; score_at_generation: number
     priority_at_generation: string; email_sent: boolean; call_made: boolean
@@ -186,7 +197,7 @@ export const logPropertyOutreach = (
   propertyId: string,
   payload: {
     email_subject: string; email_body: string
-    call_script_opening: string; call_script_core: string
+    call_script_opening: string; call_script_hook?: string | null; call_script_core: string
     call_script_pain_probe: string; call_script_close: string
     projected_sf: number | null; score_at_generation: number
     priority_at_generation: string; email_sent: boolean; call_made: boolean
@@ -215,6 +226,7 @@ export interface OutreachDraftPayload {
   subject: string
   body: string
   call_script_opening?: string | null
+  call_script_hook?: string | null
   call_script_core?: string | null
   call_script_pain_probe?: string | null
   call_script_close?: string | null
@@ -411,6 +423,10 @@ export interface LeaseActivityImportResult {
   skipped_no_match: number
   skipped_existing: number
   errors: string[]
+  // Tenant effective-rent pass (optional for older backend payloads)
+  tenants_matched?: number
+  tenants_skipped?: number
+  tenant_skips?: { tenant_name: string; reason: string }[]
 }
 
 export const importLeaseActivity = (file: File): Promise<LeaseActivityImportResult> => {
@@ -420,6 +436,19 @@ export const importLeaseActivity = (file: File): Promise<LeaseActivityImportResu
     headers: { 'Content-Type': 'multipart/form-data' },
   }).then(r => r.data)
 }
+
+// ── Benchmarks (CBRE Q1 2026 — config single source of truth) ─────────────────
+
+export interface SubmarketBenchmark {
+  market_rent_psf: number
+  vacancy_pct: number
+  source: string
+}
+
+export const getBenchmarks = (): Promise<{
+  nova: Record<string, number | string>
+  submarkets: Record<string, SubmarketBenchmark>
+}> => api.get('/benchmarks/nova').then(r => r.data)
 
 // ── Import Lease Comps (PDF → tenant company lease expirations) ───────────────
 

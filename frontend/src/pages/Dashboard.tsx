@@ -543,9 +543,12 @@ export default function Dashboard() {
                 setLeaseImportStatus(null)
                 try {
                   const result = await importLeaseActivity(file)
+                  const skippedNames = (result.tenant_skips ?? []).map(s => s.tenant_name).join(', ')
                   setLeaseImportStatus(
                     `Rent comps imported — ${result.updated} properties updated` +
-                    (result.skipped_no_match > 0 ? `, ${result.skipped_no_match} unmatched` : '')
+                    (result.skipped_no_match > 0 ? `, ${result.skipped_no_match} unmatched` : '') +
+                    ` · Effective rents: ${result.tenants_matched ?? 0} matched, ${result.tenants_skipped ?? 0} skipped` +
+                    (skippedNames ? ` (${skippedNames})` : '')
                   )
                 } catch {
                   setLeaseImportStatus('Rent comps import failed — check file format')

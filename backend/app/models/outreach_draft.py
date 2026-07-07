@@ -15,6 +15,8 @@ class OutreachDraft(Base):
     subject = Column(String, nullable=False)
     body    = Column(Text,   nullable=False)
     call_script_opening    = Column(Text, nullable=True)
+    # THE HOOK — rent-ladder beat between OPENING and CORE MESSAGE (tenant scripts)
+    call_script_hook       = Column(Text, nullable=True)
     call_script_core       = Column(Text, nullable=True)
     call_script_pain_probe = Column(Text, nullable=True)
     call_script_close      = Column(Text, nullable=True)

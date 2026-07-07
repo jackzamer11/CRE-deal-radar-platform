@@ -147,6 +147,11 @@ export interface CompanyListOut {
   current_submarket: string | null
   current_sf_occupied: number | null
   current_rent_psf: number | null
+  // Rent-gap ladder inputs (plain company fields; null = unknown)
+  effective_rent_psf: number | null
+  starting_rent_psf: number | null
+  building_asking_rent_psf: number | null
+  lease_signed_year: number | null
   lease_expiry_months: number | null
   lease_expiry_date: string | null
   lease_expiry_source: string | null
@@ -174,6 +179,8 @@ export interface CompanyListOut {
 
 export interface OutreachCallScript {
   opening: string
+  /** THE HOOK — rent-ladder beat between OPENING and CORE MESSAGE (tenant scripts) */
+  the_hook?: string
   core_message: string
   pain_probe: string
   the_close: string
@@ -200,6 +207,7 @@ export interface OutreachLog {
   email_subject: string
   email_body: string
   call_script_opening: string
+  call_script_hook?: string | null
   call_script_core: string
   call_script_pain_probe: string
   call_script_close: string
@@ -444,6 +452,7 @@ export interface OutreachDraftRecord {
   subject: string
   body: string
   call_script_opening: string | null
+  call_script_hook?: string | null
   call_script_core: string | null
   call_script_pain_probe: string | null
   call_script_close: string | null

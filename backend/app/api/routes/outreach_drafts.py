@@ -36,6 +36,7 @@ class DraftOut(BaseModel):
     subject: str
     body: str
     call_script_opening:    Optional[str]
+    call_script_hook:       Optional[str] = None
     call_script_core:       Optional[str]
     call_script_pain_probe: Optional[str]
     call_script_close:      Optional[str]
@@ -68,6 +69,7 @@ class DraftCreate(BaseModel):
     subject: str
     body: str
     call_script_opening:    Optional[str] = None
+    call_script_hook:       Optional[str] = None
     call_script_core:       Optional[str] = None
     call_script_pain_probe: Optional[str] = None
     call_script_close:      Optional[str] = None
@@ -139,6 +141,7 @@ def save_draft(payload: DraftCreate, db: Session = Depends(get_db)):
         existing.subject               = payload.subject
         existing.body                  = payload.body
         existing.call_script_opening   = payload.call_script_opening
+        existing.call_script_hook      = payload.call_script_hook
         existing.call_script_core      = payload.call_script_core
         existing.call_script_pain_probe = payload.call_script_pain_probe
         existing.call_script_close     = payload.call_script_close
@@ -165,6 +168,7 @@ def save_draft(payload: DraftCreate, db: Session = Depends(get_db)):
         subject                = payload.subject,
         body                   = payload.body,
         call_script_opening    = payload.call_script_opening,
+        call_script_hook       = payload.call_script_hook,
         call_script_core       = payload.call_script_core,
         call_script_pain_probe = payload.call_script_pain_probe,
         call_script_close      = payload.call_script_close,

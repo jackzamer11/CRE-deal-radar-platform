@@ -46,6 +46,11 @@ class CompanyBase(BaseModel):
     website: Optional[str] = None
     tenant_representative: Optional[str] = None
     current_rent_psf: Optional[float] = None
+    # Rent-gap ladder inputs (plain company fields; null = unknown)
+    effective_rent_psf: Optional[float] = None
+    starting_rent_psf: Optional[float] = None
+    building_asking_rent_psf: Optional[float] = None
+    lease_signed_year: Optional[int] = None
     future_move_flag: Optional[bool] = None
     future_move_type: Optional[str] = None
     linked_property_id: Optional[int] = None
@@ -119,6 +124,11 @@ class CompanyListOut(BaseModel):
     current_sf_occupied: Optional[int] = None    # real occupied SF; null = unknown
     current_building_class: Optional[str] = None
     current_rent_psf: Optional[float] = None
+    # Rent-gap ladder inputs (plain company fields; null = unknown)
+    effective_rent_psf: Optional[float] = None
+    starting_rent_psf: Optional[float] = None
+    building_asking_rent_psf: Optional[float] = None
+    lease_signed_year: Optional[int] = None
     current_submarket: Optional[str] = None
 
     # Broker rep

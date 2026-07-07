@@ -1,5 +1,6 @@
 """
-CoStar Lease Activity adapter — updates in_place_rent_psf on matched properties.
+CoStar Lease Activity adapter — updates in_place_rent_psf on matched properties
+and effective_rent_psf on name-matched tenant companies.
 
 Exact CoStar Lease Activity export column names (verified from actual export):
   "Property Address" — street address of the property
@@ -7,6 +8,17 @@ Exact CoStar Lease Activity export column names (verified from actual export):
   "Lease Signed Date"— date lease was executed
   "Space Use"        — filter to "Office" only
   "Submarket Name"   — for logging
+
+Tenant rent pass (optional columns — the pass is skipped when absent):
+  "Tenant Name"              — matched to Company by NAME (exact after
+                               normalization only; no fuzzy guessing)
+  "Effective Rent (Annual)"  — $/SF, stored on effective_rent_psf AS-IS
+                               (no escalation or vintage adjustment)
+  "Starting Rent (Annual)"   — $/SF, stored on starting_rent_psf AS-IS
+  "Signed" (or "Lease Signed Date") — signing date; the YEAR is stored on
+                               lease_signed_year (anchors the rent-ladder
+                               hedge rungs to the real lease vintage)
+Existing values are never overwritten by any of these columns.
 """
 import re
 import io
@@ -37,17 +49,52 @@ def _addr_match(costar_norm: str, db_norm: str) -> bool:
     return costar_norm in db_norm or db_norm in costar_norm
 
 
+def _parse_psf(raw) -> "Optional[float]":
+    """Parse a $/SF cell ("$32.50", "32.50/SF FS", "1,234.00") to float, or None."""
+    if raw is None:
+        return None
+    cleaned = (
+        str(raw)
+        .replace("$", "")
+        .replace(",", "")
+        .replace("/SF", "")
+        .replace("/sf", "")
+        .replace("FS", "")
+        .strip()
+    )
+    if not cleaned:
+        return None
+    try:
+        value = float(cleaned)
+    except (ValueError, TypeError):
+        return None
+    return value if value > 0 else None
+
+
 def run_costar_lease_activity_import(file_bytes: bytes, filename: str, db) -> dict:
     """
     Load a CoStar Lease Activity export, match properties by address, and
     update in_place_rent_psf for properties that currently have no rent data.
 
+    Additionally name-matches each row's "Tenant Name" to a Company and stores
+    "Effective Rent (Annual)" $/SF on effective_rent_psf, "Starting Rent
+    (Annual)" $/SF on starting_rent_psf, and the year of the "Signed" /
+    "Lease Signed Date" column on lease_signed_year — all as-is (existing
+    values never overwritten). Exact normalized name match only — unmatched
+    rows are reported, never guessed.
+
     Returns:
-        {"updated": N, "skipped_no_match": N, "skipped_existing": N, "errors": []}
+        {"updated": N, "skipped_no_match": N, "skipped_existing": N, "errors": [],
+         "tenants_matched": N, "tenants_skipped": N,
+         "tenant_skips": [{"tenant_name": ..., "reason": ...}]}
     """
     import pandas as pd
     from app.models.property import Property
 
+    _empty = {
+        "updated": 0, "skipped_no_match": 0, "skipped_existing": 0,
+        "tenants_matched": 0, "tenants_skipped": 0, "tenant_skips": [],
+    }
     try:
         fname = filename.lower()
         if fname.endswith(".csv"):
@@ -57,7 +104,7 @@ def run_costar_lease_activity_import(file_bytes: bytes, filename: str, db) -> di
                 io.BytesIO(file_bytes), dtype=str, keep_default_na=False, engine="openpyxl"
             )
     except Exception as exc:
-        return {"updated": 0, "skipped_no_match": 0, "skipped_existing": 0, "errors": [str(exc)]}
+        return {**_empty, "errors": [str(exc)]}
 
     df.columns = [c.strip() for c in df.columns]
     df = df.replace("", None)
@@ -81,13 +128,97 @@ def run_costar_lease_activity_import(file_bytes: bytes, filename: str, db) -> di
         if p.address
     ]
 
+    # ── Tenant rent pass setup ─────────────────────────────────────────────
+    # Name-match "Tenant Name" → Company (exact after normalization — the same
+    # canonicalization the Lease Comps import uses; no fuzzy guessing) and
+    # store each present rent column on its company attribute as-is.
+    from app.models.company import Company
+    from app.services.lease_comps_service import _compact_key
+
+    TENANT_RENT_COLS = {
+        "Effective Rent (Annual)": "effective_rent_psf",
+        "Starting Rent (Annual)":  "starting_rent_psf",
+    }
+    SIGNED_DATE_COLS = ("Lease Signed Date", "Lease Signed date", "Signed")
+    present_rent_cols = [c for c in TENANT_RENT_COLS if c in df.columns]
+    has_signed_col = any(c in df.columns for c in SIGNED_DATE_COLS)
+    has_tenant_cols = "Tenant Name" in df.columns and (bool(present_rent_cols) or has_signed_col)
+    comp_by_key: dict = {}
+    if has_tenant_cols:
+        for c in db.query(Company).all():
+            key = _compact_key(c.name)
+            if key and key not in comp_by_key:
+                comp_by_key[key] = c
+
+    tenant_skips: list[dict] = []      # {"tenant_name": ..., "reason": ...}
+    # (company.id, attr) → (signed_date, value, tenant_name); latest signing wins
+    best_tenant: dict[tuple[int, str], tuple[date, float, str]] = {}
+
     # Collect best rent-per-property (most recent Lease Signed Date wins)
     best: dict[int, tuple[date, float]] = {}  # property.id → (signed_date, rent)
 
     for row in rows:
         raw_addr = (row.get("Property Address") or "").strip()
         raw_rent = row.get("Rent/SF/Yr") or row.get("Rent/SF/yr") or row.get("Rent/SF/YR")
-        raw_date = row.get("Lease Signed Date") or row.get("Lease Signed date")
+        raw_date = (
+            row.get("Lease Signed Date") or row.get("Lease Signed date") or row.get("Signed")
+        )
+
+        # Parse signed date once — shared by the property and tenant passes.
+        row_signed_date: Optional[date] = None
+        if raw_date:
+            try:
+                from dateutil import parser as _dp
+                row_signed_date = _dp.parse(str(raw_date), fuzzy=True).date()
+            except Exception:
+                row_signed_date = None
+
+        # ── Tenant rent pass (runs on every Office row) ──────────────────────
+        if has_tenant_cols:
+            tenant_name = (row.get("Tenant Name") or "").strip()
+            parsed: dict = {}        # company attr → parsed value
+            unparseable: list = []   # rent columns whose non-blank cell failed to parse
+            for col in present_rent_cols:
+                raw = row.get(col)
+                if raw is None or not str(raw).strip():
+                    continue  # blank cell — datum simply absent for this row
+                val = _parse_psf(raw)
+                if val is None:
+                    unparseable.append(col)
+                else:
+                    parsed[TENANT_RENT_COLS[col]] = val
+
+            # The signing YEAR is another per-row datum for the matched tenant
+            # (anchors the rent-ladder hedge rungs). Only a real parsed date
+            # yields a year — never inferred.
+            if row_signed_date is not None:
+                parsed["lease_signed_year"] = row_signed_date.year
+
+            if not tenant_name:
+                if parsed or unparseable:
+                    tenant_skips.append({
+                        "tenant_name": "(blank)",
+                        "reason": "missing Tenant Name",
+                    })
+            else:
+                for col in unparseable:
+                    tenant_skips.append({
+                        "tenant_name": tenant_name,
+                        "reason": f"missing/unparseable {col}",
+                    })
+                if parsed:
+                    comp = comp_by_key.get(_compact_key(tenant_name))
+                    if comp is None:
+                        tenant_skips.append({
+                            "tenant_name": tenant_name,
+                            "reason": "no matching tenant company by name",
+                        })
+                    else:
+                        for attr, val in parsed.items():
+                            k = (comp.id, attr)
+                            cur = best_tenant.get(k)
+                            if cur is None or (row_signed_date or date.min) >= cur[0]:
+                                best_tenant[k] = (row_signed_date or date.min, val, tenant_name)
 
         if not raw_addr or not raw_rent:
             continue
@@ -100,14 +231,7 @@ def run_costar_lease_activity_import(file_bytes: bytes, filename: str, db) -> di
         if rent <= 0:
             continue
 
-        # Parse signed date
-        signed_date: Optional[date] = None
-        if raw_date:
-            try:
-                from dateutil import parser as _dp
-                signed_date = _dp.parse(str(raw_date), fuzzy=True).date()
-            except Exception:
-                signed_date = None
+        signed_date = row_signed_date
 
         # Match against DB properties
         cs_norm = _normalize_address(raw_addr)
@@ -142,11 +266,46 @@ def run_costar_lease_activity_import(file_bytes: bytes, filename: str, db) -> di
         prop.in_place_rent_source = "costar_lease_activity"
         updated += 1
 
+    # ── Apply tenant rents (as-is; never overwrite an existing value) ──────
+    matched_company_ids: set = set()
+    for (cid, attr), (_, val, tenant_name) in best_tenant.items():
+        comp = db.query(Company).filter(Company.id == cid).first()
+        if comp is None:
+            continue
+        if getattr(comp, attr) is not None:
+            tenant_skips.append({
+                "tenant_name": tenant_name,
+                "reason": f"{attr} already set — not overwritten",
+            })
+            continue
+        setattr(comp, attr, val)
+        matched_company_ids.add(cid)
+    tenants_matched = len(matched_company_ids)
+
     db.commit()
+
+    # Summary: N matched, N skipped, skipped names with reasons.
+    if has_tenant_cols:
+        cols_desc = present_rent_cols + (["Signed"] if has_signed_col else [])
+        print(
+            f"[lease-activity] tenant rents ({', '.join(cols_desc)}): "
+            f"{tenants_matched} matched, {len(tenant_skips)} skipped"
+        )
+        for s in tenant_skips:
+            print(f"  - skipped {s['tenant_name']}: {s['reason']}")
+    else:
+        print(
+            "[lease-activity] no 'Tenant Name' + rent/signed columns "
+            "('Effective Rent (Annual)' / 'Starting Rent (Annual)' / 'Signed') "
+            "in this export — tenant rent pass skipped"
+        )
 
     return {
         "updated":          updated,
         "skipped_no_match": skipped_no_match,
         "skipped_existing": skipped_existing,
         "errors":           errors,
+        "tenants_matched":  tenants_matched,
+        "tenants_skipped":  len(tenant_skips),
+        "tenant_skips":     tenant_skips,
     }

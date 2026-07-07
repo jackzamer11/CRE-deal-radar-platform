@@ -185,6 +185,7 @@ export default function OutreachDraftModal(props: Props) {
     email_body:        rec.body,
     call_script: {
       opening:      rec.call_script_opening   ?? '',
+      the_hook:     rec.call_script_hook      ?? '',
       core_message: rec.call_script_core      ?? '',
       pain_probe:   rec.call_script_pain_probe ?? '',
       the_close:    rec.call_script_close     ?? '',
@@ -222,6 +223,7 @@ export default function OutreachDraftModal(props: Props) {
         subject:      d.email_subject,
         body:         d.email_body,
         call_script_opening:    d.call_script.opening,
+        call_script_hook:       d.call_script.the_hook || null,
         call_script_core:       d.call_script.core_message,
         call_script_pain_probe: d.call_script.pain_probe,
         call_script_close:      d.call_script.the_close,
@@ -422,6 +424,7 @@ export default function OutreachDraftModal(props: Props) {
   const fullScript = draft
     ? [
         `OPENING:\n${draft.call_script.opening}`,
+        ...(draft.call_script.the_hook ? [`\nTHE HOOK:\n${draft.call_script.the_hook}`] : []),
         `\nCORE MESSAGE:\n${draft.call_script.core_message}`,
         `\nPAIN PROBE:\n${draft.call_script.pain_probe}`,
         `\nTHE CLOSE:\n${draft.call_script.the_close}`,
@@ -436,6 +439,7 @@ export default function OutreachDraftModal(props: Props) {
       email_subject:          draft.email_subject,
       email_body:             draft.email_body,
       call_script_opening:    draft.call_script.opening,
+      call_script_hook:       draft.call_script.the_hook || null,
       call_script_core:       draft.call_script.core_message,
       call_script_pain_probe: draft.call_script.pain_probe,
       call_script_close:      draft.call_script.the_close,
@@ -845,6 +849,9 @@ export default function OutreachDraftModal(props: Props) {
                   </div>
                   <div className="space-y-2">
                     <Section title="Opening"      content={draft.call_script.opening} />
+                    {draft.call_script.the_hook ? (
+                      <Section title="The Hook"   content={draft.call_script.the_hook} />
+                    ) : null}
                     <Section title="Core Message" content={draft.call_script.core_message} />
                     <Section title="Pain Probe"   content={draft.call_script.pain_probe} />
                     <Section title="The Close"    content={draft.call_script.the_close} />

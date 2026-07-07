@@ -68,6 +68,24 @@ class Company(Base):
     # CoStar Tenant enrichment fields
     tenant_representative = Column(String, nullable=True)
     current_rent_psf = Column(Float, nullable=True)
+    # Rent economics for the tenant-side rent-gap ladder. Plain fields on the
+    # company record — no property/building linking. Null = unknown.
+    # effective_rent_psf: the tenant's actual effective rent ($/SF/yr), sourced
+    # from the CoStar Lease Activity import ("Effective Rent (Annual)", stored
+    # as-is) or entered manually.
+    # starting_rent_psf: the rent the lease STARTED at ($/SF/yr), sourced from
+    # the Lease Activity import ("Starting Rent (Annual)", stored as-is) or
+    # entered manually — feeds the escalation-creep rungs of the ladder.
+    # building_asking_rent_psf: asking rent currently quoted at the tenant's
+    # building ($/SF/yr), entered manually.
+    effective_rent_psf = Column(Float, nullable=True)
+    starting_rent_psf = Column(Float, nullable=True)
+    building_asking_rent_psf = Column(Float, nullable=True)
+    # Year the current lease was SIGNED, sourced from the Lease Activity import
+    # ("Signed" / "Lease Signed Date" column) or entered manually. Anchors the
+    # hedge rungs of the rent ladder to the tenant's real lease vintage —
+    # null = unknown (hedge copy stays vague, never cites a year).
+    lease_signed_year = Column(Integer, nullable=True)
     future_move_flag = Column(Boolean, nullable=True)
     future_move_type = Column(String, nullable=True)
     linked_property_id = Column(Integer, nullable=True)
