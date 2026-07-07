@@ -760,6 +760,9 @@ export default function Companies() {
               {/* Submarket Intel — CBRE benchmarks + tenant rent economics */}
               {(() => {
                 const bench = selected.current_submarket ? benchmarks?.[selected.current_submarket] ?? null : null
+                // Provisional = placeholder/proxy numbers, not measured CBRE data —
+                // flagged so a placeholder figure is never quoted to a tenant unverified.
+                const provisionalSuffix = bench?.provisional ? ' (provisional — verify before quoting)' : ''
                 return (
                   <div className="bg-surface-muted rounded-lg p-3">
                     <div className="text-[10px] text-ink-muted uppercase tracking-wider mb-2">Submarket Intel</div>
@@ -767,11 +770,11 @@ export default function Companies() {
                       <Row label="Submarket" value={selected.current_submarket || '—'} />
                       <Row
                         label="Submarket Vacancy"
-                        value={bench != null ? `${bench.vacancy_pct.toFixed(1)}%` : '—'}
+                        value={bench != null ? `${bench.vacancy_pct.toFixed(1)}%${provisionalSuffix}` : '—'}
                       />
                       <Row
                         label="Submarket Asking Rent"
-                        value={bench != null ? `$${bench.market_rent_psf.toFixed(2)}/SF` : '—'}
+                        value={bench != null ? `$${bench.market_rent_psf.toFixed(2)}/SF${provisionalSuffix}` : '—'}
                       />
                       <Row
                         label="Lease Expiry"

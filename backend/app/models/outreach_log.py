@@ -20,8 +20,11 @@ class OutreachLog(Base):
     email_subject         = Column(Text)
     email_body            = Column(Text)
     call_script_opening   = Column(Text)
-    # THE HOOK — rent-ladder beat between OPENING and CORE MESSAGE (tenant scripts)
+    # ANGLE — the CALL SHEET's one-line rung+direction story (reused column:
+    # legacy rows hold the retired THE HOOK prose beat)
     call_script_hook      = Column(Text, nullable=True)
+    # DATA — the CALL SHEET's labeled block of raw tenant + benchmark values
+    call_script_data      = Column(Text, nullable=True)
     call_script_core      = Column(Text)
     call_script_pain_probe = Column(Text)
     call_script_close     = Column(Text)

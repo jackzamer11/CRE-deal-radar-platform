@@ -150,6 +150,7 @@ def ensure_outreach_log(cur: sqlite3.Cursor) -> int:
                 email_body             TEXT,
                 call_script_opening    TEXT,
                 call_script_hook       TEXT,
+                call_script_data       TEXT,
                 call_script_core       TEXT,
                 call_script_pain_probe TEXT,
                 call_script_close      TEXT,
@@ -185,11 +186,14 @@ def ensure_outreach_log(cur: sqlite3.Cursor) -> int:
     added = 0
     added += _add_column(cur, "outreach_log", "property_id",   "INTEGER REFERENCES properties(id)")
     added += _add_column(cur, "outreach_log", "outreach_type", "TEXT DEFAULT 'tenant'")
-    # THE HOOK call-script section (rent-ladder beat). Guarded like is_medical.
-    try:
-        added += _add_column(cur, "outreach_log", "call_script_hook", "TEXT")
-    except Exception as _exc:
-        print(f"  ! outreach_log.call_script_hook add skipped: {_exc}")
+    # CALL SHEET columns: call_script_hook stores the ANGLE line (reused column —
+    # legacy rows hold THE HOOK prose); call_script_data stores the labeled DATA
+    # block. Each guarded like is_medical.
+    for _cs_col in ("call_script_hook", "call_script_data"):
+        try:
+            added += _add_column(cur, "outreach_log", _cs_col, "TEXT")
+        except Exception as _exc:
+            print(f"  ! outreach_log.{_cs_col} add skipped: {_exc}")
     return added
 
 
@@ -246,11 +250,14 @@ def ensure_outreach_drafts(cur: sqlite3.Cursor) -> int:
     if cur.fetchone():
         added += _add_column(cur, "outreach_drafts", "direction", "TEXT DEFAULT 'property_side'")
         added += _add_column(cur, "outreach_drafts", "intelligence_findings", "TEXT")
-        # THE HOOK call-script section (rent-ladder beat). Guarded like is_medical.
-        try:
-            added += _add_column(cur, "outreach_drafts", "call_script_hook", "TEXT")
-        except Exception as _exc:
-            print(f"  ! outreach_drafts.call_script_hook add skipped: {_exc}")
+        # CALL SHEET columns: call_script_hook stores the ANGLE line (reused column —
+        # legacy rows hold THE HOOK prose); call_script_data stores the labeled DATA
+        # block. Each guarded like is_medical.
+        for _cs_col in ("call_script_hook", "call_script_data"):
+            try:
+                added += _add_column(cur, "outreach_drafts", _cs_col, "TEXT")
+            except Exception as _exc:
+                print(f"  ! outreach_drafts.{_cs_col} add skipped: {_exc}")
         return added
     cur.execute("""
         CREATE TABLE outreach_drafts (
@@ -263,6 +270,7 @@ def ensure_outreach_drafts(cur: sqlite3.Cursor) -> int:
             body             TEXT NOT NULL,
             call_script_opening    TEXT,
             call_script_hook       TEXT,
+            call_script_data       TEXT,
             call_script_core       TEXT,
             call_script_pain_probe TEXT,
             call_script_close      TEXT,
@@ -328,8 +336,8 @@ def fix_outreach_log_company_id_nullable(cur: sqlite3.Cursor) -> int:
     canonical_cols = [
         "id", "company_id", "property_id", "outreach_type", "generated_at",
         "email_subject", "email_body",
-        "call_script_opening", "call_script_hook", "call_script_core",
-        "call_script_pain_probe", "call_script_close",
+        "call_script_opening", "call_script_hook", "call_script_data",
+        "call_script_core", "call_script_pain_probe", "call_script_close",
         "projected_sf", "score_at_generation", "priority_at_generation",
         "marked_contacted", "email_sent", "call_made",
         "outcome_notes", "contacted_at",
@@ -354,6 +362,7 @@ def fix_outreach_log_company_id_nullable(cur: sqlite3.Cursor) -> int:
             email_body             TEXT,
             call_script_opening    TEXT,
             call_script_hook       TEXT,
+            call_script_data       TEXT,
             call_script_core       TEXT,
             call_script_pain_probe TEXT,
             call_script_close      TEXT,

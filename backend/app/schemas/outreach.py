@@ -5,9 +5,13 @@ from pydantic import BaseModel
 
 class CallScript(BaseModel):
     opening:     str
-    # THE HOOK — rent-ladder beat between OPENING and CORE MESSAGE. Empty for
-    # script types that don't carry it (property-side scripts).
-    the_hook:    str = ""
+    # CALL SHEET sections (tenant sheets only; empty for property-side scripts):
+    # DATA — labeled block of raw tenant + benchmark values ("not on file" when
+    # missing); ANGLE — one line from the same rung + direction logic as the
+    # email rent line, so call and email never tell different stories.
+    data:        str = ""
+    angle:       str = ""
+    # DISCOVERY checklist on tenant sheets; prose core message on property scripts.
     core_message: str
     pain_probe:  str
     the_close:   str
@@ -33,7 +37,10 @@ class OutreachLogCreate(BaseModel):
     email_subject:         str
     email_body:            str
     call_script_opening:   str
+    # Reused column: stores the CALL SHEET's ANGLE line (legacy rows hold the
+    # retired THE HOOK prose). call_script_data carries the labeled DATA block.
     call_script_hook:      Optional[str] = None
+    call_script_data:      Optional[str] = None
     call_script_core:      str
     call_script_pain_probe: str
     call_script_close:     str
@@ -68,7 +75,10 @@ class OutreachLogOut(BaseModel):
     email_subject:         str
     email_body:            str
     call_script_opening:   str
+    # ANGLE line (reused column — legacy rows hold THE HOOK prose)
     call_script_hook:      Optional[str] = None
+    # DATA block of the CALL SHEET (labeled raw values)
+    call_script_data:      Optional[str] = None
     call_script_core:      str
     call_script_pain_probe: str
     call_script_close:     str

@@ -185,7 +185,9 @@ export default function OutreachDraftModal(props: Props) {
     email_body:        rec.body,
     call_script: {
       opening:      rec.call_script_opening   ?? '',
-      the_hook:     rec.call_script_hook      ?? '',
+      data:         rec.call_script_data      ?? '',
+      // ANGLE line — reused call_script_hook column (legacy rows hold THE HOOK prose)
+      angle:        rec.call_script_hook      ?? '',
       core_message: rec.call_script_core      ?? '',
       pain_probe:   rec.call_script_pain_probe ?? '',
       the_close:    rec.call_script_close     ?? '',
@@ -223,7 +225,8 @@ export default function OutreachDraftModal(props: Props) {
         subject:      d.email_subject,
         body:         d.email_body,
         call_script_opening:    d.call_script.opening,
-        call_script_hook:       d.call_script.the_hook || null,
+        call_script_hook:       d.call_script.angle || null,
+        call_script_data:       d.call_script.data || null,
         call_script_core:       d.call_script.core_message,
         call_script_pain_probe: d.call_script.pain_probe,
         call_script_close:      d.call_script.the_close,
@@ -421,11 +424,16 @@ export default function OutreachDraftModal(props: Props) {
     window.open(`mailto:${to}?subject=${subject}&body=${body}`)
   }
 
+  // Tenant drafts carry the deterministic CALL SHEET (DATA is never empty for
+  // them — missing values render "not on file"); property-side scripts don't.
+  const isCallSheet = !!(draft?.call_script.data || draft?.call_script.angle)
+
   const fullScript = draft
     ? [
         `OPENING:\n${draft.call_script.opening}`,
-        ...(draft.call_script.the_hook ? [`\nTHE HOOK:\n${draft.call_script.the_hook}`] : []),
-        `\nCORE MESSAGE:\n${draft.call_script.core_message}`,
+        ...(draft.call_script.data ? [`\nDATA:\n${draft.call_script.data}`] : []),
+        ...(draft.call_script.angle ? [`\nANGLE:\n${draft.call_script.angle}`] : []),
+        `\n${isCallSheet ? 'DISCOVERY' : 'CORE MESSAGE'}:\n${draft.call_script.core_message}`,
         `\nPAIN PROBE:\n${draft.call_script.pain_probe}`,
         `\nTHE CLOSE:\n${draft.call_script.the_close}`,
       ].join('\n')
@@ -439,7 +447,8 @@ export default function OutreachDraftModal(props: Props) {
       email_subject:          draft.email_subject,
       email_body:             draft.email_body,
       call_script_opening:    draft.call_script.opening,
-      call_script_hook:       draft.call_script.the_hook || null,
+      call_script_hook:       draft.call_script.angle || null,
+      call_script_data:       draft.call_script.data || null,
       call_script_core:       draft.call_script.core_message,
       call_script_pain_probe: draft.call_script.pain_probe,
       call_script_close:      draft.call_script.the_close,
@@ -843,16 +852,22 @@ export default function OutreachDraftModal(props: Props) {
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2 text-xs font-semibold text-ink-secondary uppercase tracking-wider">
                       <Phone size={13} />
-                      Call Script
+                      {isCallSheet ? 'Call Sheet' : 'Call Script'}
                     </div>
                     <CopyButton text={fullScript} label="Copy Full Script" />
                   </div>
                   <div className="space-y-2">
                     <Section title="Opening"      content={draft.call_script.opening} />
-                    {draft.call_script.the_hook ? (
-                      <Section title="The Hook"   content={draft.call_script.the_hook} />
+                    {draft.call_script.data ? (
+                      <Section title="Data"       content={draft.call_script.data} />
                     ) : null}
-                    <Section title="Core Message" content={draft.call_script.core_message} />
+                    {draft.call_script.angle ? (
+                      <Section title="Angle"      content={draft.call_script.angle} />
+                    ) : null}
+                    <Section
+                      title={isCallSheet ? 'Discovery' : 'Core Message'}
+                      content={draft.call_script.core_message}
+                    />
                     <Section title="Pain Probe"   content={draft.call_script.pain_probe} />
                     <Section title="The Close"    content={draft.call_script.the_close} />
                   </div>
