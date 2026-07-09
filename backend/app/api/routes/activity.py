@@ -113,7 +113,7 @@ def list_activity(
     since: Optional[date] = None,
     action_type: Optional[str] = None,
     stage: Optional[str] = None,
-    limit: int = Query(50, le=200),
+    limit: int = Query(1000, le=1000),
     db: Session = Depends(get_db),
 ):
     q = db.query(ActivityLog)
