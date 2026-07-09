@@ -224,7 +224,7 @@ export default function ActivityLogPage() {
   const load = async () => {
     setLoading(true)
     try {
-      const data = await getActivity({ limit: 100 })
+      const data = await getActivity({ limit: 1000 })
       setLogs(data)
     } finally {
       setLoading(false)
