@@ -146,6 +146,22 @@ NOVA_OFFICE_BENCHMARKS = {
     "data_as_of":  "2026-Q1",
 }
 
+# ---------------------------------------------------------------------------
+# Concession-data verification gate
+# ---------------------------------------------------------------------------
+# The concession figures in NOVA_OFFICE_BENCHMARKS (avg_free_rent_months,
+# avg_ti_psf) are unverified ESTIMATES with no published, cited source. They may
+# appear in generated outreach output (tenant email + call sheet) ONLY when this
+# flag is True AND the underlying numbers come from a published, cited quarterly
+# report. While it is False, the outreach generators emit a fixed qualitative
+# concession paragraph — no numbers, no percentages, no dollar figures, no named
+# source — instead of any concession statistic.
+#
+# The generators read this flag at generation time (never cached at import), so a
+# future data update is a one-line change here: verify the figures, attach a real
+# cited source, and flip this to True — no generator rewrite required.
+CONCESSION_DATA_VERIFIED = False
+
 # All values measured — CBRE Northern Virginia Office Figures Q1 2026, Figure 10
 # (vacancy %, avg direct asking rate $/SF FSG/yr).
 #

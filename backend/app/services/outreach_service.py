@@ -13,6 +13,7 @@ from datetime import date
 from typing import NamedTuple, Optional
 
 from app.services.rep_classification import classify_rep, MAJOR_BROKER_FIRMS
+import app.config as config
 from app.config import (
     NOVA_OFFICE_BENCHMARKS,
     SUBMARKET_BENCHMARKS,
@@ -22,8 +23,72 @@ from app.config import (
 
 NOVA_AVG_RENT        = NOVA_OFFICE_BENCHMARKS["avg_market_rent_psf"]
 NOVA_AVG_VACANCY     = NOVA_OFFICE_BENCHMARKS["avg_vacancy_pct"]
-NOVA_AVG_FREE_RENT   = NOVA_OFFICE_BENCHMARKS["avg_free_rent_months"]
-NOVA_AVG_TI          = NOVA_OFFICE_BENCHMARKS["avg_ti_psf"]
+
+
+# ── Concession framing (Fix: unverified CBRE concession stats removed) ──────────
+#
+# Free-rent months and TI-allowance $/SF in NOVA_OFFICE_BENCHMARKS are unverified
+# ESTIMATES with an incorrect source attribution. They may only reach outreach
+# output when config.CONCESSION_DATA_VERIFIED is True AND the figures come from a
+# published, cited quarterly report. Until then, both the tenant email and the
+# call sheet use this fixed qualitative paragraph — no numbers, no percentages,
+# no dollar figures, no named source.
+CONCESSION_QUALITATIVE_PARAGRAPH = (
+    "In the current Northern Virginia office market, there's a meaningful gap "
+    "between the asking rent a landlord advertises and what a tenant actually "
+    "pays once concessions are factored in. Free rent periods and improvement "
+    "allowances have expanded as landlords compete for fewer active tenants, "
+    "which means the number on a listing rarely reflects the real economics of a deal."
+)
+
+# Short concession cue for the call sheet's DATA block (parity with the email).
+CONCESSION_SHEET_QUALITATIVE = (
+    "qualitative only — asking rent overstates real cost once free rent and "
+    "improvement allowances are factored in; no verified figures on file"
+)
+
+
+def _concession_verified_figures():
+    """The verified concession figures, or None when the gate is closed.
+
+    Reads config.CONCESSION_DATA_VERIFIED at CALL time (never cached at import),
+    so flipping the flag needs no other code change. Returns (free_rent_months,
+    ti_psf) only when the gate is open AND both figures are present; otherwise
+    None (the caller falls back to qualitative framing)."""
+    if not getattr(config, "CONCESSION_DATA_VERIFIED", False):
+        return None
+    free_rent = NOVA_OFFICE_BENCHMARKS.get("avg_free_rent_months")
+    ti_psf = NOVA_OFFICE_BENCHMARKS.get("avg_ti_psf")
+    if not free_rent or not ti_psf:
+        return None
+    return free_rent, ti_psf
+
+
+def _concession_market_window() -> str:
+    """The tenant email's market-window paragraph, as a standalone paragraph.
+
+    Qualitative (no numbers, no named source) unless concession data is verified,
+    in which case a numeric version built from the verified fields is used."""
+    figures = _concession_verified_figures()
+    if figures is None:
+        return CONCESSION_QUALITATIVE_PARAGRAPH
+    free_rent, ti_psf = figures
+    return (
+        f"The NoVA office market currently favors tenants: sublease supply is rising, "
+        f"there is a clear flight-to-quality, and landlords are competing with concession "
+        f"packages — averaging {free_rent}+ months of free rent and ${ti_psf}+/SF in TI "
+        f"allowances, plus blend-and-extend flexibility for tenants who engage ahead of expiry."
+    )
+
+
+def _concession_sheet_value() -> str:
+    """The call sheet DATA block's Concessions value — kept in parity with the
+    email's market-window paragraph."""
+    figures = _concession_verified_figures()
+    if figures is None:
+        return CONCESSION_SHEET_QUALITATIVE
+    free_rent, ti_psf = figures
+    return f"~{free_rent} months free + ~${ti_psf}/SF TI allowance (verified)"
 
 SUBMARKET_MARKET_RENT: dict[str, float] = {
     k: v["market_rent_psf"] for k, v in SUBMARKET_BENCHMARKS.items()
@@ -403,6 +468,10 @@ def build_call_sheet(company: dict) -> dict:
         f"Building Class: {building_class}",
         f"Submarket Vacancy %: {vacancy_val}",
         f"Submarket Asking Rent: {asking_val}",
+        # Concession figures are gated behind config.CONCESSION_DATA_VERIFIED so
+        # the sheet never quotes an unverified/unsourced free-rent or TI number.
+        # Kept in numeric parity with the email's market-window paragraph.
+        f"Concessions: {_concession_sheet_value()}",
     ]
 
     angle = build_angle_line(
@@ -662,7 +731,7 @@ def generate_outreach(company: dict) -> dict:
         vacancy_str = f"{avg_vacancy:.1f}%"
         if vacancy_vs_nova is not None:
             vac_sign = "+" if vacancy_vs_nova >= 0 else ""
-            vacancy_str += f" ({vac_sign}{vacancy_vs_nova:.1f}pp vs {NOVA_AVG_VACANCY:.1f}% NoVA avg, per CBRE Q1 2026)"
+            vacancy_str += f" ({vac_sign}{vacancy_vs_nova:.1f}pp vs {NOVA_AVG_VACANCY:.1f}% NoVA avg)"
     else:
         vacancy_str = None
 
@@ -719,15 +788,13 @@ def generate_outreach(company: dict) -> dict:
 
     # ── NoVA market-window framing (Fix 1) ────────────────────────────────────
     # Tenant emails lead with lease timing and what the current NoVA office market
-    # window means for the tenant — rising sublease supply, flight-to-quality, and
-    # landlord concessions (free rent, TI allowances, blend-and-extend). They do
-    # NOT lead with, or feature, a per-tenant rent-gap figure.
-    market_window = (
-        f"the NoVA office market currently favors tenants: sublease supply is rising, there is a "
-        f"clear flight-to-quality, and landlords are competing with concession packages — averaging "
-        f"{NOVA_AVG_FREE_RENT}+ months of free rent and ${NOVA_AVG_TI}+/SF in TI allowances "
-        f"(per CBRE Q1 2026), plus blend-and-extend flexibility for tenants who engage ahead of expiry"
-    )
+    # window means for the tenant. The concession framing is qualitative by
+    # default (no numbers, no named source): the unverified free-rent / TI
+    # figures reach the email only when config.CONCESSION_DATA_VERIFIED is True.
+    # The paragraph is both instructed in the prompt AND injected post-LLM, so it
+    # survives regeneration (same guarantee as the rent line and full-service
+    # line). They do NOT lead with, or feature, a per-tenant rent-gap figure.
+    market_window = _concession_market_window()
     # Tight-supply reinforcement — only cited when submarket vacancy is below the
     # tenant-side threshold (scarcity signal that sharpens the flight-to-quality window).
     tight_supply_line = (
@@ -743,14 +810,22 @@ def generate_outreach(company: dict) -> dict:
             f"renewal-or-relocate decision is best driven early — open on this, not on any statistic. "
             + (f"(2) Include this exact rent sentence VERBATIM as its own sentence early in the body: "
                f"\"{rent_line}\" " if rent_line else "")
-            + f"(3) Explain what the market window means for THEM: {market_window}. "
+            + f"(3) Explain what the market window means for THEM by including this paragraph VERBATIM "
+              f"as its own paragraph in the body: \"{market_window}\" "
             + (f"{tight_supply_line} " if tight_supply_line else "")
             + f"(4) Include this full-service positioning sentence VERBATIM: \"{FULL_SERVICE_LINE}\" "
             "(5) Include exactly ONE short, open-ended pain-probe question about their current space situation. "
             f"(6) Close low-pressure with the free lease analysis offer VERBATIM: \"{FREE_ANALYSIS_LINE}\" "
             "Body MINIMUM 6 sentences, MAXIMUM 170 words (excluding the signature block); subject under 9 words."
         ),
-        "Cite '(per CBRE Q1 2026)' on the FIRST market statistic only — do not repeat the citation.",
+        # ── Anti-fabrication (hard rule) ─────────────────────────────────────
+        "ANTI-FABRICATION — HARD RULE: Use ONLY figures explicitly provided in the structured input "
+        "above. You may NOT invent, estimate, or cite any rent figure, concession figure (free-rent "
+        "months or TI allowance), vacancy rate, percentage, or dollar amount that was not passed to you "
+        "as input data. You may NOT attribute any claim to CBRE, JLL, Cushman & Wakefield, CoStar, or any "
+        "other named source. If you lack a specific figure, use qualitative language — never a guess. Use "
+        "hedged language ('likely', 'almost certainly') for anything inferred, and never emit bracket "
+        "placeholders such as [Name] or [figure].",
         # Broker name + NoVA specialty appear exactly once each (Fix 1)
         "Do NOT introduce yourself by name anywhere in the email body — your name appears ONLY in the "
         "signature block, exactly once. State your Northern Virginia office specialty exactly once, "
@@ -774,7 +849,7 @@ def generate_outreach(company: dict) -> dict:
 
     system_prompt = f"""You are {AGENT_NAME} from {FIRM_NAME}, a senior commercial real estate broker
 specializing in Northern Virginia office tenant representation.
-You write precise, data-driven outreach backed by CBRE Q1 2026 market data. No boilerplate.
+You write precise, data-driven outreach backed by verified Northern Virginia office market data. No boilerplate.
 
 RULES:
 {numbered_rules}
@@ -787,18 +862,26 @@ Return valid JSON only — no markdown fences, no extra text:
   }}
 }}"""
 
+    # Concession figures are intentionally absent from the model's benchmark
+    # context unless config.CONCESSION_DATA_VERIFIED is True — an unverified
+    # free-rent / TI number must never be handed to the model to quote.
     nova_context = (
-        f"NoVA MARKET BENCHMARKS (CBRE Q1 2026):\n"
+        f"NoVA MARKET BENCHMARKS:\n"
         f"  NoVA avg rent:     ${NOVA_AVG_RENT:.2f}/SF/yr NNN\n"
         f"  NoVA avg vacancy:  {NOVA_AVG_VACANCY:.1f}%\n"
-        f"  Avg free rent:     {NOVA_AVG_FREE_RENT} months (estimate)\n"
-        f"  Avg TI allowance:  ${NOVA_AVG_TI}/SF (estimate)\n"
         f"  Avg lease term:    7 years"
     )
+    _verified_concessions = _concession_verified_figures()
+    if _verified_concessions is not None:
+        _free_rent, _ti_psf = _verified_concessions
+        nova_context += (
+            f"\n  Avg free rent:     {_free_rent} months (verified)"
+            f"\n  Avg TI allowance:  ${_ti_psf}/SF (verified)"
+        )
 
     if market_rent:
         submarket_context = (
-            f"SUBMARKET BENCHMARKS — {submarket} (CBRE Q1 2026):\n"
+            f"SUBMARKET BENCHMARKS — {submarket}:\n"
             f"  Market rent:       ${market_rent:.2f}/SF/yr NNN  ({rent_vs_nova_str})\n"
             + (f"  Submarket vacancy: {vacancy_str}" if show_vacancy else
                "  [Submarket vacancy is above the tenant-side citation threshold — do not cite in email copy]")
@@ -836,7 +919,7 @@ Return valid JSON only — no markdown fences, no extra text:
     intel_section = (
         f"\nRECENT COMPANY INTELLIGENCE (from web search — use at least one specific finding):\n{intel}\n"
         if intel else
-        "\nNo recent company intelligence found — use CBRE Q1 2026 NoVA submarket data for market references.\n"
+        "\nNo recent company intelligence found — use the Northern Virginia submarket benchmarks provided above for market references.\n"
     )
 
     import json
@@ -869,9 +952,13 @@ Return valid JSON only — no markdown fences, no extra text:
             )
             paras.insert(1 if len(paras) > 1 else len(paras), timing_line)
             body = "\n\n".join(paras)
-        # Insertion order puts them rent line → positioning → analysis offer,
-        # each ahead of the closing ask.
+        # Insertion order puts them rent line → concession framing → positioning
+        # → analysis offer, each ahead of the closing ask. The concession
+        # paragraph is qualitative unless CONCESSION_DATA_VERIFIED is True, so a
+        # regenerated body never silently loses the (source-free, number-free)
+        # concession framing — and never gains an unverified figure.
         body = _insert_paragraph_before_ask(body, rent_line)
+        body = _insert_paragraph_before_ask(body, market_window)
         body = _insert_paragraph_before_ask(body, FULL_SERVICE_LINE)
         body = _insert_paragraph_before_ask(body, FREE_ANALYSIS_LINE)
         email["body"] = body
