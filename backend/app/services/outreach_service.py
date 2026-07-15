@@ -228,6 +228,14 @@ def select_rent_story(
     if eff is not None and submarket_asking is not None:
         return RentStory(2, _direction(eff, submarket_asking), eff, submarket_asking, "submarket")
     if starting is not None and bldg is not None:
+        # Flat rent — starting rent exactly equals the current building asking
+        # ("flat since you signed"): a distinct signal, carved out from the
+        # generic above-asking framing. Strictly-above and below are unchanged;
+        # equality now selects the "flat" direction instead of "above". The
+        # prose gate on lease timing lives in build_rent_gap_line/build_angle_line
+        # (this selection stays pure so email and call sheet agree on the story).
+        if starting == bldg:
+            return RentStory(3, "flat", starting, bldg, "building")
         return RentStory(3, _direction(starting, bldg), starting, bldg, "building")
     if starting is not None and submarket_asking is not None:
         return RentStory(4, _direction(starting, submarket_asking), starting, submarket_asking, "submarket")
@@ -286,6 +294,28 @@ def _creep_line(starting: float, asking: float, quoted_by: str, direction: str) 
     )
 
 
+def _flat_rent_line(starting: float, asking: float) -> str:
+    """Rung 3, FLAT direction — the tenant's starting rent exactly equals the
+    current building asking rent ("flat since you signed").
+
+    This is a distinct signal, carved out from the generic above-asking framing:
+    the landlord hasn't had to re-price the space, so the renewal hasn't been
+    competed for yet. Neutral (never claims the tenant is overpaying) and leans
+    on the lease-renewal clock — build_rent_gap_line only selects it when lease
+    timing is on file, falling back to the above-asking line otherwise.
+
+    Both dollar figures are the SAME value (starting == asking) and both appear
+    verbatim on the tenant's CALL SHEET (Starting Rent + Building Asking Rent in
+    the DATA block, and the ANGLE line) — numeric parity holds by construction.
+    """
+    return (
+        f"Your starting rent was ${starting:.2f}/SF, and the building's quoting "
+        f"${asking:.2f} today — flat since you signed. That doesn't necessarily mean "
+        f"you're overpaying, but it does mean this landlord hasn't had to compete for "
+        f"your renewal yet, and that usually changes once the clock starts."
+    )
+
+
 def _signed_reference(lease_signed_year: Optional[int]) -> str:
     """Lease-vintage clause of the rung 5/6 hedge lines.
 
@@ -315,11 +345,17 @@ def build_rent_gap_line(
     building_asking_rent_psf: Optional[float],
     submarket: Optional[str],
     lease_signed_year: Optional[int] = None,
+    lease_expiry_months: Optional[int] = None,
 ) -> Optional[str]:
     """Return the rent line for the tenant email, or None.
 
     Pure and null-safe. Rung + direction come from select_rent_story — the same
     selection that produces the call sheet's ANGLE line.
+
+    Flat rent (rung 3, starting == building asking) gets its dedicated
+    "flat since you signed" line ONLY when lease_expiry_months is on file — the
+    flat framing leans on the renewal clock. With no lease timing, it falls back
+    to the standard above-asking line, so every other rent scenario is untouched.
     """
     story = select_rent_story(
         effective_rent_psf, starting_rent_psf, building_asking_rent_psf, submarket
@@ -333,6 +369,11 @@ def build_rent_gap_line(
     if story.rung in (1, 2):
         return _direct_line(story.tenant_value, story.benchmark_value, where, story.direction)
     if story.rung in (3, 4):
+        if story.direction == "flat":
+            if lease_expiry_months is not None:
+                return _flat_rent_line(story.tenant_value, story.benchmark_value)
+            # No lease timing on file — fall back to the prior above-asking line.
+            return _creep_line(story.tenant_value, story.benchmark_value, quoted_by, "above")
         return _creep_line(story.tenant_value, story.benchmark_value, quoted_by, story.direction)
     # Rungs 5/6 — hedge framing, no direction claimed, anchored to real vintage.
     return (
@@ -348,10 +389,15 @@ def build_angle_line(
     building_asking_rent_psf: Optional[float],
     submarket: Optional[str],
     lease_signed_year: Optional[int] = None,
+    lease_expiry_months: Optional[int] = None,
 ) -> str:
     """The call sheet's ANGLE — one line stating which story the numbers
     support, derived from the SAME rung + direction selection as the email rent
-    line. Internal reference for Jack mid-call, never read to the tenant."""
+    line. Internal reference for Jack mid-call, never read to the tenant.
+
+    Flat rent (rung 3, starting == building asking) gets its own angle ONLY when
+    lease_expiry_months is on file — the same gate as the email rent line, so the
+    two never diverge. Without lease timing it falls back to the above-asking angle."""
     story = select_rent_story(
         effective_rent_psf, starting_rent_psf, building_asking_rent_psf, submarket
     )
@@ -375,6 +421,12 @@ def build_angle_line(
             f"it means before renewal."
         )
     if story.rung in (3, 4):
+        if story.direction == "flat" and lease_expiry_months is not None:
+            return (
+                f"Flat since signing{held} — started at ${story.tenant_value:.2f}/SF, "
+                f"{where} still quoting ${story.benchmark_value:.2f}/SF; landlord hasn't had "
+                f"to compete for the renewal yet — get ahead of the clock."
+            )
         if story.direction == "below":
             return (
                 f"Below-market start{held} — started at ${story.tenant_value:.2f}/SF vs "
@@ -480,6 +532,7 @@ def build_call_sheet(company: dict) -> dict:
         company.get("building_asking_rent_psf"),
         submarket,
         lease_signed_year=signed_year,
+        lease_expiry_months=lease_mo,
     )
 
     return {
@@ -725,6 +778,7 @@ def generate_outreach(company: dict) -> dict:
         company.get("building_asking_rent_psf"),
         submarket,
         lease_signed_year=company.get("lease_signed_year"),
+        lease_expiry_months=lease_mo,
     )
 
     if show_vacancy:
