@@ -12,6 +12,7 @@ import type {
   OutreachDraftRecord,
   OutreachLog,
   TenantOutreachDraft,
+  Observation,
 } from '../types'
 
 const api = axios.create({
@@ -504,3 +505,22 @@ export const confirmLeaseComps = (
   matches: { company_id: string; expiration_date: string }[],
 ): Promise<LeaseCompsConfirmResult> =>
   api.post('/lease-comps/confirm', { matches }).then(r => r.data)
+
+// ── Observations (Private Intelligence Layer) ────────────────────────────────
+
+export interface ObservationFilters {
+  entity_type?: string
+  entity_id?: number
+  human_verified?: boolean
+}
+
+export const getObservations = (filters?: ObservationFilters): Promise<Observation[]> =>
+  api.get('/observations/', { params: filters }).then(r => r.data)
+
+// Confirm (value omitted) or correct (value supplied). Backend creates a new
+// verified row that supersedes the original — the old row never edits in place.
+export const verifyObservation = (
+  observationId: number,
+  value?: string,
+): Promise<Observation> =>
+  api.post(`/observations/${observationId}/verify`, { value: value ?? null }).then(r => r.data)

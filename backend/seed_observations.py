@@ -38,11 +38,14 @@ def seed_observations():
                 entity_type="company",
                 entity_id=2,
                 field="base_rent_annual",
+                # Null value ⇒ null confidence/page/snippet, mirroring what real
+                # extraction produces (see _normalize_fields). A missing value
+                # carries no confidence.
                 value=None,
-                confidence=0.2,
+                confidence=None,
                 source_doc="sample_lease.pdf",
-                source_page=3,
-                source_snippet="No annual rent figure appears in the excerpt.",
+                source_page=None,
+                source_snippet=None,
                 human_verified=False,
             ),
         ]

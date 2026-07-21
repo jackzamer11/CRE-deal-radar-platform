@@ -5,6 +5,7 @@ import Properties from './pages/Properties'
 import Companies from './pages/Companies'
 import Opportunities from './pages/Opportunities'
 import ActivityLog from './pages/ActivityLog'
+import Review from './pages/Review'
 
 export default function App() {
   return (
@@ -16,6 +17,7 @@ export default function App() {
           <Route path="/properties"    element={<Properties />} />
           <Route path="/companies"     element={<Companies />} />
           <Route path="/opportunities" element={<Opportunities />} />
+          <Route path="/review"        element={<Review />} />
           <Route path="/activity"      element={<ActivityLog />} />
         </Routes>
       </main>

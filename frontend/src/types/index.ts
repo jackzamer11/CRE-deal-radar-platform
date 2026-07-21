@@ -476,3 +476,19 @@ export interface OutreachDraftRecord {
   created_at: string
   last_viewed_at: string
 }
+
+// ── Observations (Private Intelligence Layer) ────────────────────────────────
+export interface Observation {
+  id: number
+  entity_type: string
+  entity_id: number
+  field: string
+  value: string | null
+  confidence: number | null
+  source_doc: string | null
+  source_page: number | null
+  source_snippet: string | null
+  human_verified: boolean
+  superseded_by_id: number | null
+  created_at: string
+}
