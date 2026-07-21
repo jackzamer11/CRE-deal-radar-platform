@@ -354,6 +354,36 @@ def ensure_intel_tables(cur: sqlite3.Cursor) -> int:
     else:
         added += _add_column(cur, "intel_opportunities", "dedup_key", "TEXT")
 
+    cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='intel_feedback'")
+    if not cur.fetchone():
+        cur.execute("""
+            CREATE TABLE intel_feedback (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                opportunity_id INTEGER NOT NULL,
+                disposition TEXT NOT NULL,
+                reason_category TEXT,
+                reason_text TEXT,
+                created_at DATETIME NOT NULL
+            )
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS ix_intel_feedback_opp ON intel_feedback(opportunity_id)")
+        print("  + created table intel_feedback")
+        added += 1
+
+    cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='intel_criteria'")
+    if not cur.fetchone():
+        cur.execute("""
+            CREATE TABLE intel_criteria (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                statement TEXT NOT NULL,
+                criterion_type TEXT,
+                active BOOLEAN NOT NULL DEFAULT 1,
+                created_at DATETIME NOT NULL
+            )
+        """)
+        print("  + created table intel_criteria")
+        added += 1
+
     return added
 
 

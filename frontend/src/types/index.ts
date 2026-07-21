@@ -512,3 +512,24 @@ export interface IntelOpportunity {
   surfaced_at: string
   status: string
 }
+
+export type IntelDisposition = 'accepted' | 'rejected' | 'deferred'
+
+export interface IntelHistoryItem extends IntelOpportunity {
+  disposition: IntelDisposition | null
+  reason_category: string | null
+  reason_text: string | null
+}
+
+export interface IntelDispositionResult {
+  opportunity: IntelOpportunity
+  suggested_rule: string | null
+}
+
+export interface IntelCriterion {
+  id: number
+  statement: string
+  criterion_type: string | null
+  active: boolean
+  created_at: string
+}

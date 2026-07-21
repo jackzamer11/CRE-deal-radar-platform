@@ -14,6 +14,10 @@ import type {
   TenantOutreachDraft,
   Observation,
   IntelOpportunity,
+  IntelDisposition,
+  IntelHistoryItem,
+  IntelDispositionResult,
+  IntelCriterion,
 } from '../types'
 
 const api = axios.create({
@@ -311,19 +315,19 @@ export interface ActivityFilters {
 }
 
 export const getActivity = (filters?: ActivityFilters): Promise<ActivityLog[]> =>
-  api.get('/activity', { params: filters }).then(r => r.data)
+  api.get('/activity/', { params: filters }).then(r => r.data)
 
 export const updateActivityNote = (
   entryId: number,
   notes: string,
 ): Promise<ActivityLog> =>
-  api.patch(`/activity/${entryId}/notes`, { notes }).then(r => r.data)
+  api.patch(`/activity/${entryId}/notes/`, { notes }).then(r => r.data)
 
 export const updateActivityStage = (
   entryId: number,
   payload: { stage: string; next_touch_date?: string | null },
 ): Promise<ActivityLog> =>
-  api.patch(`/activity/${entryId}/stage`, payload).then(r => r.data)
+  api.patch(`/activity/${entryId}/stage/`, payload).then(r => r.data)
 
 export const getReEngage = (): Promise<ActivityLog[]> =>
   api.get('/activity/re-engage').then(r => r.data)
@@ -342,7 +346,7 @@ export const createActivity = (payload: {
   contact_method?: string
   subject?: string
 }): Promise<ActivityLog> =>
-  api.post('/activity', payload).then(r => r.data)
+  api.post('/activity/', payload).then(r => r.data)
 
 // ── Pipeline ───────────────────────────────────────────────────────────────
 
@@ -533,3 +537,23 @@ export const generateIntelOpportunities = (): Promise<IntelOpportunity[]> =>
 
 export const getIntelOpportunities = (status = 'open'): Promise<IntelOpportunity[]> =>
   api.get('/intel/opportunities', { params: { status } }).then(r => r.data)
+
+// ── Intel feedback loop (Phase E) ────────────────────────────────────────────
+
+export const dispositionIntelOpportunity = (
+  opportunityId: number,
+  payload: { disposition: IntelDisposition; reason_category?: string; reason_text?: string },
+): Promise<IntelDispositionResult> =>
+  api.post(`/intel/opportunities/${opportunityId}/disposition`, payload).then(r => r.data)
+
+export const getIntelHistory = (): Promise<IntelHistoryItem[]> =>
+  api.get('/intel/history').then(r => r.data)
+
+export const getIntelCriteria = (): Promise<IntelCriterion[]> =>
+  api.get('/intel/criteria').then(r => r.data)
+
+export const saveIntelCriterion = (
+  statement: string,
+  criterion_type?: string,
+): Promise<IntelCriterion> =>
+  api.post('/intel/criteria', { statement, criterion_type }).then(r => r.data)
