@@ -500,7 +500,7 @@ export default function Dashboard() {
         <div>
           <h1 className="text-2xl font-bold text-ink-primary">Daily Briefing</h1>
           <p className="text-ink-muted text-sm mt-0.5">
-            {todayLabel} · Northern Virginia Office · Under $7M · 3K–30K SF
+            {todayLabel} 
           </p>
         </div>
         <div className="flex items-center gap-2">

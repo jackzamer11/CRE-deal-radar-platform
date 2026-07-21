@@ -103,13 +103,13 @@ def test_confidence_100_exact_match_autofills(db_session):
     co = _make_company(db_session, address=addr, building_class=None)
     db_session.commit()
 
-    result = match_address_to_property(addr, db_session)
+    result = match_address_to_property(addr, db_session, _costar_lookup={})
     assert result is not None
     assert result["confidence"] == 100
     assert result["matched_class"] == "Class A"
     assert result["property_id"] is not None
 
-    stats = derive_tenant_building_classes(db_session, backfill=True)
+    stats = derive_tenant_building_classes(db_session, backfill=True, _costar_lookup={})
     db_session.refresh(co)
 
     assert co.current_building_class == "Class A"
@@ -131,12 +131,12 @@ def test_confidence_75_multi_tenant_address_logs_not_autofill(db_session):
     co2 = _make_company(db_session, address=addr, building_class=None, company_id="CO-MULTI-B")
     db_session.commit()
 
-    result = match_address_to_property(addr, db_session)
+    result = match_address_to_property(addr, db_session, _costar_lookup={})
     assert result is not None
     assert result["confidence"] == 75
     assert result["matched_class"] == "Class A"
 
-    stats = derive_tenant_building_classes(db_session, backfill=True)
+    stats = derive_tenant_building_classes(db_session, backfill=True, _costar_lookup={})
     db_session.refresh(co1)
     db_session.refresh(co2)
 
@@ -164,12 +164,14 @@ def test_confidence_50_partial_match_logs_not_autofill(db_session):
                        building_class=None)
     db_session.commit()
 
-    result = match_address_to_property("300 Market St, Arlington, VA 22201", db_session)
+    result = match_address_to_property(
+        "300 Market St, Arlington, VA 22201", db_session, _costar_lookup={}
+    )
     assert result is not None
     assert result["confidence"] == 50
     assert result["matched_class"] == "Class C"
 
-    stats = derive_tenant_building_classes(db_session, backfill=True)
+    stats = derive_tenant_building_classes(db_session, backfill=True, _costar_lookup={})
     db_session.refresh(co)
 
     assert co.current_building_class is None  # NOT auto-filled
@@ -190,10 +192,12 @@ def test_confidence_0_no_match_logged_as_unmatched(db_session):
                        building_class=None)
     db_session.commit()
 
-    result = match_address_to_property("999 Nowhere Ln, Leesburg, VA 20176", db_session)
+    result = match_address_to_property(
+        "999 Nowhere Ln, Leesburg, VA 20176", db_session, _costar_lookup={}
+    )
     assert result is None
 
-    stats = derive_tenant_building_classes(db_session, backfill=True)
+    stats = derive_tenant_building_classes(db_session, backfill=True, _costar_lookup={})
     db_session.refresh(co)
 
     assert co.current_building_class is None
@@ -216,7 +220,7 @@ def test_backfill_false_only_processes_null_class_tenants(db_session):
     co_set  = _make_company(db_session, address=addr_b, building_class="Class C")
     db_session.commit()
 
-    stats = derive_tenant_building_classes(db_session, backfill=False)
+    stats = derive_tenant_building_classes(db_session, backfill=False, _costar_lookup={})
     db_session.refresh(co_null)
     db_session.refresh(co_set)
 
@@ -238,7 +242,7 @@ def test_backfill_true_processes_all_tenants(db_session):
     co_set  = _make_company(db_session, address=addr_b, building_class="Class C")
     db_session.commit()
 
-    stats = derive_tenant_building_classes(db_session, backfill=True)
+    stats = derive_tenant_building_classes(db_session, backfill=True, _costar_lookup={})
     db_session.refresh(co_null)
     db_session.refresh(co_set)
 
@@ -259,7 +263,7 @@ def test_user_correction_logged_to_feedback_table(db_session):
     db_session.commit()
 
     # User corrects to Class A (deriver would say Class B — the property's class)
-    record_building_class_feedback(co, "Class A", db_session)
+    record_building_class_feedback(co, "Class A", db_session, _costar_lookup={})
 
     fb = db_session.query(TenantClassFeedback).filter(
         TenantClassFeedback.company_id == co.id
@@ -279,7 +283,7 @@ def test_no_feedback_when_user_confirms_deriver_guess(db_session):
     db_session.commit()
 
     # User enters Class B — same as what deriver would infer → no feedback row
-    record_building_class_feedback(co, "Class B", db_session)
+    record_building_class_feedback(co, "Class B", db_session, _costar_lookup={})
 
     count = db_session.query(TenantClassFeedback).count()
     assert count == 0
@@ -306,7 +310,7 @@ def test_deriver_uses_feedback_on_next_run(db_session):
     db_session.add(fb)
     db_session.commit()
 
-    stats = derive_tenant_building_classes(db_session, backfill=True)
+    stats = derive_tenant_building_classes(db_session, backfill=True, _costar_lookup={})
     db_session.refresh(co)
 
     # Must use Class A from feedback, not Class B from property
@@ -326,7 +330,7 @@ def test_feedback_prevents_repeat_mistakes(db_session):
     db_session.commit()
 
     # First run: no feedback → deriver infers Class C (confidence 100, auto-fills)
-    stats1 = derive_tenant_building_classes(db_session, backfill=True)
+    stats1 = derive_tenant_building_classes(db_session, backfill=True, _costar_lookup={})
     db_session.refresh(co)
     assert co.current_building_class == "Class C"
     assert stats1["auto_filled_100_confidence"] == 1
@@ -344,7 +348,7 @@ def test_feedback_prevents_repeat_mistakes(db_session):
     db_session.commit()
 
     # Second run: feedback present → uses Class A, no re-matching
-    stats2 = derive_tenant_building_classes(db_session, backfill=True)
+    stats2 = derive_tenant_building_classes(db_session, backfill=True, _costar_lookup={})
     db_session.refresh(co)
     assert co.current_building_class == "Class A"
     assert stats2["feedback_hits"] == 1
@@ -361,7 +365,9 @@ def test_dry_run_returns_preview_without_persisting(db_session):
     co = _make_company(db_session, address=addr, building_class=None)
     db_session.commit()
 
-    stats = derive_tenant_building_classes(db_session, backfill=True, dry_run=True)
+    stats = derive_tenant_building_classes(
+        db_session, backfill=True, dry_run=True, _costar_lookup={}
+    )
 
     # Preview shows a match, but DB not written
     assert stats["auto_filled_100_confidence"] == 1
@@ -377,7 +383,9 @@ def test_persist_run_saves_changes(db_session):
     co = _make_company(db_session, address=addr, building_class=None)
     db_session.commit()
 
-    stats = derive_tenant_building_classes(db_session, backfill=True, dry_run=False)
+    stats = derive_tenant_building_classes(
+        db_session, backfill=True, dry_run=False, _costar_lookup={}
+    )
 
     db_session.refresh(co)
     assert co.current_building_class == "Class B"
@@ -394,7 +402,9 @@ def test_endpoint_returns_correct_json_structure(db_session):
     _make_company(db_session, address=addr, building_class=None)
     db_session.commit()
 
-    result = derive_tenant_building_classes(db_session, backfill=True, dry_run=True)
+    result = derive_tenant_building_classes(
+        db_session, backfill=True, dry_run=True, _costar_lookup={}
+    )
 
     required_keys = {
         "total_processed",
@@ -422,7 +432,9 @@ def test_logged_75_entries_have_correct_shape(db_session):
     _make_company(db_session, address=addr, building_class=None, company_id="CO-SHP-2")
     db_session.commit()
 
-    result = derive_tenant_building_classes(db_session, backfill=True, dry_run=True)
+    result = derive_tenant_building_classes(
+        db_session, backfill=True, dry_run=True, _costar_lookup={}
+    )
 
     assert len(result["logged_75_confidence"]) == 2
     for entry in result["logged_75_confidence"]:
@@ -441,7 +453,9 @@ def test_unmatched_entries_have_correct_shape(db_session):
                   building_class=None)
     db_session.commit()
 
-    result = derive_tenant_building_classes(db_session, backfill=True, dry_run=True)
+    result = derive_tenant_building_classes(
+        db_session, backfill=True, dry_run=True, _costar_lookup={}
+    )
 
     assert len(result["unmatched"]) == 1
     entry = result["unmatched"][0]
@@ -461,7 +475,7 @@ def test_pipeline_logger_emits_summary(db_session, caplog):
     db_session.commit()
 
     with caplog.at_level(logging.INFO, logger="deal_radar.pipeline"):
-        derive_tenant_building_classes(db_session, backfill=True)
+        derive_tenant_building_classes(db_session, backfill=True, _costar_lookup={})
 
     messages = "\n".join(caplog.messages)
     assert "TenantClassDeriver" in messages
@@ -477,7 +491,7 @@ def test_pipeline_logger_emits_per_tenant_match(db_session, caplog):
     db_session.commit()
 
     with caplog.at_level(logging.INFO, logger="deal_radar.pipeline"):
-        derive_tenant_building_classes(db_session, backfill=True)
+        derive_tenant_building_classes(db_session, backfill=True, _costar_lookup={})
 
     messages = "\n".join(caplog.messages)
     assert "Auto-fill" in messages
@@ -492,7 +506,7 @@ def test_null_address_skipped_gracefully(db_session):
     co_blank_addr = _make_company(db_session, address="   ", building_class=None)
     db_session.commit()
 
-    stats = derive_tenant_building_classes(db_session, backfill=True)
+    stats = derive_tenant_building_classes(db_session, backfill=True, _costar_lookup={})
 
     # Neither company counted as processed
     assert stats["total_processed"] == 0
@@ -523,7 +537,9 @@ def test_address_match_is_case_insensitive(db_session):
     _make_property(db_session, address="100 Main St, Tysons, VA", asset_class="Class A")
     db_session.commit()
 
-    result = match_address_to_property("100 MAIN ST, TYSONS, VA", db_session)
+    result = match_address_to_property(
+        "100 MAIN ST, TYSONS, VA", db_session, _costar_lookup={}
+    )
     assert result is not None
     assert result["confidence"] == 100
     assert result["matched_class"] == "Class A"
@@ -535,7 +551,9 @@ def test_address_match_trims_whitespace(db_session):
     _make_property(db_session, address="  200 Park Ave, Vienna, VA  ", asset_class="Class B")
     db_session.commit()
 
-    result = match_address_to_property("200 Park Ave, Vienna, VA", db_session)
+    result = match_address_to_property(
+        "200 Park Ave, Vienna, VA", db_session, _costar_lookup={}
+    )
     assert result is not None
     assert result["confidence"] == 100
 
@@ -550,7 +568,7 @@ def test_multiple_properties_different_addresses_no_cross_match(db_session):
     _make_property(db_session, address=addr_b, asset_class="Class C")
     db_session.commit()
 
-    result = match_address_to_property(addr_a, db_session)
+    result = match_address_to_property(addr_a, db_session, _costar_lookup={})
     assert result is not None
     assert result["matched_class"] == "Class A"
     assert result["confidence"] == 100
@@ -582,7 +600,7 @@ def test_backfill_with_mix_of_match_types(db_session):
 
     db_session.commit()
 
-    stats = derive_tenant_building_classes(db_session, backfill=True)
+    stats = derive_tenant_building_classes(db_session, backfill=True, _costar_lookup={})
 
     assert stats["auto_filled_100_confidence"] == 1
     assert len(stats["logged_75_confidence"]) == 2

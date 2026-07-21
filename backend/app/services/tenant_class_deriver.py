@@ -313,6 +313,7 @@ def record_building_class_feedback(
     company: Company,
     user_corrected_class: Optional[str],
     db: Session,
+    _costar_lookup: Optional[dict] = None,
 ) -> None:
     """
     Called after a user edits a company's building class via the PATCH endpoint.
@@ -323,13 +324,17 @@ def record_building_class_feedback(
 
     Silently no-ops on blank address, missing table, or any other error —
     the PATCH endpoint must never fail due to feedback logging.
+
+    _costar_lookup   Override the module-level CoStar dict (test injection).
     """
     if not company.current_address:
         return
 
     inferred_class: Optional[str] = None
     try:
-        result = match_address_to_property(company.current_address, db)
+        result = match_address_to_property(
+            company.current_address, db, _costar_lookup=_costar_lookup
+        )
         if result and result["confidence"] == 100:
             inferred_class = result["matched_class"]
     except Exception as exc:
