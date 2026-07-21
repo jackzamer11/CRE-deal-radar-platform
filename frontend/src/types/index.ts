@@ -492,3 +492,23 @@ export interface Observation {
   superseded_by_id: number | null
   created_at: string
 }
+
+export interface IntelSignalRef {
+  signal_type: string
+  value?: string | null
+  evidence_observation_id?: number | null
+  days_to_expiry?: number
+  missing_fields?: string[]
+}
+
+export interface IntelOpportunity {
+  id: number
+  title: string
+  entity_type: string
+  entity_id: number
+  score: number
+  rationale: string | null
+  signals: IntelSignalRef[]
+  surfaced_at: string
+  status: string
+}

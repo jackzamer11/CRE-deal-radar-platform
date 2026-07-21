@@ -13,6 +13,7 @@ import type {
   OutreachLog,
   TenantOutreachDraft,
   Observation,
+  IntelOpportunity,
 } from '../types'
 
 const api = axios.create({
@@ -524,3 +525,11 @@ export const verifyObservation = (
   value?: string,
 ): Promise<Observation> =>
   api.post(`/observations/${observationId}/verify`, { value: value ?? null }).then(r => r.data)
+
+// ── Intel (Phase D — signal-driven opportunities) ────────────────────────────
+
+export const generateIntelOpportunities = (): Promise<IntelOpportunity[]> =>
+  api.post('/intel/opportunities/generate').then(r => r.data)
+
+export const getIntelOpportunities = (status = 'open'): Promise<IntelOpportunity[]> =>
+  api.get('/intel/opportunities', { params: { status } }).then(r => r.data)

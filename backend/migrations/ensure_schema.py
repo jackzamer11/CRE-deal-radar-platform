@@ -308,6 +308,55 @@ def ensure_observations(cur: sqlite3.Cursor) -> int:
     return 1
 
 
+def ensure_intel_tables(cur: sqlite3.Cursor) -> int:
+    """Create the intel_signals / intel_opportunities tables (idempotent).
+
+    Namespaced to avoid colliding with the existing, unrelated `opportunities`
+    table (the separate Opportunity feature).
+    """
+    added = 0
+    cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='intel_signals'")
+    if not cur.fetchone():
+        cur.execute("""
+            CREATE TABLE intel_signals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                entity_type TEXT NOT NULL,
+                entity_id INTEGER NOT NULL,
+                signal_type TEXT NOT NULL,
+                value TEXT,
+                detected_at DATETIME NOT NULL,
+                evidence_observation_id INTEGER
+            )
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS ix_intel_signals_entity ON intel_signals(entity_type, entity_id)")
+        print("  + created table intel_signals")
+        added += 1
+
+    cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='intel_opportunities'")
+    if not cur.fetchone():
+        cur.execute("""
+            CREATE TABLE intel_opportunities (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                entity_type TEXT NOT NULL,
+                entity_id INTEGER NOT NULL,
+                score REAL NOT NULL,
+                rationale TEXT,
+                signals_json TEXT,
+                surfaced_at DATETIME NOT NULL,
+                status TEXT NOT NULL DEFAULT 'open',
+                dedup_key TEXT
+            )
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS ix_intel_opportunities_dedup ON intel_opportunities(dedup_key)")
+        print("  + created table intel_opportunities")
+        added += 1
+    else:
+        added += _add_column(cur, "intel_opportunities", "dedup_key", "TEXT")
+
+    return added
+
+
 def ensure_outreach_drafts(cur: sqlite3.Cursor) -> int:
     """Create the outreach_drafts table if it does not exist (idempotent)."""
     added = 0
@@ -737,6 +786,7 @@ def run() -> None:
     act_added      = ensure_activity_logs(cur)
     doc_added      = ensure_documents(cur)
     obs_added      = ensure_observations(cur)
+    intel_added    = ensure_intel_tables(cur)
     draft_added    = ensure_outreach_drafts(cur)
     bf_added       = backfill_lease_expiry_dates(cur)
     tcf_added      = ensure_tenant_class_feedback(cur)
