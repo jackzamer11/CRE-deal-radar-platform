@@ -158,3 +158,6 @@ Vite dev proxies `/api` to `http://localhost:8000` (see `vite.config.ts`); in pr
 - `backend/conftest.py` adds `backend/` to `sys.path` so tests import as `app.*` — run pytest from `backend/` (or rely on this conftest if invoking elsewhere).
 - `outreach_agent.py` reads `/api/companies/` for `priority`, `headcount`, `growth_rate`, `lease_expiry_months`, `submarket`, `score`, `company_id` — **don't rename or drop these fields**, regardless of whether the CLI is currently run.
 - Loose root-level `check_*.py` / `debug_pdf.py` / `scoring_impact_report.py` are ad hoc investigation scripts, not application library code — don't import from them.
+
+- Database: SQLite at backend/deal_radar.db
+- Stop after each phase of BUILD_PLAN.md and give verification steps before continuing
