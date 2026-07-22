@@ -43,7 +43,7 @@ export interface PropertyFilters {
 }
 
 export const getProperties = (filters?: PropertyFilters): Promise<PropertyListOut[]> =>
-  api.get('/properties', { params: filters }).then(r => r.data)
+  api.get('/properties/', { params: filters }).then(r => r.data)
 
 export const getProperty = (propertyId: string): Promise<PropertyOut> =>
   api.get(`/properties/${propertyId}`).then(r => r.data)
@@ -87,7 +87,7 @@ export interface CompanyFilters {
 }
 
 export const getCompanies = (filters?: CompanyFilters): Promise<CompanyListOut[]> =>
-  api.get('/companies', { params: filters }).then(r => r.data)
+  api.get('/companies/', { params: filters }).then(r => r.data)
 
 export const getCompany = (companyId: string): Promise<CompanyOut> =>
   api.get(`/companies/${companyId}`).then(r => r.data)
@@ -294,7 +294,7 @@ export interface OpportunityFilters {
 }
 
 export const getOpportunities = (filters?: OpportunityFilters): Promise<OpportunityListOut[]> =>
-  api.get('/opportunities', { params: filters }).then(r => r.data)
+  api.get('/opportunities/', { params: filters }).then(r => r.data)
 
 export const getOpportunity = (opportunityId: string): Promise<OpportunityOut> =>
   api.get(`/opportunities/${opportunityId}`).then(r => r.data)
