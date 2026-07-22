@@ -1,5 +1,5 @@
 import os
-from fastapi import FastAPI, Depends
+from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -95,9 +95,15 @@ def create_app() -> FastAPI:
             name="assets",
         )
 
-        # Catch-all: serve index.html for any non-API route (React Router)
+        # Catch-all: serve index.html for any non-API route (React Router).
+        # Never swallow /api/* — a slash-mismatched API GET must 404 as JSON,
+        # not silently return the SPA's HTML (which crashes the frontend when it
+        # tries to parse HTML as JSON). Only registered when a build exists, so
+        # this guard prevents that whole class of bug in production.
         @app.get("/{full_path:path}", include_in_schema=False)
         def serve_spa(full_path: str):
+            if full_path.startswith("api/"):
+                raise HTTPException(status_code=404, detail="Not Found")
             index = os.path.join(FRONTEND_DIST, "index.html")
             return FileResponse(index)
 
