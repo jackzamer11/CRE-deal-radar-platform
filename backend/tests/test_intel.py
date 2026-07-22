@@ -13,7 +13,7 @@ import app.models.outreach_draft  # noqa: F401
 from app.database import Base
 from app.models.intel import IntelOpportunity
 from app.models.observation import Observation
-from app.services.intel_signal_service import generate_opportunities
+from app.services.intel_signal_service import _parse_date, generate_opportunities
 
 
 @pytest.fixture()
@@ -51,6 +51,32 @@ def _complete_lease(db, entity_id, expiration: date, *, expiration_verified: boo
                        human_verified=expiration_verified,
                        source_doc="lease.pdf", source_page=2))
     db.commit()
+
+
+def test_parse_date_handles_natural_language_from_extractor():
+    # The extractor stores the model's verbatim date; the signal engine must
+    # parse the natural-language forms it commonly returns, not just ISO.
+    from datetime import date as _d
+    assert _parse_date("2027-01-17") == _d(2027, 1, 17)
+    assert _parse_date("January 17, 2027") == _d(2027, 1, 17)
+    assert _parse_date("Jan 17, 2027") == _d(2027, 1, 17)
+    assert _parse_date("17 January 2027") == _d(2027, 1, 17)
+    assert _parse_date("01/17/2027") == _d(2027, 1, 17)
+    assert _parse_date("not a date") is None
+    assert _parse_date(None) is None
+
+
+def test_lease_expiring_generates_from_natural_language_date(db):
+    # Regression: a verified expiration stored as "Month D, YYYY" must produce a
+    # lease_expiring opportunity (caught by the end-to-end check).
+    exp = date.today() + timedelta(days=120)
+    db.add(Observation(entity_type="company", entity_id=77, field="expiration_date",
+                       value=exp.strftime("%B %d, %Y"), confidence=0.9,
+                       human_verified=True, source_doc="lease.pdf", source_page=2))
+    db.commit()
+    generate_opportunities(db)
+    opps = db.query(IntelOpportunity).filter_by(dedup_key="company:77:lease_expiring").all()
+    assert len(opps) == 1
 
 
 def test_generate_produces_right_opportunities_in_right_order(db):

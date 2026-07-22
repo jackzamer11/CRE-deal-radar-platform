@@ -45,12 +45,23 @@ CORE_LEASE_FIELDS = [
 
 
 def _parse_date(value: Optional[str]) -> Optional[date]:
-    """Parse an ISO-ish date string; return None if unparseable."""
+    """Parse a date string in any of the formats the extractor commonly returns.
+
+    Extraction stores the model's verbatim value, which is often natural language
+    ("January 17, 2027"), not ISO. The signal engine must tolerate all of these
+    or verified expirations never generate opportunities.
+    """
     if not value:
         return None
-    for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%Y/%m/%d"):
+    s = value.strip()
+    for fmt in (
+        "%Y-%m-%d", "%m/%d/%Y", "%Y/%m/%d", "%m-%d-%Y",
+        "%B %d, %Y", "%b %d, %Y",        # January 17, 2027 / Jan 17, 2027
+        "%B %d %Y", "%b %d %Y",          # same without the comma
+        "%d %B %Y", "%d %b %Y",          # 17 January 2027
+    ):
         try:
-            return datetime.strptime(value.strip(), fmt).date()
+            return datetime.strptime(s, fmt).date()
         except ValueError:
             continue
     return None
