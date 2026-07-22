@@ -15,11 +15,13 @@ disposition (accept/reject/defer) with a reason.**
 | C — Review queue | UI to confirm/correct low-confidence facts | `frontend/src/pages/Review.tsx` |
 | D — Signal engine + opportunities ("Intel") | Date-math signals → ranked opportunities with plain-English rationale | `models/intel.py`, `services/intel_signal_service.py`, `api/routes/intel.py`, `frontend/src/pages/Intel.tsx` |
 | E — Feedback loop | Accept/reject/defer + reason; History; standing-rule capture | `services/intel_feedback_service.py`, `models/intel.py` |
+| F — Golden-set harness | Runs the real pipeline against labeled leases; headlines a fabrication count; pytest gate fails if > 0 | `tests/golden/` (`run_golden.py`, `cases/`, `README.md`) |
 
 ## Three numbers to watch weekly
 - **Facts awaiting review** — `GET /api/observations/?human_verified=false`
 - **Opportunities accepted rate** — accepted vs. total in `GET /api/intel/history`
-- **Fabrication count on the golden set** — (Phase F, pending)
+- **Fabrication count on the golden set** — `python tests/golden/run_golden.py`
+  (last run: 0 fabrications, 13/13 stated-field accuracy on the 3 starter cases)
 
 ## Known gaps / not-yet-built
 
@@ -36,8 +38,8 @@ disposition (accept/reject/defer) with a reason.**
 - **Rule matching is exact-text (v1).** "No deals under 5,000 SF" and
   "No deals under 5000 SF" are treated as different rules — duplicates are
   possible.
-- **Phase F (golden-set fabrication harness) not yet built** — until then, the
-  live model's non-fabrication is only unit-tested at the plumbing level, not
-  measured against labeled leases.
 - **No PDF-upload UI** — documents reach extraction via the FastAPI `/docs`
   page, not a button in the app.
+- **Golden set is small (3 synthetic cases).** The fabrication gate is only as
+  strong as its cases; add real hand-labeled leases per `tests/golden/README.md`
+  to harden it.
