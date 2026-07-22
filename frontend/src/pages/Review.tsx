@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react'
-import { ClipboardCheck, Check, Pencil, FileText, X } from 'lucide-react'
-import { getObservations, verifyObservation } from '../api/client'
+import { useEffect, useRef, useState } from 'react'
+import { ClipboardCheck, Check, Pencil, FileText, X, Upload } from 'lucide-react'
+import axios from 'axios'
+import { getObservations, verifyObservation, uploadDocument, extractDocument } from '../api/client'
 import type { Observation } from '../types'
 
 // Turn a raw field name (e.g. "base_rent_annual") into a readable label.
@@ -167,15 +168,87 @@ export default function ReviewPage() {
     setRows(prev => prev.filter(r => r.id !== id))
   }
 
+  // ── Upload + extract a lease PDF ───────────────────────────────────────────
+  const fileInput = useRef<HTMLInputElement>(null)
+  const [uploadState, setUploadState] = useState<'idle' | 'uploading' | 'extracting'>('idle')
+  const [uploadMsg, setUploadMsg] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null)
+
+  const handleFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (fileInput.current) fileInput.current.value = ''  // allow re-selecting the same file
+    if (!file) return
+    if (!file.name.toLowerCase().endsWith('.pdf')) {
+      setUploadMsg({ kind: 'error', text: 'Please choose a PDF file.' })
+      return
+    }
+    setUploadMsg(null)
+    try {
+      setUploadState('uploading')
+      const doc = await uploadDocument(file)
+      setUploadState('extracting')
+      const result = await extractDocument(doc.id)
+      setUploadMsg({
+        kind: 'ok',
+        text: `Extracted ${result.observations.length} facts from ${file.name}. Review them below.`,
+      })
+      await load()  // new facts appear in the queue
+    } catch (err) {
+      // Surface the backend's clear message (e.g. missing API key, no text in PDF).
+      let text = 'Upload or extraction failed.'
+      if (axios.isAxiosError(err) && err.response?.data?.detail) {
+        text = String(err.response.data.detail)
+      }
+      setUploadMsg({ kind: 'error', text })
+    } finally {
+      setUploadState('idle')
+    }
+  }
+
+  const busy = uploadState !== 'idle'
+
   return (
     <div className="p-6 max-w-3xl">
-      <div className="flex items-center gap-3 mb-6">
-        <ClipboardCheck size={20} className="text-blue-400" />
-        <h1 className="text-xl font-bold text-ink-primary">Review</h1>
-        <span className="text-ink-muted text-sm">
-          {rows.length} fact{rows.length === 1 ? '' : 's'} awaiting review
-        </span>
+      <div className="flex items-center justify-between mb-6">
+        <div className="flex items-center gap-3">
+          <ClipboardCheck size={20} className="text-blue-400" />
+          <h1 className="text-xl font-bold text-ink-primary">Review</h1>
+          <span className="text-ink-muted text-sm">
+            {rows.length} fact{rows.length === 1 ? '' : 's'} awaiting review
+          </span>
+        </div>
+        <input
+          ref={fileInput}
+          type="file"
+          accept="application/pdf,.pdf"
+          onChange={handleFile}
+          className="hidden"
+        />
+        <button
+          onClick={() => fileInput.current?.click()}
+          disabled={busy}
+          className="flex items-center gap-2 px-4 py-2 rounded-lg bg-accent-blue text-white text-xs font-semibold
+                     hover:bg-accent-blueDim transition-colors disabled:opacity-50"
+        >
+          <Upload size={13} className={busy ? 'animate-pulse' : ''} />
+          {uploadState === 'uploading' ? 'Uploading…'
+            : uploadState === 'extracting' ? 'Extracting…'
+            : 'Upload Lease PDF'}
+        </button>
       </div>
+
+      {uploadMsg && (
+        <div
+          className={`mb-5 rounded-xl p-3 text-xs flex items-start justify-between gap-3 border
+            ${uploadMsg.kind === 'ok'
+              ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
+              : 'bg-red-500/10 border-red-500/30 text-red-300'}`}
+        >
+          <span>{uploadMsg.text}</span>
+          <button onClick={() => setUploadMsg(null)} className="flex-shrink-0 opacity-70 hover:opacity-100">
+            <X size={13} />
+          </button>
+        </div>
+      )}
 
       {loading ? (
         <div className="text-center py-12 text-ink-muted">Loading…</div>
@@ -184,7 +257,8 @@ export default function ReviewPage() {
           <ClipboardCheck size={32} className="mx-auto mb-3 opacity-30" />
           <p className="text-sm">Nothing awaiting review.</p>
           <p className="text-xs mt-1 text-ink-muted">
-            Extracted facts land here for you to confirm before they drive signals.
+            Upload a lease PDF above — extracted facts land here for you to confirm
+            before they drive signals.
           </p>
         </div>
       ) : (
