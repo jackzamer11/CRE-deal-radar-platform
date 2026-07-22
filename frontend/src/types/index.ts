@@ -476,3 +476,60 @@ export interface OutreachDraftRecord {
   created_at: string
   last_viewed_at: string
 }
+
+// ── Observations (Private Intelligence Layer) ────────────────────────────────
+export interface Observation {
+  id: number
+  entity_type: string
+  entity_id: number
+  field: string
+  value: string | null
+  confidence: number | null
+  source_doc: string | null
+  source_page: number | null
+  source_snippet: string | null
+  human_verified: boolean
+  superseded_by_id: number | null
+  created_at: string
+}
+
+export interface IntelSignalRef {
+  signal_type: string
+  value?: string | null
+  evidence_observation_id?: number | null
+  days_to_expiry?: number
+  missing_fields?: string[]
+}
+
+export interface IntelOpportunity {
+  id: number
+  title: string
+  entity_type: string
+  entity_id: number
+  score: number
+  rationale: string | null
+  signals: IntelSignalRef[]
+  surfaced_at: string
+  status: string
+}
+
+export type IntelDisposition = 'accepted' | 'rejected' | 'deferred'
+
+export interface IntelHistoryItem extends IntelOpportunity {
+  disposition: IntelDisposition | null
+  reason_category: string | null
+  reason_text: string | null
+}
+
+export interface IntelDispositionResult {
+  opportunity: IntelOpportunity
+  suggested_rule: string | null
+}
+
+export interface IntelCriterion {
+  id: number
+  statement: string
+  criterion_type: string | null
+  active: boolean
+  created_at: string
+}

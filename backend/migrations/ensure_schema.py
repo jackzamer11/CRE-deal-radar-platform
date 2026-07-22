@@ -243,6 +243,150 @@ def ensure_activity_logs(cur: sqlite3.Cursor) -> int:
     return added
 
 
+def ensure_documents(cur: sqlite3.Cursor) -> int:
+    """Create the documents table if it does not exist (idempotent)."""
+    cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='documents'")
+    if cur.fetchone():
+        return 0
+
+    cur.execute("""
+        CREATE TABLE documents (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            filename TEXT NOT NULL,
+            storage_path TEXT NOT NULL,
+            uploaded_at DATETIME NOT NULL,
+            entity_type TEXT,
+            entity_id INTEGER,
+            extraction_status TEXT NOT NULL DEFAULT 'pending'
+        )
+    """)
+    print("  + created table documents")
+    return 1
+
+
+def ensure_observations(cur: sqlite3.Cursor) -> int:
+    """Create the observations table if it does not exist (idempotent)."""
+    cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='observations'")
+    if cur.fetchone():
+        added = 0
+        for col, col_def in {
+            "entity_type": "TEXT NOT NULL",
+            "entity_id": "INTEGER NOT NULL",
+            "field": "TEXT NOT NULL",
+            "value": "TEXT",
+            "confidence": "REAL",
+            "source_doc": "TEXT",
+            "source_page": "INTEGER",
+            "source_snippet": "TEXT",
+            "human_verified": "BOOLEAN NOT NULL DEFAULT 0",
+            "superseded_by_id": "INTEGER",
+            "created_at": "DATETIME NOT NULL",
+        }.items():
+            added += _add_column(cur, "observations", col, col_def)
+        return added
+
+    cur.execute("""
+        CREATE TABLE observations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            entity_type TEXT NOT NULL,
+            entity_id INTEGER NOT NULL,
+            field TEXT NOT NULL,
+            value TEXT,
+            confidence REAL,
+            source_doc TEXT,
+            source_page INTEGER,
+            source_snippet TEXT,
+            human_verified BOOLEAN NOT NULL DEFAULT 0,
+            superseded_by_id INTEGER,
+            created_at DATETIME NOT NULL,
+            FOREIGN KEY(superseded_by_id) REFERENCES observations(id)
+        )
+    """)
+    cur.execute("CREATE INDEX IF NOT EXISTS ix_observations_entity ON observations(entity_type, entity_id)")
+    cur.execute("CREATE INDEX IF NOT EXISTS ix_observations_human_verified ON observations(human_verified)")
+    print("  + created table observations")
+    return 1
+
+
+def ensure_intel_tables(cur: sqlite3.Cursor) -> int:
+    """Create the intel_signals / intel_opportunities tables (idempotent).
+
+    Namespaced to avoid colliding with the existing, unrelated `opportunities`
+    table (the separate Opportunity feature).
+    """
+    added = 0
+    cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='intel_signals'")
+    if not cur.fetchone():
+        cur.execute("""
+            CREATE TABLE intel_signals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                entity_type TEXT NOT NULL,
+                entity_id INTEGER NOT NULL,
+                signal_type TEXT NOT NULL,
+                value TEXT,
+                detected_at DATETIME NOT NULL,
+                evidence_observation_id INTEGER
+            )
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS ix_intel_signals_entity ON intel_signals(entity_type, entity_id)")
+        print("  + created table intel_signals")
+        added += 1
+
+    cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='intel_opportunities'")
+    if not cur.fetchone():
+        cur.execute("""
+            CREATE TABLE intel_opportunities (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                entity_type TEXT NOT NULL,
+                entity_id INTEGER NOT NULL,
+                score REAL NOT NULL,
+                rationale TEXT,
+                signals_json TEXT,
+                surfaced_at DATETIME NOT NULL,
+                status TEXT NOT NULL DEFAULT 'open',
+                dedup_key TEXT
+            )
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS ix_intel_opportunities_dedup ON intel_opportunities(dedup_key)")
+        print("  + created table intel_opportunities")
+        added += 1
+    else:
+        added += _add_column(cur, "intel_opportunities", "dedup_key", "TEXT")
+
+    cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='intel_feedback'")
+    if not cur.fetchone():
+        cur.execute("""
+            CREATE TABLE intel_feedback (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                opportunity_id INTEGER NOT NULL,
+                disposition TEXT NOT NULL,
+                reason_category TEXT,
+                reason_text TEXT,
+                created_at DATETIME NOT NULL
+            )
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS ix_intel_feedback_opp ON intel_feedback(opportunity_id)")
+        print("  + created table intel_feedback")
+        added += 1
+
+    cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='intel_criteria'")
+    if not cur.fetchone():
+        cur.execute("""
+            CREATE TABLE intel_criteria (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                statement TEXT NOT NULL,
+                criterion_type TEXT,
+                active BOOLEAN NOT NULL DEFAULT 1,
+                created_at DATETIME NOT NULL
+            )
+        """)
+        print("  + created table intel_criteria")
+        added += 1
+
+    return added
+
+
 def ensure_outreach_drafts(cur: sqlite3.Cursor) -> int:
     """Create the outreach_drafts table if it does not exist (idempotent)."""
     added = 0
@@ -670,6 +814,9 @@ def run() -> None:
             pass
         olog_fixed = 0
     act_added      = ensure_activity_logs(cur)
+    doc_added      = ensure_documents(cur)
+    obs_added      = ensure_observations(cur)
+    intel_added    = ensure_intel_tables(cur)
     draft_added    = ensure_outreach_drafts(cur)
     bf_added       = backfill_lease_expiry_dates(cur)
     tcf_added      = ensure_tenant_class_feedback(cur)
@@ -703,7 +850,7 @@ def run() -> None:
 
     total = (
         prop_added + comp_added + olog_added + olog_fixed + act_added
-        + draft_added + bf_added + tcf_added + bf_class_added + nullable_fixed
+        + doc_added + obs_added + draft_added + bf_added + tcf_added + bf_class_added + nullable_fixed
     )
     if total:
         print(f"ensure_schema: applied {total} column addition(s)/backfill(s).")

@@ -12,6 +12,12 @@ import type {
   OutreachDraftRecord,
   OutreachLog,
   TenantOutreachDraft,
+  Observation,
+  IntelOpportunity,
+  IntelDisposition,
+  IntelHistoryItem,
+  IntelDispositionResult,
+  IntelCriterion,
 } from '../types'
 
 const api = axios.create({
@@ -309,19 +315,19 @@ export interface ActivityFilters {
 }
 
 export const getActivity = (filters?: ActivityFilters): Promise<ActivityLog[]> =>
-  api.get('/activity', { params: filters }).then(r => r.data)
+  api.get('/activity/', { params: filters }).then(r => r.data)
 
 export const updateActivityNote = (
   entryId: number,
   notes: string,
 ): Promise<ActivityLog> =>
-  api.patch(`/activity/${entryId}/notes`, { notes }).then(r => r.data)
+  api.patch(`/activity/${entryId}/notes/`, { notes }).then(r => r.data)
 
 export const updateActivityStage = (
   entryId: number,
   payload: { stage: string; next_touch_date?: string | null },
 ): Promise<ActivityLog> =>
-  api.patch(`/activity/${entryId}/stage`, payload).then(r => r.data)
+  api.patch(`/activity/${entryId}/stage/`, payload).then(r => r.data)
 
 export const getReEngage = (): Promise<ActivityLog[]> =>
   api.get('/activity/re-engage').then(r => r.data)
@@ -340,7 +346,7 @@ export const createActivity = (payload: {
   contact_method?: string
   subject?: string
 }): Promise<ActivityLog> =>
-  api.post('/activity', payload).then(r => r.data)
+  api.post('/activity/', payload).then(r => r.data)
 
 // ── Pipeline ───────────────────────────────────────────────────────────────
 
@@ -504,3 +510,50 @@ export const confirmLeaseComps = (
   matches: { company_id: string; expiration_date: string }[],
 ): Promise<LeaseCompsConfirmResult> =>
   api.post('/lease-comps/confirm', { matches }).then(r => r.data)
+
+// ── Observations (Private Intelligence Layer) ────────────────────────────────
+
+export interface ObservationFilters {
+  entity_type?: string
+  entity_id?: number
+  human_verified?: boolean
+}
+
+export const getObservations = (filters?: ObservationFilters): Promise<Observation[]> =>
+  api.get('/observations/', { params: filters }).then(r => r.data)
+
+// Confirm (value omitted) or correct (value supplied). Backend creates a new
+// verified row that supersedes the original — the old row never edits in place.
+export const verifyObservation = (
+  observationId: number,
+  value?: string,
+): Promise<Observation> =>
+  api.post(`/observations/${observationId}/verify`, { value: value ?? null }).then(r => r.data)
+
+// ── Intel (Phase D — signal-driven opportunities) ────────────────────────────
+
+export const generateIntelOpportunities = (): Promise<IntelOpportunity[]> =>
+  api.post('/intel/opportunities/generate').then(r => r.data)
+
+export const getIntelOpportunities = (status = 'open'): Promise<IntelOpportunity[]> =>
+  api.get('/intel/opportunities', { params: { status } }).then(r => r.data)
+
+// ── Intel feedback loop (Phase E) ────────────────────────────────────────────
+
+export const dispositionIntelOpportunity = (
+  opportunityId: number,
+  payload: { disposition: IntelDisposition; reason_category?: string; reason_text?: string },
+): Promise<IntelDispositionResult> =>
+  api.post(`/intel/opportunities/${opportunityId}/disposition`, payload).then(r => r.data)
+
+export const getIntelHistory = (): Promise<IntelHistoryItem[]> =>
+  api.get('/intel/history').then(r => r.data)
+
+export const getIntelCriteria = (): Promise<IntelCriterion[]> =>
+  api.get('/intel/criteria').then(r => r.data)
+
+export const saveIntelCriterion = (
+  statement: string,
+  criterion_type?: string,
+): Promise<IntelCriterion> =>
+  api.post('/intel/criteria', { statement, criterion_type }).then(r => r.data)
