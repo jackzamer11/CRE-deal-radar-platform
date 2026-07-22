@@ -18,6 +18,8 @@ import type {
   IntelHistoryItem,
   IntelDispositionResult,
   IntelCriterion,
+  DocumentOut,
+  ExtractionResult,
 } from '../types'
 
 const api = axios.create({
@@ -557,3 +559,16 @@ export const saveIntelCriterion = (
   criterion_type?: string,
 ): Promise<IntelCriterion> =>
   api.post('/intel/criteria', { statement, criterion_type }).then(r => r.data)
+
+// ── Lease documents (upload + extract) ───────────────────────────────────────
+
+export const uploadDocument = (file: File): Promise<DocumentOut> => {
+  const form = new FormData()
+  form.append('file', file)
+  return api.post('/documents/', form, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  }).then(r => r.data)
+}
+
+export const extractDocument = (documentId: number): Promise<ExtractionResult> =>
+  api.post(`/documents/${documentId}/extract`).then(r => r.data)

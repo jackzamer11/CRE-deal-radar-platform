@@ -533,3 +533,18 @@ export interface IntelCriterion {
   active: boolean
   created_at: string
 }
+
+export interface DocumentOut {
+  id: number
+  filename: string
+  storage_path: string
+  uploaded_at: string
+  entity_type: string | null
+  entity_id: number | null
+  extraction_status: string
+}
+
+export interface ExtractionResult {
+  document_id: number
+  observations: Observation[]
+}
