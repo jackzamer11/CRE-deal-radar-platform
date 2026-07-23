@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { ClipboardList, Plus, X, Phone, Mail, Users, FileText, Search, RefreshCw, Pencil } from 'lucide-react'
-import { getActivity, createActivity, updateActivityNote, updateActivityStage, editActivity } from '../api/client'
+import { ClipboardList, Plus, X, Phone, Mail, Users, FileText, Search, RefreshCw, Pencil, Trash2 } from 'lucide-react'
+import { getActivity, createActivity, updateActivityNote, updateActivityStage, editActivity, deleteActivity } from '../api/client'
 import type { ActivityLog, ActionType, ActivityStage } from '../types'
 import { STAGES, REVISIT_STAGES } from '../types'
 
@@ -373,6 +373,23 @@ export default function ActivityLogPage() {
     setEditingId(null)
   }
 
+  const handleDelete = async (log: ActivityLog) => {
+    const label = log.contact_name || log.action_taken?.slice(0, 60) || `entry #${log.id}`
+    if (!window.confirm(
+      `Delete this activity log?\n\n"${label}"\n\n` +
+      `This also removes any facts the intelligence layer extracted from it. ` +
+      `Other Deal Radar data is untouched. This cannot be undone.`
+    )) return
+    const prev = logs
+    setLogs(cur => cur.filter(l => l.id !== log.id))  // optimistic
+    try {
+      await deleteActivity(log.id)
+    } catch {
+      setLogs(prev)  // restore on failure
+      window.alert('Could not delete. Please try again.')
+    }
+  }
+
   // Optimistic stage move — no page reload.
   const handleStageChange = async (log: ActivityLog, stage: ActivityStage, nextTouchDate?: string | null) => {
     const optimisticDate = stage === 'Sent' ? null : (nextTouchDate !== undefined ? nextTouchDate : log.next_touch_date)
@@ -608,6 +625,13 @@ export default function ActivityLogPage() {
                             title="Edit this entry"
                           >
                             <Pencil size={10} /> Edit entry
+                          </button>
+                          <button
+                            onClick={() => handleDelete(log)}
+                            className="mt-1 text-[10px] text-ink-muted hover:text-red-400 flex items-center gap-1"
+                            title="Delete this entry"
+                          >
+                            <Trash2 size={10} /> Delete
                           </button>
                         </div>
                         </>

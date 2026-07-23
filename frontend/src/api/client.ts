@@ -342,6 +342,12 @@ export const editActivity = (
 ): Promise<ActivityLog> =>
   api.patch(`/activity/${entryId}`, payload).then(r => r.data)
 
+// Delete an entry and the facts the intelligence layer derived from it.
+export const deleteActivity = (
+  entryId: number,
+): Promise<{ deleted: number }> =>
+  api.delete(`/activity/${entryId}`).then(r => r.data)
+
 export const updateActivityStage = (
   entryId: number,
   payload: { stage: string; next_touch_date?: string | null },

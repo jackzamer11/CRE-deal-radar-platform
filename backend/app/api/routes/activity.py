@@ -241,6 +241,22 @@ def edit_activity(
     return _to_out(log)
 
 
+@router.delete("/{entry_id}")
+def delete_activity(entry_id: int, db: Session = Depends(get_db)):
+    """Delete an activity log entry and the facts the intelligence layer derived
+    from it. Other Deal Radar data (companies, properties, other logs) is never
+    touched."""
+    log = db.query(ActivityLog).filter(ActivityLog.id == entry_id).first()
+    if not log:
+        raise HTTPException(status_code=404, detail="Activity log entry not found")
+
+    from app.services.activity_intel_service import purge_log_intel
+    purged = purge_log_intel(db, entry_id)
+    db.delete(log)
+    db.commit()
+    return {"deleted": entry_id, "intel_removed": purged}
+
+
 class ActivityStageUpdate(BaseModel):
     stage: str
     next_touch_date: Optional[date] = None

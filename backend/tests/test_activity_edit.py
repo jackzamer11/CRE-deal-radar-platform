@@ -133,3 +133,44 @@ def test_no_op_edit_leaves_everything_alone(client, db_session, monkeypatch):
 
 def test_editing_a_missing_entry_404s(client):
     assert client.patch("/api/activity/9999", json={"notes": "x"}).status_code == 404
+
+
+def test_delete_removes_entry_and_its_derived_facts(client, db_session):
+    from app.models.intel import IntelOpportunity
+    log = _log(db_session)
+    db_session.add(Observation(entity_type="activity_log", entity_id=log.id,
+                               field="req_submarkets", value="Reston",
+                               source_doc=f"activity_log:{log.id}",
+                               human_verified=True, verified_by="auto"))
+    db_session.add(IntelOpportunity(
+        title="Lease expiring — X", entity_type="activity_log", entity_id=log.id,
+        score=120.0, dedup_key=f"activity_log:{log.id}:lease_expiring", status="open"))
+    db_session.commit()
+
+    resp = client.delete(f"/api/activity/{log.id}")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["deleted"] == log.id
+
+    assert db_session.query(ActivityLog).filter_by(id=log.id).count() == 0
+    assert db_session.query(Observation).filter_by(
+        source_doc=f"activity_log:{log.id}").count() == 0
+    assert db_session.query(IntelOpportunity).filter_by(
+        entity_type="activity_log", entity_id=log.id).count() == 0
+
+
+def test_delete_leaves_other_entries_and_data_untouched(client, db_session):
+    keep = _log(db_session, action_taken="keep me")
+    db_session.add(Observation(entity_type="company", entity_id=99, field="req_sf_min",
+                               value="5000", source_doc="activity_log:999"))
+    doomed = _log(db_session, action_taken="delete me")
+    db_session.commit()
+
+    client.delete(f"/api/activity/{doomed.id}")
+
+    assert db_session.query(ActivityLog).filter_by(id=keep.id).count() == 1
+    # A different entity's fact must survive.
+    assert db_session.query(Observation).filter_by(entity_id=99).count() == 1
+
+
+def test_deleting_a_missing_entry_404s(client):
+    assert client.delete("/api/activity/9999").status_code == 404

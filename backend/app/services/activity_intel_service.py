@@ -261,6 +261,30 @@ def remine_activity_log(
     return {"replaced": len(stale), "kept_human_verified": kept, "extracted": len(created)}
 
 
+def purge_log_intel(db: Session, log_id: int) -> Dict[str, int]:
+    """Remove everything the intelligence layer derived from one activity log.
+
+    Called when the log is deleted: its extracted facts, the extraction record,
+    and any signals/opportunities keyed to it are derived data with no meaning
+    once the source is gone, so they go too. Does not commit — the caller
+    deletes the log in the same transaction. Other entities are untouched.
+    """
+    from app.models.intel import IntelOpportunity, IntelSignal
+
+    source = f"activity_log:{log_id}"
+    obs = db.query(Observation).filter(Observation.source_doc == source).delete(
+        synchronize_session=False)
+    extr = db.query(IntelActivityExtraction).filter(
+        IntelActivityExtraction.activity_log_id == log_id).delete(synchronize_session=False)
+    opps = db.query(IntelOpportunity).filter(
+        IntelOpportunity.entity_type == "activity_log",
+        IntelOpportunity.entity_id == log_id).delete(synchronize_session=False)
+    sigs = db.query(IntelSignal).filter(
+        IntelSignal.entity_type == "activity_log",
+        IntelSignal.entity_id == log_id).delete(synchronize_session=False)
+    return {"observations": obs, "extractions": extr, "opportunities": opps, "signals": sigs}
+
+
 def auto_approve_existing(db: Session) -> Dict[str, int]:
     """Clear already-queued facts in the auto-approve fields.
 
