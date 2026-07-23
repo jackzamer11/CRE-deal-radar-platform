@@ -499,6 +499,8 @@ export interface IntelSignalRef {
   evidence_observation_id?: number | null
   days_to_expiry?: number
   missing_fields?: string[]
+  /** e.g. "activity_log:188" or "acme_lease.pdf" — where the fact came from */
+  source_doc?: string | null
 }
 
 export interface IntelOpportunity {
