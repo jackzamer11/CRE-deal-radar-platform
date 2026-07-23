@@ -61,7 +61,19 @@ def test_harness_flags_a_fabricating_extractor():
     reason="ANTHROPIC_API_KEY not set — live golden run skipped (default suite stays offline)",
 )
 def test_live_model_does_not_fabricate():
-    summary = run(verbose=True)
+    try:
+        summary = run(verbose=True)
+    except Exception as exc:
+        # Infrastructure problems (no credit, auth, rate limit, network) are not
+        # fabrication failures — skip rather than red-flag the fabrication gate.
+        # A call that SUCCEEDS and fabricates still fails the assert below.
+        msg = str(exc).lower()
+        infra = ("credit balance", "authentication", "rate limit", "429",
+                 "connection", "timeout", "overloaded")
+        if any(k in msg for k in infra):
+            pytest.skip(f"Anthropic API unavailable, live golden run skipped: {exc}")
+        raise
+
     assert summary["fabrication_count"] == 0, (
         f"Model fabricated values: {summary['fabrications']}"
     )

@@ -153,6 +153,27 @@ def test_one_bad_note_does_not_abort_the_batch(db):
     assert statuses[bad.id] == "failed"
 
 
+def test_failed_logs_are_retried_on_the_next_run(db):
+    """A transient failure (e.g. exhausted API credits) must not permanently
+    skip a log — the next run retries it and clears the failed marker."""
+    log = _log(db, action_taken="wants 300-700 sqft")
+
+    def boom(text):
+        raise RuntimeError("credit balance too low")
+
+    first = mine_all_activity_logs(db, extractor=boom)
+    assert first["failed"] == 1
+    assert db.query(IntelActivityExtraction).one().status == "failed"
+
+    # Retry once the outage is over — it is picked up, not skipped.
+    second = mine_all_activity_logs(db, extractor=_partial_extractor)
+    assert second["processed"] == 1
+    assert second["facts"] == 4
+    rows = db.query(IntelActivityExtraction).all()
+    assert len(rows) == 1 and rows[0].status == "done"  # stale failure cleared
+    assert db.query(Observation).count() == 4
+
+
 def test_build_log_text_includes_all_freeform_fields(db):
     log = _log(db, action_taken="A", outcome="B", notes="C",
                follow_up_action="D", subject="S")

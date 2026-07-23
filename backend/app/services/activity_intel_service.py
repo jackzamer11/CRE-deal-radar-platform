@@ -217,11 +217,16 @@ def mine_all_activity_logs(
 
     Returns counts: {processed, facts, skipped, failed}.
     """
+    # Only logs that actually succeeded are "done". Failed ones (e.g. a transient
+    # API error or an exhausted credit balance) must be retried on the next run,
+    # otherwise a temporary outage would permanently skip them.
     done_ids = set()
     if not force:
         done_ids = {
             row.activity_log_id
-            for row in db.query(IntelActivityExtraction.activity_log_id).all()
+            for row in db.query(IntelActivityExtraction.activity_log_id)
+            .filter(IntelActivityExtraction.status != "failed")
+            .all()
         }
 
     query = db.query(ActivityLog).order_by(ActivityLog.id.asc())
@@ -235,6 +240,11 @@ def mine_all_activity_logs(
     for idx, log in enumerate(logs, start=1):
         try:
             created = mine_activity_log(log, db, extractor=extractor)
+            # Clear any earlier failed attempt so counts reflect reality.
+            db.query(IntelActivityExtraction).filter(
+                IntelActivityExtraction.activity_log_id == log.id,
+                IntelActivityExtraction.status == "failed",
+            ).delete(synchronize_session=False)
             db.add(IntelActivityExtraction(
                 activity_log_id=log.id,
                 status="done" if created else "empty",
