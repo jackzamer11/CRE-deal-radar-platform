@@ -79,6 +79,30 @@ def test_lease_expiring_generates_from_natural_language_date(db):
     assert len(opps) == 1
 
 
+def test_activity_note_facts_do_not_raise_stale_data(db):
+    # Facts mined from a call note are conversation intel, not a lease abstract.
+    # An entity known only from notes must NOT be flagged "incomplete lease record".
+    db.add(Observation(entity_type="company", entity_id=88, field="req_submarkets",
+                       value="Arlington", confidence=0.9, human_verified=False,
+                       source_doc="activity_log:12"))
+    db.add(Observation(entity_type="company", entity_id=88, field="req_space_type",
+                       value="Office", confidence=0.9, human_verified=False,
+                       source_doc="activity_log:12"))
+    db.commit()
+
+    generate_opportunities(db)
+    stale = db.query(IntelOpportunity).filter_by(dedup_key="company:88:stale_data").all()
+    assert stale == []
+
+    # But a real lease document with missing fields still does raise it.
+    db.add(Observation(entity_type="company", entity_id=99, field="tenant_name",
+                       value="Acme", confidence=0.9, human_verified=True,
+                       source_doc="acme_lease.pdf", source_page=1))
+    db.commit()
+    generate_opportunities(db)
+    assert db.query(IntelOpportunity).filter_by(dedup_key="company:99:stale_data").count() == 1
+
+
 def test_generate_produces_right_opportunities_in_right_order(db):
     today = date.today()
     # #1 verified, expiring in 90 days -> lease_expiring (highest).

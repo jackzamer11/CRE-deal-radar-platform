@@ -370,6 +370,23 @@ def ensure_intel_tables(cur: sqlite3.Cursor) -> int:
         print("  + created table intel_feedback")
         added += 1
 
+    cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='intel_activity_extractions'")
+    if not cur.fetchone():
+        cur.execute("""
+            CREATE TABLE intel_activity_extractions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                activity_log_id INTEGER NOT NULL,
+                status TEXT NOT NULL DEFAULT 'done',
+                fields_found INTEGER NOT NULL DEFAULT 0,
+                error TEXT,
+                extracted_at DATETIME NOT NULL
+            )
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS ix_intel_act_extr_log "
+                    "ON intel_activity_extractions(activity_log_id)")
+        print("  + created table intel_activity_extractions")
+        added += 1
+
     cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='intel_criteria'")
     if not cur.fetchone():
         cur.execute("""

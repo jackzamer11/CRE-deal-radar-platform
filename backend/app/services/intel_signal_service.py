@@ -219,9 +219,15 @@ def generate_opportunities(db: Session, today: Optional[date] = None) -> List[In
             touched.append(opp)
 
     # ── Rule 3: stale data — a processed lease with missing/unverified fields ──
-    # Group active observations by entity; only consider entities that actually
-    # have observations (i.e. a document was processed for them).
-    entities = {(o.entity_type, o.entity_id) for o in active}
+    # Only applies to entities that actually had a LEASE DOCUMENT extracted.
+    # Facts mined from activity-log notes (source_doc "activity_log:<id>") are
+    # conversation intel, not a lease abstract — an entity known only from notes
+    # is not an "incomplete lease record" and must not raise this signal.
+    entities = {
+        (o.entity_type, o.entity_id)
+        for o in active
+        if o.source_doc and not str(o.source_doc).startswith("activity_log:")
+    }
     for entity_type, entity_id in entities:
         rows = [o for o in active if o.entity_type == entity_type and o.entity_id == entity_id]
         missing = []

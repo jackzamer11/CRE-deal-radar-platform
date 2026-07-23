@@ -20,6 +20,8 @@ import type {
   IntelCriterion,
   DocumentOut,
   ExtractionResult,
+  ActivityMineResult,
+  ActivityMiningStatus,
 } from '../types'
 
 const api = axios.create({
@@ -572,3 +574,15 @@ export const uploadDocument = (file: File): Promise<DocumentOut> => {
 
 export const extractDocument = (documentId: number): Promise<ExtractionResult> =>
   api.post(`/documents/${documentId}/extract`).then(r => r.data)
+
+// ── Activity-log mining (freeform notes → structured facts) ──────────────────
+
+export const getActivityMiningStatus = (): Promise<ActivityMiningStatus> =>
+  api.get('/intel/activity/status').then(r => r.data)
+
+// Mined in batches so a long backfill never blocks on one HTTP request.
+export const mineActivityLogs = (
+  limit?: number,
+  force = false,
+): Promise<ActivityMineResult> =>
+  api.post('/intel/activity/mine', { limit, force }).then(r => r.data)

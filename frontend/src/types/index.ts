@@ -548,3 +548,18 @@ export interface ExtractionResult {
   document_id: number
   observations: Observation[]
 }
+
+export interface ActivityMineResult {
+  processed: number
+  facts: number
+  skipped: number
+  failed: number
+}
+
+export interface ActivityMiningStatus {
+  total_logs: number
+  mined: number
+  remaining: number
+  facts_extracted: number
+  failed: number
+}
