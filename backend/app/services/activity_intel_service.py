@@ -47,12 +47,16 @@ REQUIREMENT_FIELDS: Dict[str, str] = {
 }
 
 # Fields cleared automatically instead of queueing for human review.
-# These are low-risk: a submarket or space type is either stated in the note or
-# it isn't, they're cheap to spot-check later, and a wrong one is harmless
-# compared with a wrong SF range, budget, or lease date. Everything else stays
-# manual. Auto-approved rows are stamped verified_by="auto" so they remain
-# distinguishable from facts Jack actually confirmed.
-AUTO_APPROVE_FIELDS = {"req_submarkets", "req_space_type"}
+# These are basic facts read straight out of Jack's own notes — contact details,
+# stated SF, submarket, timing — so they are cheap to spot-check and low-stakes
+# if wrong. Currently every mined field auto-approves; pull a field name out of
+# this set to send it back to manual review.
+#
+# IMPORTANT: this applies only to facts mined from activity notes. Facts
+# extracted from lease PDFs always go to the Review queue, even where the field
+# name overlaps (e.g. expiration_date) — a lease abstract is a legal document,
+# not a call note.
+AUTO_APPROVE_FIELDS = set(REQUIREMENT_FIELDS)
 
 _FIELD_SCHEMA = {
     "type": "object",
@@ -229,6 +233,9 @@ def auto_approve_existing(db: Session) -> Dict[str, int]:
             Observation.field.in_(sorted(AUTO_APPROVE_FIELDS)),
             Observation.human_verified.is_(False),
             Observation.superseded_by_id.is_(None),
+            # Activity-note facts only. Lease-document facts keep going to
+            # Review even when the field name is shared (expiration_date).
+            Observation.source_doc.like("activity_log:%"),
         )
         .all()
     )

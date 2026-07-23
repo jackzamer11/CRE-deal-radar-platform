@@ -179,21 +179,37 @@ def test_failed_logs_are_retried_on_the_next_run(db):
     assert db.query(Observation).count() == 4
 
 
-def test_submarket_and_space_type_are_auto_approved(db):
-    """Location and space type clear automatically; everything else queues."""
+def test_mined_note_facts_are_auto_approved(db):
+    """Basic facts read out of Jack's own notes clear automatically."""
     log = _log(db)
     created = mine_activity_log(log, db, extractor=_partial_extractor)
     db.commit()
-    by_field = {o.field: o for o in created}
 
-    assert AUTO_APPROVE_FIELDS == {"req_submarkets", "req_space_type"}
-    assert by_field["req_submarkets"].human_verified is True
-    assert by_field["req_submarkets"].verified_by == "auto"
+    assert created  # sanity
+    for obs in created:
+        assert obs.human_verified is True
+        assert obs.verified_by == "auto"
 
-    # Everything else still requires a human.
-    for field in ("req_sf_min", "req_sf_max", "req_access_needs"):
-        assert by_field[field].human_verified is False
-        assert by_field[field].verified_by is None
+
+def test_lease_document_facts_are_never_auto_approved(db):
+    """expiration_date is also a lease field — a lease abstract is a legal
+    document and must still be reviewed, even though the name overlaps."""
+    db.add(Observation(entity_type="company", entity_id=5, field="expiration_date",
+                       value="2027-01-01", human_verified=False,
+                       source_doc="acme_lease.pdf", source_page=2))
+    db.add(Observation(entity_type="company", entity_id=5, field="expiration_date",
+                       value="2027-01-01", human_verified=False,
+                       source_doc="activity_log:9"))
+    db.commit()
+
+    auto_approve_existing(db)
+
+    from_lease = db.query(Observation).filter_by(source_doc="acme_lease.pdf").one()
+    from_note = db.query(Observation).filter_by(source_doc="activity_log:9").one()
+    assert from_lease.human_verified is False   # still queued for review
+    assert from_lease.verified_by is None
+    assert from_note.human_verified is True     # note fact cleared
+    assert from_note.verified_by == "auto"
 
 
 def test_auto_approval_is_distinguishable_from_human_approval(db):
@@ -206,8 +222,8 @@ def test_auto_approval_is_distinguishable_from_human_approval(db):
     assert auto.verified_by != "human"
 
 
-def test_auto_approve_existing_clears_only_those_fields(db):
-    """Backfill flips the queued rows without touching values or other fields."""
+def test_auto_approve_existing_clears_queue_without_altering_values(db):
+    """Backfill flips only the verification flag — the fact itself is untouched."""
     log = _log(db)
     created = mine_activity_log(log, db, extractor=_partial_extractor)
     # Simulate rows queued before the rule existed.
@@ -216,16 +232,17 @@ def test_auto_approve_existing_clears_only_those_fields(db):
         obs.verified_by = None
     db.commit()
 
-    # This fixture states only req_submarkets of the two auto-approve fields.
     result = auto_approve_existing(db)
-    assert result["approved"] == 1
-    assert result["req_submarkets"] == 1
+    assert result["approved"] == len(created)
     db.commit()
 
     rows = {o.field: o for o in db.query(Observation).all()}
-    assert rows["req_submarkets"].human_verified is True
-    assert rows["req_submarkets"].value == "Alexandria"  # value untouched
-    assert rows["req_sf_min"].human_verified is False    # still manual
+    assert all(o.human_verified for o in rows.values())
+    # Value, snippet and confidence survive the flip.
+    assert rows["req_submarkets"].value == "Alexandria"
+    assert rows["req_sf_min"].value == "300"
+    assert rows["req_sf_max"].confidence == 0.9
+    assert rows["req_access_needs"].source_snippet == "elevator ... parking"
 
 
 def test_auto_approve_existing_leaves_human_verified_rows_alone(db):
