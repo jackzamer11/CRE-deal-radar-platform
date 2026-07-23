@@ -220,6 +220,47 @@ def mine_activity_log(
     return created
 
 
+def remine_activity_log(
+    log: ActivityLog,
+    db: Session,
+    extractor: Optional[Callable[[str], Dict[str, Dict[str, object]]]] = None,
+) -> Dict[str, int]:
+    """Re-extract a log after its text was edited, so the facts stay in sync.
+
+    Machine-derived facts from the previous version are replaced — they were
+    read off a version of the note that no longer exists, and leaving them would
+    duplicate or contradict the new ones. **Facts a human verified or corrected
+    are kept**: that is Jack's judgement, not a re-derivable projection. The
+    activity log itself is never modified here.
+    """
+    source = f"activity_log:{log.id}"
+    stale = (
+        db.query(Observation)
+        .filter(Observation.source_doc == source, Observation.verified_by != "human")
+        .all()
+    )
+    kept = (
+        db.query(Observation)
+        .filter(Observation.source_doc == source, Observation.verified_by == "human")
+        .count()
+    )
+    for obs in stale:
+        db.delete(obs)
+
+    db.query(IntelActivityExtraction).filter(
+        IntelActivityExtraction.activity_log_id == log.id
+    ).delete(synchronize_session=False)
+
+    created = mine_activity_log(log, db, extractor=extractor)
+    db.add(IntelActivityExtraction(
+        activity_log_id=log.id,
+        status="done" if created else "empty",
+        fields_found=len(created),
+    ))
+    db.commit()
+    return {"replaced": len(stale), "kept_human_verified": kept, "extracted": len(created)}
+
+
 def auto_approve_existing(db: Session) -> Dict[str, int]:
     """Clear already-queued facts in the auto-approve fields.
 

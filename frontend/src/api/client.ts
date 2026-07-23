@@ -327,6 +327,21 @@ export const updateActivityNote = (
 ): Promise<ActivityLog> =>
   api.patch(`/activity/${entryId}/notes/`, { notes }).then(r => r.data)
 
+// Edit any freeform field. The backend re-mines the entry so the intelligence
+// layer's extracted facts stay in sync with what the note now says.
+export const editActivity = (
+  entryId: number,
+  payload: {
+    action_type?: string
+    action_taken?: string
+    outcome?: string
+    notes?: string
+    follow_up_action?: string
+    subject?: string
+  },
+): Promise<ActivityLog> =>
+  api.patch(`/activity/${entryId}`, payload).then(r => r.data)
+
 export const updateActivityStage = (
   entryId: number,
   payload: { stage: string; next_touch_date?: string | null },

@@ -25,6 +25,7 @@ from app.services.activity_intel_service import (
     build_log_text,
     mine_activity_log,
     mine_all_activity_logs,
+    remine_activity_log,
 )
 
 
@@ -253,6 +254,70 @@ def test_auto_approve_existing_leaves_human_verified_rows_alone(db):
     auto_approve_existing(db)
     row = db.query(Observation).one()
     assert row.verified_by == "human"  # not overwritten by the backfill
+
+
+def _corrected_extractor(pages_text):
+    """What the model returns after the note was edited (Reston, not Alexandria)."""
+    out = _blank()
+    out["req_submarkets"] = {"value": "Reston", "confidence": 0.95, "snippet": "Reston"}
+    return out
+
+
+def test_editing_a_note_replaces_its_machine_facts(db):
+    """Edited text must not leave the old extraction behind as a duplicate."""
+    log = _log(db, action_taken="wants 300-700 sqft in Alexandria")
+    mine_activity_log(log, db, extractor=_partial_extractor)
+    db.commit()
+    assert db.query(Observation).count() == 4
+
+    log.action_taken = "actually wants space in Reston"   # user edits the entry
+    db.commit()
+    result = remine_activity_log(log, db, extractor=_corrected_extractor)
+
+    rows = db.query(Observation).all()
+    assert result["replaced"] == 4
+    assert len(rows) == 1                       # stale facts gone, not duplicated
+    assert rows[0].value == "Reston"
+    assert rows[0].source_doc == f"activity_log:{log.id}"
+
+
+def test_remining_keeps_human_verified_facts(db):
+    """Jack's own corrections survive a re-mine; machine facts don't."""
+    log = _log(db)
+    created = mine_activity_log(log, db, extractor=_partial_extractor)
+    db.commit()
+    # Jack corrected one fact by hand.
+    human = created[0]
+    human.human_verified = True
+    human.verified_by = "human"
+    human_value, human_field = human.value, human.field
+    db.commit()
+
+    result = remine_activity_log(log, db, extractor=_corrected_extractor)
+
+    assert result["kept_human_verified"] == 1
+    kept = db.query(Observation).filter_by(verified_by="human").one()
+    assert kept.field == human_field and kept.value == human_value
+
+
+def test_remine_is_idempotent_across_repeats(db):
+    log = _log(db)
+    mine_activity_log(log, db, extractor=_partial_extractor)
+    db.commit()
+    for _ in range(3):
+        remine_activity_log(log, db, extractor=_corrected_extractor)
+    assert db.query(Observation).count() == 1
+    assert db.query(IntelActivityExtraction).count() == 1  # one tracking row
+
+
+def test_remine_does_not_alter_the_log_itself(db):
+    log = _log(db, action_taken="wants 300-700 sqft in Alexandria", outcome="x", notes="y")
+    before = (log.action_taken, log.outcome, log.notes, log.action_type)
+    mine_activity_log(log, db, extractor=_partial_extractor)
+    db.commit()
+    remine_activity_log(log, db, extractor=_corrected_extractor)
+    db.refresh(log)
+    assert (log.action_taken, log.outcome, log.notes, log.action_type) == before
 
 
 def test_build_log_text_includes_all_freeform_fields(db):

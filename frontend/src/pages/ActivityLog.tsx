@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { ClipboardList, Plus, X, Phone, Mail, Users, FileText, Search, RefreshCw, Pencil } from 'lucide-react'
-import { getActivity, createActivity, updateActivityNote, updateActivityStage } from '../api/client'
+import { getActivity, createActivity, updateActivityNote, updateActivityStage, editActivity } from '../api/client'
 import type { ActivityLog, ActionType, ActivityStage } from '../types'
 import { STAGES, REVISIT_STAGES } from '../types'
 
@@ -127,6 +127,98 @@ function StageSelector({
   )
 }
 
+// ── Full entry editor ────────────────────────────────────────────────────────
+// Every freeform field is editable. Saving re-mines the entry so the
+// intelligence layer's extracted facts match the corrected text.
+function EditSection({
+  log,
+  onSaved,
+  onCancel,
+}: {
+  log: ActivityLog
+  onSaved: (updated: ActivityLog) => void
+  onCancel: () => void
+}) {
+  const [form, setForm] = useState<Record<string, string>>({
+    action_type: log.action_type ?? 'CALL',
+    action_taken: log.action_taken ?? '',
+    outcome: log.outcome ?? '',
+    notes: log.notes ?? '',
+    follow_up_action: log.follow_up_action ?? '',
+  })
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const save = async () => {
+    if (!form.action_taken.trim()) {
+      setError('Action taken cannot be empty.')
+      return
+    }
+    setSaving(true)
+    setError(null)
+    try {
+      onSaved(await editActivity(log.id, form))
+    } catch {
+      setError('Could not save. Please try again.')
+      setSaving(false)
+    }
+  }
+
+  const field = (label: string, key: keyof typeof form, rows = 2) => (
+    <div className="flex gap-3">
+      <label className="text-[10px] text-ink-muted w-20 pt-2 flex-shrink-0">{label}</label>
+      <textarea
+        value={form[key]}
+        onChange={e => setForm(f => ({ ...f, [key]: e.target.value }))}
+        rows={rows}
+        className="flex-1 text-xs bg-surface-muted border border-surface-border rounded-lg px-3 py-2
+                   text-ink-primary placeholder:text-ink-muted focus:outline-none
+                   focus:border-accent-blue/50 resize-none"
+      />
+    </div>
+  )
+
+  return (
+    <div className="mt-2 space-y-2 border-t border-surface-border pt-3">
+      <div className="flex items-center gap-3">
+        <label className="text-[10px] text-ink-muted w-20 flex-shrink-0">Type</label>
+        <select
+          value={form.action_type}
+          onChange={e => setForm(f => ({ ...f, action_type: e.target.value }))}
+          className="bg-surface-muted border border-surface-border text-ink-secondary text-xs
+                     rounded-lg px-3 py-1.5"
+        >
+          {['CALL', 'EMAIL', 'MEETING', 'RESEARCH', 'NOTE', 'SIGNAL_UPDATE'].map(t => (
+            <option key={t} value={t}>{t}</option>
+          ))}
+        </select>
+      </div>
+      {field('Action', 'action_taken')}
+      {field('Outcome', 'outcome')}
+      {field('Notes', 'notes')}
+      {field('Follow-up', 'follow_up_action', 1)}
+
+      {error && <p className="text-[10px] text-red-400 ml-[92px]">{error}</p>}
+      <div className="flex items-center gap-2 ml-[92px]">
+        <button
+          onClick={save}
+          disabled={saving}
+          className="text-[10px] px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700
+                     text-white font-semibold disabled:opacity-50"
+        >
+          {saving ? 'Saving & re-reading…' : 'Save Changes'}
+        </button>
+        <button onClick={onCancel} className="text-[10px] text-ink-muted hover:text-ink-primary">
+          Cancel
+        </button>
+        <span className="text-[9px] text-ink-muted">
+          Saving updates the extracted facts for this entry.
+        </span>
+      </div>
+    </div>
+  )
+}
+
 function NoteSection({
   log,
   onSaved,
@@ -213,6 +305,7 @@ export default function ActivityLogPage() {
   const [showForm, setShowForm] = useState(false)
   const [stageFilter, setStageFilter] = useState<'All' | ActivityStage>('All')
   const [highlightId, setHighlightId] = useState<number | null>(null)
+  const [editingId, setEditingId] = useState<number | null>(null)
   const [form, setForm] = useState({
     action_type: 'CALL',
     action_taken: '',
@@ -272,6 +365,12 @@ export default function ActivityLogPage() {
 
   const handleNoteUpdated = (updated: ActivityLog) => {
     setLogs(prev => prev.map(l => l.id === updated.id ? { ...l, notes: updated.notes } : l))
+  }
+
+  // Full-entry edits replace the row outright (any field may have changed).
+  const handleEdited = (updated: ActivityLog) => {
+    setLogs(prev => prev.map(l => l.id === updated.id ? updated : l))
+    setEditingId(null)
   }
 
   // Optimistic stage move — no page reload.
@@ -480,6 +579,14 @@ export default function ActivityLogPage() {
                             )}
                           </div>
                         )}
+                        {editingId === log.id ? (
+                          <EditSection
+                            log={log}
+                            onSaved={handleEdited}
+                            onCancel={() => setEditingId(null)}
+                          />
+                        ) : (
+                        <>
                         <p className="text-xs text-ink-secondary mt-0.5">{log.action_taken}</p>
                         {log.outreach_type && (
                           <div className="mt-1">
@@ -493,7 +600,18 @@ export default function ActivityLogPage() {
                           <p className="text-xs text-amber-400 mt-1">↻ {log.follow_up_action}</p>
                         )}
                         <StageSelector log={log} onChange={(stage, nextDate) => handleStageChange(log, stage, nextDate)} />
-                        <NoteSection log={log} onSaved={handleNoteUpdated} />
+                        <div className="flex items-center gap-3">
+                          <NoteSection log={log} onSaved={handleNoteUpdated} />
+                          <button
+                            onClick={() => setEditingId(log.id)}
+                            className="mt-1 text-[10px] text-ink-muted hover:text-accent-blue flex items-center gap-1"
+                            title="Edit this entry"
+                          >
+                            <Pencil size={10} /> Edit entry
+                          </button>
+                        </div>
+                        </>
+                        )}
                       </div>
                     </div>
                   ))}
