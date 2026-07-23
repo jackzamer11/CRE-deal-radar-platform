@@ -281,6 +281,7 @@ def ensure_observations(cur: sqlite3.Cursor) -> int:
             "human_verified": "BOOLEAN NOT NULL DEFAULT 0",
             "superseded_by_id": "INTEGER",
             "created_at": "DATETIME NOT NULL",
+            "verified_by": "TEXT",
         }.items():
             added += _add_column(cur, "observations", col, col_def)
         return added
@@ -297,6 +298,7 @@ def ensure_observations(cur: sqlite3.Cursor) -> int:
             source_page INTEGER,
             source_snippet TEXT,
             human_verified BOOLEAN NOT NULL DEFAULT 0,
+            verified_by TEXT,
             superseded_by_id INTEGER,
             created_at DATETIME NOT NULL,
             FOREIGN KEY(superseded_by_id) REFERENCES observations(id)

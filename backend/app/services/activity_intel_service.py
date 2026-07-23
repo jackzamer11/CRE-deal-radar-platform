@@ -46,6 +46,14 @@ REQUIREMENT_FIELDS: Dict[str, str] = {
     "contact_email": "Email address of the tenant-side contact.",
 }
 
+# Fields cleared automatically instead of queueing for human review.
+# These are low-risk: a submarket or space type is either stated in the note or
+# it isn't, they're cheap to spot-check later, and a wrong one is harmless
+# compared with a wrong SF range, budget, or lease date. Everything else stays
+# manual. Auto-approved rows are stamped verified_by="auto" so they remain
+# distinguishable from facts Jack actually confirmed.
+AUTO_APPROVE_FIELDS = {"req_submarkets", "req_space_type"}
+
 _FIELD_SCHEMA = {
     "type": "object",
     "properties": {
@@ -190,6 +198,7 @@ def mine_activity_log(
         value = row.get("value")
         if value is None:
             continue
+        auto = field in AUTO_APPROVE_FIELDS
         obs = Observation(
             entity_type=entity_type,
             entity_id=entity_id,
@@ -199,11 +208,37 @@ def mine_activity_log(
             source_doc=f"activity_log:{log.id}",
             source_page=None,
             source_snippet=row.get("snippet"),
-            human_verified=False,
+            human_verified=auto,
+            verified_by="auto" if auto else None,
         )
         db.add(obs)
         created.append(obs)
     return created
+
+
+def auto_approve_existing(db: Session) -> Dict[str, int]:
+    """Clear already-queued facts in the auto-approve fields.
+
+    Only flips the verification flag — the value, snippet, confidence, and
+    provenance are untouched, so there is nothing to supersede. Rows already
+    verified (by a human or a previous run) are left alone.
+    """
+    rows = (
+        db.query(Observation)
+        .filter(
+            Observation.field.in_(sorted(AUTO_APPROVE_FIELDS)),
+            Observation.human_verified.is_(False),
+            Observation.superseded_by_id.is_(None),
+        )
+        .all()
+    )
+    by_field: Dict[str, int] = {}
+    for obs in rows:
+        obs.human_verified = True
+        obs.verified_by = "auto"
+        by_field[obs.field] = by_field.get(obs.field, 0) + 1
+    db.commit()
+    return {"approved": len(rows), **by_field}
 
 
 def mine_all_activity_logs(

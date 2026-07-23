@@ -19,7 +19,9 @@ from app.models.activity import ActivityLog
 from app.models.intel import IntelActivityExtraction
 from app.models.observation import Observation
 from app.services.activity_intel_service import (
+    AUTO_APPROVE_FIELDS,
     REQUIREMENT_FIELDS,
+    auto_approve_existing,
     build_log_text,
     mine_activity_log,
     mine_all_activity_logs,
@@ -96,7 +98,10 @@ def test_facts_carry_provenance_back_to_the_log(db):
     created = mine_activity_log(log, db, extractor=_partial_extractor)
     db.commit()
     assert all(o.source_doc == f"activity_log:{log.id}" for o in created)
-    assert all(o.human_verified is False for o in created)  # goes to Review queue
+    # Manual-review fields queue unverified; auto-approve fields clear immediately.
+    assert all(
+        o.human_verified is (o.field in AUTO_APPROVE_FIELDS) for o in created
+    )
     snippets = [o.source_snippet for o in created]
     assert all(s for s in snippets)
 
@@ -172,6 +177,65 @@ def test_failed_logs_are_retried_on_the_next_run(db):
     rows = db.query(IntelActivityExtraction).all()
     assert len(rows) == 1 and rows[0].status == "done"  # stale failure cleared
     assert db.query(Observation).count() == 4
+
+
+def test_submarket_and_space_type_are_auto_approved(db):
+    """Location and space type clear automatically; everything else queues."""
+    log = _log(db)
+    created = mine_activity_log(log, db, extractor=_partial_extractor)
+    db.commit()
+    by_field = {o.field: o for o in created}
+
+    assert AUTO_APPROVE_FIELDS == {"req_submarkets", "req_space_type"}
+    assert by_field["req_submarkets"].human_verified is True
+    assert by_field["req_submarkets"].verified_by == "auto"
+
+    # Everything else still requires a human.
+    for field in ("req_sf_min", "req_sf_max", "req_access_needs"):
+        assert by_field[field].human_verified is False
+        assert by_field[field].verified_by is None
+
+
+def test_auto_approval_is_distinguishable_from_human_approval(db):
+    """A machine approval must never look like Jack's own judgement."""
+    log = _log(db)
+    mine_activity_log(log, db, extractor=_partial_extractor)
+    db.commit()
+    auto = db.query(Observation).filter_by(field="req_submarkets").one()
+    assert auto.verified_by == "auto"
+    assert auto.verified_by != "human"
+
+
+def test_auto_approve_existing_clears_only_those_fields(db):
+    """Backfill flips the queued rows without touching values or other fields."""
+    log = _log(db)
+    created = mine_activity_log(log, db, extractor=_partial_extractor)
+    # Simulate rows queued before the rule existed.
+    for obs in created:
+        obs.human_verified = False
+        obs.verified_by = None
+    db.commit()
+
+    # This fixture states only req_submarkets of the two auto-approve fields.
+    result = auto_approve_existing(db)
+    assert result["approved"] == 1
+    assert result["req_submarkets"] == 1
+    db.commit()
+
+    rows = {o.field: o for o in db.query(Observation).all()}
+    assert rows["req_submarkets"].human_verified is True
+    assert rows["req_submarkets"].value == "Alexandria"  # value untouched
+    assert rows["req_sf_min"].human_verified is False    # still manual
+
+
+def test_auto_approve_existing_leaves_human_verified_rows_alone(db):
+    db.add(Observation(entity_type="company", entity_id=1, field="req_submarkets",
+                       value="Tysons", human_verified=True, verified_by="human",
+                       source_doc="activity_log:1"))
+    db.commit()
+    auto_approve_existing(db)
+    row = db.query(Observation).one()
+    assert row.verified_by == "human"  # not overwritten by the backfill
 
 
 def test_build_log_text_includes_all_freeform_fields(db):
