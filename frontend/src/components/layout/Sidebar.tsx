@@ -17,7 +17,8 @@ const navItems = [
   { to: '/',             icon: LayoutDashboard, label: 'Daily Briefing' },
   { to: '/properties',   icon: Building2,       label: 'Properties' },
   { to: '/companies',    icon: Users,            label: 'Companies' },
-  { to: '/opportunities',icon: Crosshair,        label: 'Opportunities' },
+  // Opportunities tab frozen / hidden from site — page + route code retained, not deleted.
+  // { to: '/opportunities',icon: Crosshair,        label: 'Opportunities' },
   { to: '/review',       icon: ClipboardCheck,   label: 'Review' },
   { to: '/intel',        icon: Sparkles,         label: 'Intel' },
   { to: '/activity',     icon: ClipboardList,    label: 'Activity Log' },
