@@ -78,18 +78,34 @@ def _active_observations(db: Session) -> List[Observation]:
     return db.query(Observation).filter(Observation.superseded_by_id.is_(None)).all()
 
 
-def _tenant_label(db: Session, entity_type: str, entity_id: int, active: List[Observation]) -> str:
-    """Best-available tenant name for an entity, else a generic entity label."""
-    named = [
+def _first_value(active: List[Observation], entity_type: str, entity_id: int,
+                 field: str) -> Optional[str]:
+    """Best value for a field on an entity, preferring verified rows."""
+    rows = [
         o for o in active
         if o.entity_type == entity_type and o.entity_id == entity_id
-        and o.field == "tenant_name" and o.value
+        and o.field == field and o.value
     ]
-    # Prefer a verified name.
-    named.sort(key=lambda o: (not o.human_verified,))
-    if named:
-        return named[0].value
-    return f"{entity_type} #{entity_id}"
+    rows.sort(key=lambda o: (not o.human_verified,))
+    return rows[0].value if rows else None
+
+
+def _tenant_label(db: Session, entity_type: str, entity_id: int, active: List[Observation]) -> str:
+    """A label a human can actually recognize.
+
+    Prefers the tenant's company name; falls back to the contact person named in
+    the note (activity-log facts carry `contact_name`, not `tenant_name`), and
+    qualifies with the space type when known — "Hoda Murad (home health care)"
+    beats "activity_log #188". Generic entity ref is the last resort.
+    """
+    name = (
+        _first_value(active, entity_type, entity_id, "tenant_name")
+        or _first_value(active, entity_type, entity_id, "contact_name")
+    )
+    if not name:
+        return f"{entity_type} #{entity_id}"
+    space = _first_value(active, entity_type, entity_id, "req_space_type")
+    return f"{name} ({space})" if space else name
 
 
 def _upsert_signal(db: Session, entity_type: str, entity_id: int, signal_type: str,
@@ -165,6 +181,25 @@ def _upsert_opportunity(db: Session, dedup_key: str, title: str, entity_type: st
     return opp
 
 
+def _retire_superseded(db: Session, entity_type: str, entity_id: int, signal_type: str) -> int:
+    """Close an open opportunity that a newer, stronger signal has replaced.
+
+    Marked "superseded" rather than a disposition, so it never pollutes the
+    accept/reject stats — this is the machine tidying up, not a human decision.
+    """
+    stale = (
+        db.query(IntelOpportunity)
+        .filter(
+            IntelOpportunity.dedup_key == f"{entity_type}:{entity_id}:{signal_type}",
+            IntelOpportunity.status == "open",
+        )
+        .all()
+    )
+    for opp in stale:
+        opp.status = "superseded"
+    return len(stale)
+
+
 def generate_opportunities(db: Session, today: Optional[date] = None) -> List[IntelOpportunity]:
     """Run the v1 signal rules and upsert ranked opportunities. Idempotent."""
     today = today or date.today()
@@ -195,6 +230,10 @@ def generate_opportunities(db: Session, today: Optional[date] = None) -> List[In
                 f"({exp.isoformat()}, source: {source}{page}). "
                 "No renewal activity recorded."
             )
+            # The fact is verified now, so any open "verify this first" card for
+            # the same entity is stale — retire it instead of asking the user to
+            # judge the same fact twice under contradictory framing.
+            _retire_superseded(db, obs.entity_type, obs.entity_id, "expiration_unverified")
         else:
             signal_type = "expiration_unverified"
             score = SIGNAL_BASE_WEIGHT[signal_type] + _urgency_bonus(days)
@@ -210,6 +249,8 @@ def generate_opportunities(db: Session, today: Optional[date] = None) -> List[In
             "value": obs.value,
             "evidence_observation_id": obs.id,
             "days_to_expiry": days,
+            # Lets the UI link straight to the note or document this came from.
+            "source_doc": obs.source_doc,
         }]
         opp = _upsert_opportunity(
             db, f"{obs.entity_type}:{obs.entity_id}:{signal_type}",
@@ -219,9 +260,15 @@ def generate_opportunities(db: Session, today: Optional[date] = None) -> List[In
             touched.append(opp)
 
     # ── Rule 3: stale data — a processed lease with missing/unverified fields ──
-    # Group active observations by entity; only consider entities that actually
-    # have observations (i.e. a document was processed for them).
-    entities = {(o.entity_type, o.entity_id) for o in active}
+    # Only applies to entities that actually had a LEASE DOCUMENT extracted.
+    # Facts mined from activity-log notes (source_doc "activity_log:<id>") are
+    # conversation intel, not a lease abstract — an entity known only from notes
+    # is not an "incomplete lease record" and must not raise this signal.
+    entities = {
+        (o.entity_type, o.entity_id)
+        for o in active
+        if o.source_doc and not str(o.source_doc).startswith("activity_log:")
+    }
     for entity_type, entity_id in entities:
         rows = [o for o in active if o.entity_type == entity_type and o.entity_id == entity_id]
         missing = []

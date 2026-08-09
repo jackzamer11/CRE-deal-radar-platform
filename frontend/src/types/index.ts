@@ -499,6 +499,8 @@ export interface IntelSignalRef {
   evidence_observation_id?: number | null
   days_to_expiry?: number
   missing_fields?: string[]
+  /** e.g. "activity_log:188" or "acme_lease.pdf" — where the fact came from */
+  source_doc?: string | null
 }
 
 export interface IntelOpportunity {
@@ -547,4 +549,19 @@ export interface DocumentOut {
 export interface ExtractionResult {
   document_id: number
   observations: Observation[]
+}
+
+export interface ActivityMineResult {
+  processed: number
+  facts: number
+  skipped: number
+  failed: number
+}
+
+export interface ActivityMiningStatus {
+  total_logs: number
+  mined: number
+  remaining: number
+  facts_extracted: number
+  failed: number
 }

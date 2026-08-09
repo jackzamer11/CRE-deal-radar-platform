@@ -281,6 +281,7 @@ def ensure_observations(cur: sqlite3.Cursor) -> int:
             "human_verified": "BOOLEAN NOT NULL DEFAULT 0",
             "superseded_by_id": "INTEGER",
             "created_at": "DATETIME NOT NULL",
+            "verified_by": "TEXT",
         }.items():
             added += _add_column(cur, "observations", col, col_def)
         return added
@@ -297,6 +298,7 @@ def ensure_observations(cur: sqlite3.Cursor) -> int:
             source_page INTEGER,
             source_snippet TEXT,
             human_verified BOOLEAN NOT NULL DEFAULT 0,
+            verified_by TEXT,
             superseded_by_id INTEGER,
             created_at DATETIME NOT NULL,
             FOREIGN KEY(superseded_by_id) REFERENCES observations(id)
@@ -368,6 +370,23 @@ def ensure_intel_tables(cur: sqlite3.Cursor) -> int:
         """)
         cur.execute("CREATE INDEX IF NOT EXISTS ix_intel_feedback_opp ON intel_feedback(opportunity_id)")
         print("  + created table intel_feedback")
+        added += 1
+
+    cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='intel_activity_extractions'")
+    if not cur.fetchone():
+        cur.execute("""
+            CREATE TABLE intel_activity_extractions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                activity_log_id INTEGER NOT NULL,
+                status TEXT NOT NULL DEFAULT 'done',
+                fields_found INTEGER NOT NULL DEFAULT 0,
+                error TEXT,
+                extracted_at DATETIME NOT NULL
+            )
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS ix_intel_act_extr_log "
+                    "ON intel_activity_extractions(activity_log_id)")
+        print("  + created table intel_activity_extractions")
         added += 1
 
     cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='intel_criteria'")

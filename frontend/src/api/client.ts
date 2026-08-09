@@ -20,6 +20,8 @@ import type {
   IntelCriterion,
   DocumentOut,
   ExtractionResult,
+  ActivityMineResult,
+  ActivityMiningStatus,
 } from '../types'
 
 const api = axios.create({
@@ -325,6 +327,27 @@ export const updateActivityNote = (
 ): Promise<ActivityLog> =>
   api.patch(`/activity/${entryId}/notes/`, { notes }).then(r => r.data)
 
+// Edit any freeform field. The backend re-mines the entry so the intelligence
+// layer's extracted facts stay in sync with what the note now says.
+export const editActivity = (
+  entryId: number,
+  payload: {
+    action_type?: string
+    action_taken?: string
+    outcome?: string
+    notes?: string
+    follow_up_action?: string
+    subject?: string
+  },
+): Promise<ActivityLog> =>
+  api.patch(`/activity/${entryId}`, payload).then(r => r.data)
+
+// Delete an entry and the facts the intelligence layer derived from it.
+export const deleteActivity = (
+  entryId: number,
+): Promise<{ deleted: number }> =>
+  api.delete(`/activity/${entryId}`).then(r => r.data)
+
 export const updateActivityStage = (
   entryId: number,
   payload: { stage: string; next_touch_date?: string | null },
@@ -572,3 +595,15 @@ export const uploadDocument = (file: File): Promise<DocumentOut> => {
 
 export const extractDocument = (documentId: number): Promise<ExtractionResult> =>
   api.post(`/documents/${documentId}/extract`).then(r => r.data)
+
+// ── Activity-log mining (freeform notes → structured facts) ──────────────────
+
+export const getActivityMiningStatus = (): Promise<ActivityMiningStatus> =>
+  api.get('/intel/activity/status').then(r => r.data)
+
+// Mined in batches so a long backfill never blocks on one HTTP request.
+export const mineActivityLogs = (
+  limit?: number,
+  force = false,
+): Promise<ActivityMineResult> =>
+  api.post('/intel/activity/mine', { limit, force }).then(r => r.data)

@@ -170,6 +170,93 @@ def update_activity_notes(
     return _to_out(log)
 
 
+class ActivityEdit(BaseModel):
+    """Any freeform field on an entry. Omitted fields are left unchanged."""
+    action_type: Optional[str] = None
+    action_taken: Optional[str] = None
+    outcome: Optional[str] = None
+    notes: Optional[str] = None
+    follow_up_action: Optional[str] = None
+    subject: Optional[str] = None
+
+
+# Editing any of these changes what the note says, so the intelligence layer
+# has to re-read it. Stage/date edits don't affect the extracted facts.
+_TEXT_FIELDS = ("action_type", "action_taken", "outcome", "notes",
+                "follow_up_action", "subject")
+
+
+@router.patch("/{entry_id}", response_model=ActivityOut)
+def edit_activity(
+    entry_id: int,
+    payload: ActivityEdit,
+    db: Session = Depends(get_db),
+):
+    """Edit an activity log entry and re-sync the intelligence layer.
+
+    When the text changes, the entry is re-mined so its extracted facts match
+    what the note now says. Re-mining is best-effort: if it fails (no API
+    credit, network), the edit is still saved and the entry is left queued for
+    the next mining run rather than losing the user's change.
+    """
+    log = db.query(ActivityLog).filter(ActivityLog.id == entry_id).first()
+    if not log:
+        raise HTTPException(status_code=404, detail="Activity log entry not found")
+
+    changed = False
+    for field in _TEXT_FIELDS:
+        value = getattr(payload, field)
+        if value is not None and value != getattr(log, field):
+            setattr(log, field, value)
+            changed = True
+    if not changed:
+        return _to_out(log)
+
+    db.commit()
+    db.refresh(log)
+
+    try:
+        from app.services.activity_intel_service import remine_activity_log
+        remine_activity_log(log, db)
+    except Exception as exc:  # noqa: BLE001 — never lose an edit over extraction
+        import logging
+        logging.getLogger(__name__).warning(
+            "activity %s edited but re-mining failed (%s); queued for next run",
+            entry_id, exc,
+        )
+        db.rollback()
+        # Drop the "already mined" marker so the next mining run picks this
+        # entry up; otherwise a failed re-mine would leave the facts stale
+        # forever.
+        try:
+            from app.models.intel import IntelActivityExtraction
+            db.query(IntelActivityExtraction).filter(
+                IntelActivityExtraction.activity_log_id == entry_id
+            ).delete(synchronize_session=False)
+            db.commit()
+        except Exception:
+            db.rollback()
+
+    db.refresh(log)
+    return _to_out(log)
+
+
+@router.delete("/{entry_id}")
+def delete_activity(entry_id: int, db: Session = Depends(get_db)):
+    """Delete an activity log entry and the facts the intelligence layer derived
+    from it. Other Deal Radar data (companies, properties, other logs) is never
+    touched."""
+    log = db.query(ActivityLog).filter(ActivityLog.id == entry_id).first()
+    if not log:
+        raise HTTPException(status_code=404, detail="Activity log entry not found")
+
+    from app.services.activity_intel_service import purge_log_intel
+    purged = purge_log_intel(db, entry_id)
+    db.delete(log)
+    db.commit()
+    return {"deleted": entry_id, "intel_removed": purged}
+
+
 class ActivityStageUpdate(BaseModel):
     stage: str
     next_touch_date: Optional[date] = None

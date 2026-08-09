@@ -3,7 +3,8 @@ import Sidebar from './components/layout/Sidebar'
 import Dashboard from './pages/Dashboard'
 import Properties from './pages/Properties'
 import Companies from './pages/Companies'
-import Opportunities from './pages/Opportunities'
+// Opportunities tab frozen / hidden from site — page code retained, not deleted.
+// import Opportunities from './pages/Opportunities'
 import ActivityLog from './pages/ActivityLog'
 import Review from './pages/Review'
 import Intel from './pages/Intel'
@@ -17,7 +18,8 @@ export default function App() {
           <Route path="/"              element={<Dashboard />} />
           <Route path="/properties"    element={<Properties />} />
           <Route path="/companies"     element={<Companies />} />
-          <Route path="/opportunities" element={<Opportunities />} />
+          {/* Opportunities tab frozen / hidden from site — route retained, not deleted. */}
+          {/* <Route path="/opportunities" element={<Opportunities />} /> */}
           <Route path="/review"        element={<Review />} />
           <Route path="/intel"         element={<Intel />} />
           <Route path="/activity"      element={<ActivityLog />} />
