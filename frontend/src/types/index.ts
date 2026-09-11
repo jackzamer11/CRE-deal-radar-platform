@@ -326,6 +326,183 @@ export interface ActivityLog {
   contact_name: string | null
   outreach_type: string | null
   notes: string | null
+  // Contact threads
+  contact_id: number | null
+  company_stamp_id: number | null
+  company_stamp_name: string | null
+  direction: Direction | null
+  channel: Channel | null
+  source_message_id: string | null
+  // Discovery capture — displayed only; nothing consumes these.
+  disc_current_rent_psf: number | null
+  disc_current_sf: number | null
+  disc_lease_expiry: string | null
+  disc_decision_timeline: string | null
+  disc_buildout_needs: string | null
+  disc_decision_maker: string | null
+}
+
+// ── Contact threads ─────────────────────────────────────────────────────────
+// A Contact owns its pipeline stage and next-touch date; entries attach to it.
+
+// owner exists in the backend so the owner side never needs a second
+// migration, but only tenant and counterparty surface in the UI this build.
+export type ContactType = 'tenant' | 'counterparty' | 'owner'
+export const UI_CONTACT_TYPES: ContactType[] = ['tenant', 'counterparty']
+export const CONTACT_TYPE_LABELS: Record<ContactType, string> = {
+  tenant:       'Tenant',
+  counterparty: 'Counterparty',
+  owner:        'Owner',
+}
+
+export type Direction = 'outbound' | 'inbound'
+export type Channel = 'email' | 'call' | 'meeting' | 'text' | 'linkedin' | 'other'
+export const CHANNELS: Channel[] = ['email', 'call', 'meeting', 'text', 'linkedin', 'other']
+
+export interface Contact {
+  id: number
+  name: string
+  email: string | null
+  phone: string | null
+  title: string | null
+  company_id: number | null
+  contact_type: ContactType
+  stage: ActivityStage
+  stage_changed_at: string | null
+  next_touch_date: string | null
+  responded: boolean
+  triaged: boolean
+  auto_created: boolean
+  company_name: string | null
+}
+
+export interface ContactListRow {
+  id: number
+  name: string
+  email: string | null
+  title: string | null
+  contact_type: ContactType
+  stage: ActivityStage
+  stage_changed_at: string | null
+  days_in_stage: number | null
+  next_touch_date: string | null
+  overdue: boolean
+  responded: boolean
+  triaged: boolean
+  auto_created: boolean
+  company_id: number | null
+  company_name: string | null
+  entry_count: number
+  latest_entry_date: string | null
+  latest_entry_summary: string | null
+  latest_entry_channel: Channel | null
+}
+
+export interface ContactFact {
+  id: number
+  contact_id: number
+  fact_text: string
+  source_entry_id: number | null
+  learned_date: string
+  superseded_by_id: number | null
+  is_active: boolean
+}
+
+export interface TimelineEntry {
+  id: number
+  log_date: string
+  contact_id: number | null
+  contact_name: string | null
+  company_stamp_id: number | null
+  company_stamp_name: string | null
+  action_type: ActionType
+  action_taken: string
+  outcome: string | null
+  notes: string | null
+  follow_up_action: string | null
+  direction: Direction | null
+  channel: Channel | null
+  outreach_type: string | null
+  subject: string | null
+  disc_current_rent_psf: number | null
+  disc_current_sf: number | null
+  disc_lease_expiry: string | null
+  disc_decision_timeline: string | null
+  disc_buildout_needs: string | null
+  disc_decision_maker: string | null
+}
+
+export interface TimelinePage {
+  total: number
+  limit: number
+  offset: number
+  entries: TimelineEntry[]
+}
+
+export interface CompanyTimelineEntry {
+  id: number
+  log_date: string
+  contact_id: number | null
+  contact_name: string | null
+  action_type: ActionType
+  action_taken: string
+  outcome: string | null
+  notes: string | null
+  direction: Direction | null
+  channel: Channel | null
+  outreach_type: string | null
+  subject: string | null
+}
+
+export interface CompanyTimelinePage {
+  total: number
+  limit: number
+  offset: number
+  company_id: number
+  company_name: string
+  has_data_conflict: boolean
+  entries: CompanyTimelineEntry[]
+}
+
+// A claim a contact made that contradicts the verified record. Accepting copies
+// it onto the company; rejecting keeps the verified value and marks the company.
+export interface DataConflict {
+  field: string
+  label: string
+  company_id: number
+  company_name: string
+  reported_value: string | null
+  verified_value: string | null
+  reported_at: string | null
+  source_entry_id: number | null
+  resolution: string | null
+}
+
+export interface RelationshipLine {
+  text: string
+  source_entry_id: number | null
+  fact_id: number
+}
+
+// The thread header's three slots, in render order: where we are, relationship
+// context, deal context.
+export interface ThreadHeader {
+  contact: Contact
+  days_in_stage: number | null
+  last_touch_date: string | null
+  last_touch_channel: Channel | null
+  days_of_silence: number | null
+  open_loop: string | null
+  entry_count: number
+  relationship_lines: RelationshipLine[]
+  facts: ContactFact[]
+  company_name: string | null
+  company_business_id: string | null
+  company_lease_expiry: string | null
+  company_sf: number | null
+  company_submarket: string | null
+  has_data_conflict: boolean
+  conflicts: DataConflict[]
 }
 
 export interface CallTarget {
@@ -491,6 +668,11 @@ export interface Observation {
   human_verified: boolean
   superseded_by_id: number | null
   created_at: string
+  /** Derived, never stored: clean ISO date read out of a hedged value
+   *  ("~February 2027" -> "2027-02-28"). Null when nothing needs pinning down. */
+  suggested_value?: string | null
+  /** How precise the stored text really was: exact | month | quarter | year */
+  value_precision?: string | null
 }
 
 export interface IntelSignalRef {
@@ -501,6 +683,11 @@ export interface IntelSignalRef {
   missing_fields?: string[]
   /** e.g. "activity_log:188" or "acme_lease.pdf" — where the fact came from */
   source_doc?: string | null
+  /** Verbatim words behind the card, so it can be judged without leaving the page */
+  source_snippet?: string | null
+  /** stated_requirement only: which requirement fields the tenant actually stated */
+  stated_fields?: string[]
+  days_since_touch?: number | null
 }
 
 export interface IntelOpportunity {
@@ -516,6 +703,28 @@ export interface IntelOpportunity {
 }
 
 export type IntelDisposition = 'accepted' | 'rejected' | 'deferred'
+
+/** What a generate run actually scanned — so an empty result is explainable. */
+export interface IntelGenerateStats {
+  facts_scanned: number
+  expirations_found: number
+  expirations_unreadable: number
+  expirations_past: number
+  expirations_beyond_horizon: number
+  opportunities: number
+  by_signal_type: Record<string, number>
+}
+
+export interface IntelGenerateResult {
+  opportunities: IntelOpportunity[]
+  stats: IntelGenerateStats
+}
+
+export interface RequeueDatesResult {
+  requeued: number
+  unreadable: number
+  checked: number
+}
 
 export interface IntelHistoryItem extends IntelOpportunity {
   disposition: IntelDisposition | null

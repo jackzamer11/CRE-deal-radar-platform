@@ -240,6 +240,155 @@ def ensure_activity_logs(cur: sqlite3.Cursor) -> int:
     except sqlite3.OperationalError:
         pass
 
+    # ── Contact threads ───────────────────────────────────────────────────────
+    # contact_id       — the person this entry belongs to (nullable: a voicemail
+    #                    to a main line has a company but no person).
+    # company_stamp_id — the company the conversation was ABOUT at the time.
+    #                    Immutable after create; enforced in the API, not by the
+    #                    DB, because SQLite cannot add a CHECK via ALTER TABLE.
+    # Added as plain INTEGER without a REFERENCES clause: SQLite forbids adding a
+    # column with a non-NULL-defaulted foreign key to an existing table. The ORM
+    # declares the FK, and the indexes below are created explicitly.
+    added += _add_activity_column(cur, "contact_id",       "INTEGER")
+    added += _add_activity_column(cur, "company_stamp_id", "INTEGER")
+    added += _add_activity_column(cur, "direction", "TEXT DEFAULT 'outbound'")
+    added += _add_activity_column(cur, "channel",   "TEXT DEFAULT 'other'")
+    added += _add_activity_column(cur, "source_message_id", "TEXT")
+
+    # Discovery capture — inert this build, nothing reads them.
+    added += _add_activity_column(cur, "disc_current_rent_psf",  "REAL")
+    added += _add_activity_column(cur, "disc_current_sf",        "INTEGER")
+    added += _add_activity_column(cur, "disc_lease_expiry",      "DATE")
+    added += _add_activity_column(cur, "disc_decision_timeline", "TEXT")
+    added += _add_activity_column(cur, "disc_buildout_needs",    "TEXT")
+    added += _add_activity_column(cur, "disc_decision_maker",    "TEXT")
+
+    # Indexes: the contact timeline filters on contact_id, the company timeline
+    # on company_stamp_id, and the email automation's dedup on
+    # source_message_id — none of which may degrade as entries accumulate.
+    # source_message_id is UNIQUE so a duplicate POST is rejected by the DB even
+    # if two automation runs race past the API's own check. Partial index
+    # (WHERE NOT NULL) so the existing NULL rows don't collide with each other.
+    for stmt in (
+        "CREATE INDEX IF NOT EXISTS ix_activity_logs_contact_id "
+        "ON activity_logs (contact_id)",
+        "CREATE INDEX IF NOT EXISTS ix_activity_logs_company_stamp_id "
+        "ON activity_logs (company_stamp_id)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS ix_activity_logs_source_message_id "
+        "ON activity_logs (source_message_id) WHERE source_message_id IS NOT NULL",
+    ):
+        try:
+            cur.execute(stmt)
+        except sqlite3.OperationalError as exc:
+            print(f"  ! activity_logs index skipped: {exc}")
+
+    return added
+
+
+def ensure_contacts(cur: sqlite3.Cursor) -> int:
+    """Create the contacts / contact_facts tables (idempotent).
+
+    A Contact owns the pipeline stage and the next-touch date; activity entries
+    attach to it. Created whenever a name is known — never gated on whether the
+    person replied.
+    """
+    added = 0
+
+    cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='contacts'")
+    if not cur.fetchone():
+        cur.execute(
+            """
+            CREATE TABLE contacts (
+                id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                name             TEXT    NOT NULL,
+                email            TEXT,
+                phone            TEXT,
+                title            TEXT,
+                company_id       INTEGER REFERENCES companies(id),
+                contact_type     TEXT    NOT NULL DEFAULT 'tenant',
+                stage            TEXT    NOT NULL DEFAULT 'Sent',
+                stage_changed_at DATE,
+                next_touch_date  DATE,
+                responded        BOOLEAN NOT NULL DEFAULT 0,
+                triaged          BOOLEAN NOT NULL DEFAULT 0,
+                auto_created     BOOLEAN NOT NULL DEFAULT 0,
+                created_at       DATETIME,
+                updated_at       DATETIME
+            )
+            """
+        )
+        print("  + contacts (table created)")
+        added += 1
+    else:
+        # Table exists from an earlier run — top up any column added since.
+        for col, col_def in {
+            "name":             "TEXT",
+            "email":            "TEXT",
+            "phone":            "TEXT",
+            "title":            "TEXT",
+            "company_id":       "INTEGER",
+            "contact_type":     "TEXT DEFAULT 'tenant'",
+            "stage":            "TEXT DEFAULT 'Sent'",
+            "stage_changed_at": "DATE",
+            "next_touch_date":  "DATE",
+            "responded":        "BOOLEAN DEFAULT 0",
+            "triaged":          "BOOLEAN DEFAULT 0",
+            "auto_created":     "BOOLEAN DEFAULT 0",
+            "created_at":       "DATETIME",
+            "updated_at":       "DATETIME",
+        }.items():
+            try:
+                added += _add_column(cur, "contacts", col, col_def)
+            except sqlite3.OperationalError as exc:
+                if "duplicate column name" not in str(exc).lower():
+                    print(f"  ! contacts.{col} add skipped: {exc}")
+
+    # Email is the identity key for the inbound-mail resolver, so it must be
+    # unique — but only where present: any number of contacts may have no email.
+    for stmt in (
+        "CREATE UNIQUE INDEX IF NOT EXISTS ix_contacts_email "
+        "ON contacts (email) WHERE email IS NOT NULL",
+        "CREATE INDEX IF NOT EXISTS ix_contacts_company_id ON contacts (company_id)",
+        "CREATE INDEX IF NOT EXISTS ix_contacts_next_touch_date "
+        "ON contacts (next_touch_date)",
+    ):
+        try:
+            cur.execute(stmt)
+        except sqlite3.OperationalError as exc:
+            print(f"  ! contacts index skipped: {exc}")
+
+    cur.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='contact_facts'"
+    )
+    if not cur.fetchone():
+        cur.execute(
+            """
+            CREATE TABLE contact_facts (
+                id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                contact_id       INTEGER NOT NULL REFERENCES contacts(id),
+                fact_text        TEXT    NOT NULL,
+                source_entry_id  INTEGER REFERENCES activity_logs(id),
+                learned_date     DATE    NOT NULL,
+                superseded_by_id INTEGER REFERENCES contact_facts(id),
+                is_active        BOOLEAN NOT NULL DEFAULT 1,
+                created_at       DATETIME
+            )
+            """
+        )
+        print("  + contact_facts (table created)")
+        added += 1
+
+    for stmt in (
+        "CREATE INDEX IF NOT EXISTS ix_contact_facts_contact_id "
+        "ON contact_facts (contact_id)",
+        "CREATE INDEX IF NOT EXISTS ix_contact_facts_source_entry_id "
+        "ON contact_facts (source_entry_id)",
+    ):
+        try:
+            cur.execute(stmt)
+        except sqlite3.OperationalError as exc:
+            print(f"  ! contact_facts index skipped: {exc}")
+
     return added
 
 
@@ -644,6 +793,53 @@ def ensure_companies(cur: sqlite3.Cursor) -> int:
     # ── Building class (composite Match Score class-fit factor) ───────────────
     added += _add_column(cur, "companies", "current_building_class", "TEXT")
 
+    # ── Contact-thread bookkeeping ────────────────────────────────────────────
+    # triaged flips to 1 on any real engagement (never through a manual queue);
+    # email_domain resolves an inbound sender to an existing company instead of
+    # creating a duplicate; company_type stays NULL for auto-created companies
+    # so a guess never hardens into a fact. Each guarded individually so a
+    # partially-migrated DB never aborts startup.
+    for _col, _def in (
+        ("triaged",      "BOOLEAN NOT NULL DEFAULT 0"),
+        ("auto_created", "BOOLEAN NOT NULL DEFAULT 0"),
+        ("email_domain", "TEXT"),
+        ("company_type", "TEXT"),
+        # Conversation-sourced claims. Deliberately separate from the
+        # CoStar-sourced fields above: a tenant's claim never silently
+        # overwrites verified data, and nothing here feeds scoring. A claim
+        # reaches a scoring field only when Jack accepts it.
+        # _resolution: NULL = pending, 'accepted' = copied across,
+        # 'rejected' = verified value kept. Without it a rejected claim would
+        # re-prompt forever.
+        ("contact_reported_lease_expiry",                 "DATE"),
+        ("contact_reported_lease_expiry_source_entry_id", "INTEGER"),
+        ("contact_reported_lease_expiry_reported_at",     "DATE"),
+        ("contact_reported_lease_expiry_resolution",      "TEXT"),
+        ("contact_reported_rent_psf",                     "REAL"),
+        ("contact_reported_rent_psf_source_entry_id",     "INTEGER"),
+        ("contact_reported_rent_psf_reported_at",         "DATE"),
+        ("contact_reported_rent_psf_resolution",          "TEXT"),
+        ("contact_reported_sf",                           "INTEGER"),
+        ("contact_reported_sf_source_entry_id",           "INTEGER"),
+        ("contact_reported_sf_reported_at",               "DATE"),
+        ("contact_reported_sf_resolution",                "TEXT"),
+        # Small marker on the company record when Jack rejects a claim — the
+        # disagreement is itself a lead (renewal option, sublease, phased expiry).
+        ("has_data_conflict", "BOOLEAN NOT NULL DEFAULT 0"),
+    ):
+        try:
+            added += _add_column(cur, "companies", _col, _def)
+        except Exception as _exc:
+            print(f"  ! companies.{_col} add skipped: {_exc}")
+
+    try:
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS ix_companies_email_domain "
+            "ON companies (email_domain)"
+        )
+    except sqlite3.OperationalError as _exc:
+        print(f"  ! companies.email_domain index skipped: {_exc}")
+
     # ── Medical/non-medical classification (soft match penalty) ────────────
     # Defaults to 0 (false) for all existing rows. Guarded so a partially-migrated
     # DB can never abort startup on this single column.
@@ -833,6 +1029,7 @@ def run() -> None:
             pass
         olog_fixed = 0
     act_added      = ensure_activity_logs(cur)
+    contact_added  = ensure_contacts(cur)
     doc_added      = ensure_documents(cur)
     obs_added      = ensure_observations(cur)
     intel_added    = ensure_intel_tables(cur)
@@ -868,7 +1065,7 @@ def run() -> None:
     conn.close()
 
     total = (
-        prop_added + comp_added + olog_added + olog_fixed + act_added
+        prop_added + comp_added + olog_added + olog_fixed + act_added + contact_added
         + doc_added + obs_added + draft_added + bf_added + tcf_added + bf_class_added + nullable_fixed
     )
     if total:
