@@ -147,6 +147,32 @@ class Company(Base):
     contact_reported_sf_reported_at     = Column(Date, nullable=True)
     contact_reported_sf_resolution      = Column(String, nullable=True)
 
+    # ── Lease document ──────────────────────────────────────────────────────
+    # The signed lease, linked to the company record. lease_file_name holds a
+    # BARE FILENAME — never a path. The folder it lives in is one setting
+    # (settings.leases_folder in config.py) joined at read time by
+    # services/lease_storage.resolve_lease_path(), so moving the folder is a
+    # one-setting change rather than a migration over every row. Nothing
+    # machine- or user-specific is ever written into a data column.
+    #
+    # lease_extraction_json is the FULL extraction as returned by the model:
+    # every field with the clause text it came from, including the values Jack
+    # unchecked. It is the audit trail — any lease-sourced field on this record
+    # traces back to its clause through it.
+    #
+    # Lease content is private. It never enters generated outreach copy.
+    lease_file_name       = Column(String, nullable=True)
+    lease_uploaded_at     = Column(DateTime, nullable=True)
+    lease_extraction_json = Column(Text, nullable=True)
+
+    # Which fields on this record came off the lease rather than CoStar. A lease
+    # outranks CoStar, so the marker matters: it tells Jack (and the next
+    # import) that the value was read off the signed document.
+    # lease_expiry_source already carries this for the expiry — these two cover
+    # the other two fields a confirmed extraction writes.
+    current_address_source     = Column(String, nullable=True)
+    current_sf_occupied_source = Column(String, nullable=True)
+
     # Set when Jack rejects a claim. A tenant who believes their lease ends a
     # year later than the record is itself a lead — a renewal option, a
     # sublease, a phased expiry — so the disagreement is surfaced, not discarded.

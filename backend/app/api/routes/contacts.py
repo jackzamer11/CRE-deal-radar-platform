@@ -11,16 +11,24 @@ from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import func, or_
+from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import Session, joinedload
 
 from app.database import get_db
 from app.models.activity import ActivityLog
 from app.models.company import Company
-from app.models.contact import Contact, ContactFact, CONTACT_STAGES, CONTACT_TYPES
+from app.models.contact import (
+    Contact, ContactFact, CLOSED_STAGE, CONTACT_STAGES, CONTACT_TYPES,
+)
+from app.schemas.company import months_until_lease_expiry
 from app.services.contact_service import (
-    STAGE_CHANGE_ACTION, active_facts, create_fact, mark_engaged,
-    normalize_email, record_stage_change, resolve_contact_by_email,
+    STAGE_CHANGE_ACTION, active_facts, apply_closed_stage_bookkeeping,
+    create_fact, mark_engaged, normalize_email, record_stage_change,
+    resolve_contact_by_email,
+)
+from app.services.lease_storage import lease_file_exists
+from app.services.signal_engine import (
+    is_in_peak_expiry_window, peak_window_date_bounds,
 )
 
 router = APIRouter(prefix="/contacts", tags=["contacts"])
@@ -59,8 +67,13 @@ class ContactOut(BaseModel):
     contact_type: str = "tenant"
     stage: str = "Sent"
     stage_changed_at: Optional[date] = None
+    # Set when the stage moves to Closed, cleared when it moves off.
+    closed_at: Optional[date] = None
     next_touch_date: Optional[date] = None
     responded: bool = False
+    # True once Jack has placed this tenant, permanently. Never cleared by
+    # moving off Closed.
+    is_past_client: bool = False
     triaged: bool = False
     auto_created: bool = False
     company_name: Optional[str] = None
@@ -83,12 +96,21 @@ class ContactListRow(BaseModel):
     contact_type: str = "tenant"
     stage: str = "Sent"
     stage_changed_at: Optional[date] = None
+    closed_at: Optional[date] = None
     days_in_stage: Optional[int] = None
     next_touch_date: Optional[date] = None
     overdue: bool = False
     responded: bool = False
     triaged: bool = False
     auto_created: bool = False
+    # The past-client marker. is_past_client says Jack placed them once;
+    # past_client_reentry says their company's lease has come back around into
+    # the 6-9 month window, which is why a Closed contact is on this list at
+    # all. "You placed this tenant in this building" is the strongest opening
+    # line available on that call, so the row has to say so.
+    is_past_client: bool = False
+    past_client_reentry: bool = False
+    lease_expiry_months: Optional[int] = None
     company_id: Optional[int] = None
     company_name: Optional[str] = None
     entry_count: int = 0
@@ -184,8 +206,24 @@ class ThreadHeader(BaseModel):
     company_name: Optional[str] = None
     company_business_id: Optional[str] = None
     company_lease_expiry: Optional[date] = None
+    company_lease_expiry_months: Optional[int] = None
     company_sf: Optional[int] = None
     company_submarket: Optional[str] = None
+    company_address: Optional[str] = None
+    # Which of the three fields above came off the signed lease rather than
+    # CoStar. A lease outranks CoStar, so the Deal card says which is which.
+    company_lease_expiry_source: Optional[str] = None
+    company_address_source: Optional[str] = None
+    company_sf_source: Optional[str] = None
+    # The linked lease document. lease_file_name is a bare filename; the link
+    # the card renders goes through the backend, which resolves it against the
+    # configured folder and says so plainly when the file is not there.
+    company_lease_file_name: Optional[str] = None
+    company_lease_uploaded_at: Optional[datetime] = None
+    company_lease_file_missing: bool = False
+    has_lease_extraction: bool = False
+    # Past-client re-entry, same meaning as on the list row.
+    past_client_reentry: bool = False
     has_data_conflict: bool = False
     conflicts: List[ConflictOut] = []
 
@@ -205,6 +243,35 @@ def _contact_out(contact: Contact, company_name: Optional[str] = None) -> Contac
     elif contact.company is not None:
         out.company_name = contact.company.name
     return out
+
+
+def _company_expiry_months(company: Optional[Company]) -> Optional[int]:
+    """Months until this company's lease expires.
+
+    Re-derived from lease_expiry_date whenever there is one — the stored
+    lease_expiry_months column goes stale relative to the date (a direct edit,
+    or a confirmed lease extraction writing a new expiry), and the queue must
+    not surface a past client on a number that is a year out of date.
+    """
+    if company is None:
+        return None
+    if company.lease_expiry_date:
+        return months_until_lease_expiry(company.lease_expiry_date)
+    return company.lease_expiry_months
+
+
+def _is_past_client_reentry(
+    contact: Optional[Contact], lease_expiry_months: Optional[int],
+) -> bool:
+    """True when a past client's company has come back into the 6-9 month window.
+
+    The window test is signal_engine.is_in_peak_expiry_window() — the same
+    function behind the scoring tier, so the queue and the score can never
+    disagree about what "the window" means.
+    """
+    if contact is None or not contact.is_past_client:
+        return False
+    return is_in_peak_expiry_window(lease_expiry_months)
 
 
 def _get_contact(db: Session, contact_id: int) -> Contact:
@@ -573,6 +640,7 @@ def list_contacts(
     triaged: Optional[bool] = None,
     responded: Optional[bool] = None,
     stage: Optional[str] = None,
+    include_closed: bool = False,
     q: Optional[str] = None,
     limit: int = 500,
     offset: int = 0,
@@ -583,9 +651,18 @@ def list_contacts(
     Computed in a single aggregated query — a LEFT JOIN with GROUP BY for the
     counts and latest date, plus one bulk fetch for the latest entry's text. No
     per-contact query loop, so this does not degrade as contacts accumulate.
+    Adding the stage and past-client filters kept that shape: both are WHERE
+    clauses on the same query.
 
     Default sort: overdue next-touch first (soonest due first), then most
     recent activity. Paginated with no hard ceiling.
+
+    Closed contacts are excluded by default — a placed deal is not work in the
+    queue — and come back three ways: `stage=Closed`, `include_closed=true`, or
+    by being a past client whose company has re-entered the 6-9 month window.
+    That last one is the point of the whole mechanic: they reappear on their new
+    expiry with their stage still Closed and a past-client marker, never reset
+    to Sent. Search (/contacts/search) reaches them regardless.
     """
     # Stage-change dividers are excluded throughout: entry count means real
     # touches, and a row reading "Stage: Sent -> Replied" is not the last thing
@@ -608,6 +685,11 @@ def list_contacts(
         db.query(
             Contact,
             Company.name.label("company_name"),
+            # Selected, not lazy-loaded: the re-entry marker needs each row's
+            # expiry, and touching contact.company per row would turn this back
+            # into a query loop.
+            Company.lease_expiry_date.label("company_lease_expiry_date"),
+            Company.lease_expiry_months.label("company_lease_expiry_months"),
             func.coalesce(counts.c.entry_count, 0).label("entry_count"),
             counts.c.latest_date.label("latest_date"),
         )
@@ -623,6 +705,21 @@ def list_contacts(
         q_rows = q_rows.filter(Contact.responded.is_(responded))
     if stage:
         q_rows = q_rows.filter(Contact.stage == stage)
+    elif not include_closed:
+        # Same mechanic as untriaged: out of the default list, one filter away —
+        # EXCEPT a past client whose company has come back into the 6-9 month
+        # window, who belongs in the queue precisely because of that. One OR in
+        # the existing WHERE clause, so this is still a single query.
+        window_lo, window_hi = peak_window_date_bounds()
+        q_rows = q_rows.filter(or_(
+            Contact.stage != CLOSED_STAGE,
+            and_(
+                Contact.is_past_client.is_(True),
+                Company.lease_expiry_date.isnot(None),
+                Company.lease_expiry_date >= window_lo,
+                Company.lease_expiry_date < window_hi,
+            ),
+        ))
     if q:
         like = f"%{q.strip().lower()}%"
         q_rows = q_rows.filter(or_(
@@ -664,9 +761,15 @@ def list_contacts(
             latest_text.setdefault(log.contact_id, log)
 
     out: List[ContactListRow] = []
-    for contact, company_name, entry_count, latest_date in rows:
+    for (
+        contact, company_name, expiry_date, expiry_months, entry_count, latest_date,
+    ) in rows:
         latest = latest_text.get(contact.id)
         ntd = contact.next_touch_date
+        # Re-derived from the date when there is one — see _company_expiry_months.
+        months = (
+            months_until_lease_expiry(expiry_date) if expiry_date else expiry_months
+        )
         out.append(ContactListRow(
             id=contact.id,
             name=contact.name,
@@ -675,12 +778,16 @@ def list_contacts(
             contact_type=contact.contact_type or "tenant",
             stage=contact.stage or "Sent",
             stage_changed_at=contact.stage_changed_at,
+            closed_at=contact.closed_at,
             days_in_stage=_days_between(contact.stage_changed_at),
             next_touch_date=ntd,
             overdue=bool(ntd and ntd <= today),
             responded=bool(contact.responded),
             triaged=bool(contact.triaged),
             auto_created=bool(contact.auto_created),
+            is_past_client=bool(contact.is_past_client),
+            past_client_reentry=_is_past_client_reentry(contact, months),
+            lease_expiry_months=months,
             company_id=contact.company_id,
             company_name=company_name,
             entry_count=int(entry_count or 0),
@@ -744,6 +851,10 @@ def create_contact(payload: ContactCreate, db: Session = Depends(get_db)):
         auto_created=False,
         responded=False,
     )
+    # A contact created directly at Closed is still Jack setting Closed, so the
+    # same bookkeeping applies — nothing auto-sets it, but nothing ignores it
+    # either.
+    apply_closed_stage_bookkeeping(contact, payload.stage)
     db.add(contact)
     db.flush()
     if contact.triaged:
@@ -783,19 +894,28 @@ def get_contact(contact_id: int, db: Session = Depends(get_db)):
     )
     latest = entries[0] if entries else None
 
-    # The open loop: what Jack owes them, or what they owe Jack. The newest
-    # entry carrying a follow-up action wins; failing that, an unanswered
-    # outbound is a loop on their side.
+    # The open loop: what Jack owes them, or what they owe Jack — derived from
+    # the NEWEST real entry and nothing else.
+    #
+    # This used to scan the whole thread for the most recent entry carrying a
+    # follow_up_action, which meant a months-old follow-up outlived the
+    # conversation: Richard Tedrow's header read "No response yet - consider
+    # another follow-up if silence continues" (from a 23 July entry) while the
+    # newest entry said the lease was signed and the deal closed. A stale open
+    # loop is worse than an empty one, so if the newest entry carries no open
+    # loop, nothing older is allowed to fill the slot.
     open_loop = None
-    for e in entries:
-        if e.follow_up_action:
-            open_loop = e.follow_up_action
-            break
-    if open_loop is None and latest is not None:
-        if (latest.direction or "outbound") == "outbound":
+    if latest is not None and (contact.stage or "Sent") != CLOSED_STAGE:
+        if latest.follow_up_action:
+            open_loop = latest.follow_up_action
+        elif (latest.direction or "outbound") == "outbound":
             open_loop = "Awaiting their reply"
         else:
             open_loop = "They replied — owed a response"
+    # A Closed contact has no open loop at all: the deal is placed and there is
+    # nothing owed in either direction until their lease clock comes back
+    # around. Falling through to "Awaiting their reply" on a signed deal is the
+    # same wrong answer in a different costume.
 
     facts = active_facts(db, contact_id)
     # Two lines of prose, weighted toward recent (the query is already
@@ -806,6 +926,9 @@ def get_contact(contact_id: int, db: Session = Depends(get_db)):
     ]
 
     conflicts = pending_conflicts(db, company)
+
+    lease_file_name = company.lease_file_name if company else None
+    months = _company_expiry_months(company)
 
     return ThreadHeader(
         contact=_contact_out(contact, company.name if company else None),
@@ -820,8 +943,26 @@ def get_contact(contact_id: int, db: Session = Depends(get_db)):
         company_name=company.name if company else None,
         company_business_id=company.company_id if company else None,
         company_lease_expiry=company.lease_expiry_date if company else None,
+        company_lease_expiry_months=months,
         company_sf=company.current_sf_occupied if company else None,
         company_submarket=company.current_submarket if company else None,
+        company_address=company.current_address if company else None,
+        company_lease_expiry_source=company.lease_expiry_source if company else None,
+        company_address_source=(
+            getattr(company, "current_address_source", None) if company else None
+        ),
+        company_sf_source=(
+            getattr(company, "current_sf_occupied_source", None) if company else None
+        ),
+        company_lease_file_name=lease_file_name,
+        company_lease_uploaded_at=company.lease_uploaded_at if company else None,
+        # Checked here so the card can say "the file is missing" instead of
+        # handing Jack a link that does nothing.
+        company_lease_file_missing=bool(
+            lease_file_name and not lease_file_exists(lease_file_name)
+        ),
+        has_lease_extraction=bool(company and company.lease_extraction_json),
+        past_client_reentry=_is_past_client_reentry(contact, months),
         has_data_conflict=bool(company.has_data_conflict) if company else False,
         conflicts=conflicts,
     )
@@ -888,6 +1029,9 @@ def update_contact(
     if stage_moved:
         contact.stage = payload.stage
         contact.stage_changed_at = date.today()
+        # closed_at set/cleared, is_past_client set and never cleared. One
+        # writer, in the service, so the asymmetry is not re-derived per route.
+        apply_closed_stage_bookkeeping(contact, payload.stage)
 
     for field in ("name", "phone", "title", "company_id", "contact_type", "responded"):
         value = getattr(payload, field)

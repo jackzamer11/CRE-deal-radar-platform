@@ -8,10 +8,25 @@ from sqlalchemy.orm import relationship
 
 from app.database import Base
 
-# Contact stages — the same six the Activity Log has always used. Stage now
-# belongs to the PERSON, not to an individual entry: an entry records what
-# happened, the contact records where the relationship stands.
-CONTACT_STAGES = ["Sent", "Replied", "Interested", "In Play", "Not Interested", "Dormant"]
+# Contact stages. Stage now belongs to the PERSON, not to an individual entry:
+# an entry records what happened, the contact records where the relationship
+# stands.
+#
+# Closed is the seventh and it means Jack PLACED them — deal done, lease signed,
+# nothing to do until their lease clock comes back around. It is not an end to
+# the relationship: a Closed contact keeps their whole thread, stays searchable,
+# and resurfaces on their new expiry (see CLOSED_STAGE / is_past_client below).
+# Nothing auto-sets it — only Jack.
+CONTACT_STAGES = [
+    "Sent", "Replied", "Interested", "In Play", "Not Interested", "Dormant",
+    "Closed",
+]
+
+# The one place the Closed string is written down. Closed drops a contact out of
+# the default By Contact list and out of the active outreach queue (the same
+# mechanic as untriaged), so every filter reads it from here rather than
+# spelling it inline.
+CLOSED_STAGE = "Closed"
 
 # owner is defined here so the owner side never needs a second migration; only
 # tenant and counterparty surface in the UI this build.
@@ -51,8 +66,21 @@ class Contact(Base):
     )
     # When the stage last changed — drives "days in stage" in the thread header.
     stage_changed_at = Column(Date, nullable=True)
+    # Set when the stage moves TO Closed, cleared when it moves off. Distinct
+    # from stage_changed_at, which any stage move rewrites: this is the date
+    # the deal was placed.
+    closed_at = Column(Date, nullable=True)
 
     next_touch_date = Column(Date, nullable=True, index=True)
+
+    # Set True the first time the stage moves to Closed, and NEVER cleared:
+    # moving off Closed (a renewal falls through, the deal reopens) does not undo
+    # the fact that Jack placed this tenant once. It is what lets the contact
+    # resurface on their next expiry marked as a past client — "you placed this
+    # tenant in this building" is the strongest opening line available.
+    is_past_client = Column(
+        Boolean, nullable=False, default=False, server_default=text("0"),
+    )
 
     responded    = Column(Boolean, nullable=False, default=False, server_default=text("0"))
     triaged      = Column(Boolean, nullable=False, default=False, server_default=text("0"))

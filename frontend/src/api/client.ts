@@ -31,6 +31,8 @@ import type {
   TimelinePage,
   CompanyTimelinePage,
   DataConflict,
+  LeaseStatus,
+  LeaseConfirmResult,
 } from '../types'
 
 const api = axios.create({
@@ -446,6 +448,10 @@ export interface ContactFilters {
   triaged?: boolean
   responded?: boolean
   stage?: string
+  // Closed contacts are out of the default list. Pass stage:'Closed' to see
+  // only them, or include_closed:true to see everything. A past client whose
+  // company is back in the 6-9 month window comes back on its own.
+  include_closed?: boolean
   q?: string
   limit?: number
   offset?: number
@@ -826,3 +832,46 @@ export const mineActivityLogs = (
   force = false,
 ): Promise<ActivityMineResult> =>
   api.post('/intel/activity/mine', { limit, force }).then(r => r.data)
+
+// ── Lease documents ─────────────────────────────────────────────────────────
+// The stored filename is bare; the folder is a backend setting. The file link
+// therefore goes through the API rather than a file:// URL, which a browser
+// will not open from a page.
+
+export const getLease = (companyPk: number): Promise<LeaseStatus> =>
+  api.get(`/leases/companies/${companyPk}`).then(r => r.data)
+
+// Stores and links the file FIRST, then reads it. An extraction failure comes
+// back as extraction_error on a successful response — the document is never
+// lost because the reading failed.
+export const uploadLease = (companyPk: number, file: File): Promise<LeaseStatus> => {
+  const body = new FormData()
+  body.append('file', file)
+  return api
+    .post(`/leases/companies/${companyPk}/upload`, body, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+    .then(r => r.data)
+}
+
+// Re-read an already-stored lease — for after an API key is added.
+export const reextractLease = (companyPk: number): Promise<LeaseStatus> =>
+  api.post(`/leases/companies/${companyPk}/reextract`).then(r => r.data)
+
+// Writes expiry, address and SF to the company record, marked lease-sourced.
+// Only the fields left checked; everything found is checked by default.
+export const confirmLeaseExtraction = (
+  companyPk: number,
+  acceptedFields: string[],
+): Promise<LeaseConfirmResult> =>
+  api
+    .post(`/leases/companies/${companyPk}/confirm`, { accepted_fields: acceptedFields })
+    .then(r => r.data)
+
+export const unlinkLease = (companyPk: number): Promise<LeaseStatus> =>
+  api.delete(`/leases/companies/${companyPk}`).then(r => r.data)
+
+// The URL the "open the lease" link points at. Not a request — the browser
+// navigates to it, and a missing file comes back as a plain 404 message.
+export const leaseFileUrl = (companyPk: number): string =>
+  `/api/leases/companies/${companyPk}/file`

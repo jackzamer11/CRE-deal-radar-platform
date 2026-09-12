@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session
 
 from app.models.activity import ActivityLog
 from app.models.company import Company
-from app.models.contact import Contact, ContactFact
+from app.models.contact import Contact, ContactFact, CLOSED_STAGE
 
 # Domains where the sender's address says nothing about who they work for.
 # A contact from one of these gets a null company_id — never a company called
@@ -115,6 +115,31 @@ def mark_engaged(db: Session, contact: Optional[Contact],
 def stage_change_label(old_stage: Optional[str], new_stage: Optional[str]) -> str:
     """The one-line text a divider renders when it has nothing else to show."""
     return f"Stage: {old_stage or 'Sent'} → {new_stage or 'Sent'}"
+
+
+def apply_closed_stage_bookkeeping(
+    contact: Contact, new_stage: Optional[str], today: Optional[date] = None,
+) -> None:
+    """Keep closed_at and is_past_client in step with a stage move.
+
+    The single writer for both columns, so the asymmetry between them lives in
+    one place:
+
+      - closed_at is SET when the stage moves to Closed and CLEARED when it
+        moves off. It is the date the deal was placed, not a stage timestamp.
+      - is_past_client is set with it and NEVER cleared. If a renewal falls
+        through and the contact comes back to In Play, Jack still placed this
+        tenant once — that is a permanent fact about the relationship, and it is
+        what surfaces them as a past client when their next expiry comes around.
+
+    Closed is never set automatically anywhere; this only reacts to a stage Jack
+    chose. Does not commit — the caller owns the transaction.
+    """
+    if (new_stage or "Sent") == CLOSED_STAGE:
+        contact.closed_at = today or date.today()
+        contact.is_past_client = True
+    else:
+        contact.closed_at = None
 
 
 def record_stage_change(

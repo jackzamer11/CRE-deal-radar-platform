@@ -5,8 +5,10 @@ import {
   Upload, Pencil, Check, AlertTriangle, Zap, Send, Building2, Trash2,
 } from 'lucide-react'
 import { getCompanies, getCompany, updateCompanyLease, updateCompanyBuildingClass, unsnoozeCompany, deleteCompany, getBenchmarks } from '../api/client'
+import LeaseCard from '../components/LeaseCard'
 import type { SubmarketBenchmark } from '../api/client'
 import type { CompanyListOut, CompanyOut, RepClass } from '../types'
+import { LEASE_SOURCE } from '../types'
 import { PriorityBadge, MedicalBadge } from '../components/PriorityBadge'
 import ScoreBadge from '../components/ScoreBadge'
 import AddCompanyModal from '../components/AddCompanyModal'
@@ -237,6 +239,19 @@ export default function Companies() {
       await unsnoozeCompany(companyId)
       load()
     } catch { /* no-op */ }
+  }
+
+  // Re-read the open record — used after a confirmed lease extraction, whose
+  // written expiry drives the queue downstream.
+  const reloadSelected = async () => {
+    if (!selected) return
+    try {
+      const full = await getCompany(selected.company_id)
+      setSelected(full)
+      await load()
+    } catch {
+      // Leave the panel as it is; the confirm itself already succeeded.
+    }
   }
 
   const handleSelectCompany = async (c: CompanyListOut) => {
@@ -698,6 +713,15 @@ export default function Companies() {
                         <span className="text-xs text-ink-secondary font-medium mono">
                           {selected.lease_expiry_months != null ? `${selected.lease_expiry_months} months` : '—'}
                         </span>
+                        {selected.lease_expiry_source === LEASE_SOURCE && (
+                          <span
+                            className="text-[9px] px-1 py-0.5 rounded bg-teal-500/10 text-teal-300
+                                       border border-teal-500/30"
+                            title="Read off the signed lease and confirmed — outranks CoStar."
+                          >
+                            lease
+                          </span>
+                        )}
                         <button onClick={openLeaseEdit} title="Enter lease expiry" className="text-ink-muted hover:text-accent-blue transition-colors">
                           <Pencil size={11} />
                         </button>
@@ -705,11 +729,26 @@ export default function Companies() {
                     )}
                   </div>
 
+                  {/* A lease outranks CoStar, so the label says which this is. */}
                   <Row
-                    label="SF Occupied (CoStar)"
+                    label={
+                      selected.current_sf_occupied_source === LEASE_SOURCE
+                        ? 'Rentable SF (lease)'
+                        : 'SF Occupied (CoStar)'
+                    }
                     value={selected.current_sf_occupied != null ? `${selected.current_sf_occupied.toLocaleString()} SF` : 'Unknown'}
                   />
                   <Row label="Submarket" value={selected.current_submarket || '—'} />
+                  {selected.current_address && (
+                    <Row
+                      label={
+                        selected.current_address_source === LEASE_SOURCE
+                          ? 'Premises address (lease)'
+                          : 'Address'
+                      }
+                      value={selected.current_address}
+                    />
+                  )}
 
                   {/* Current Building Class dropdown — backfill without recreating the tenant */}
                   <div className="flex justify-between items-center">
@@ -729,6 +768,14 @@ export default function Companies() {
                   </div>
 
                   <Row label="Expansion Signal" value={selected.expansion_signal ? '✓ Active' : '—'} />
+
+                  {/* The signed lease. Same card as the thread's Deal card:
+                      upload, link, and the extraction review panel. Reloads the
+                      record on confirm, since the expiry drives the queue. */}
+                  <LeaseCard
+                    companyPk={selected.id}
+                    onConfirmed={() => void reloadSelected()}
+                  />
 
                   {/* Tenant Rep */}
                   <div className="flex justify-between items-start pt-0.5">

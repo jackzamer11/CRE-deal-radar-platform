@@ -64,6 +64,7 @@ const STAGE_CHIP: Record<ActivityStage, string> = {
   'In Play':        'bg-amber-500/15 text-amber-400 border-amber-500/30',
   'Not Interested': 'bg-red-500/15 text-red-400 border-red-500/30',
   'Dormant':        'bg-surface-muted text-ink-muted border-surface-border',
+  'Closed':         'bg-teal-500/15 text-teal-300 border-teal-500/40',
 }
 
 function StageChip({ stage }: { stage: ActivityStage }) {
@@ -476,6 +477,9 @@ export default function Dashboard() {
   const tenantActions     = briefing.tenant_match_actions ?? []
   const acqTargets        = briefing.acquisition_targets ?? []
   const expiredLeases     = briefing.expired_leases ?? []
+  // Past clients whose lease clock has come back around into the 6-9 month
+  // window. Computed backend-side from the same window the scoring tier uses.
+  const pastClientReentries = briefing.past_client_reentries ?? []
   const returnedSnoozeIds = new Set(briefing.returned_from_snooze_property_ids ?? [])
 
   // Section A is split into Not Contacted / Contacted columns. A row counts as
@@ -676,6 +680,75 @@ export default function Dashboard() {
             void silentRefresh()
           }}
         />
+      )}
+
+      {/* Past clients back in the window — the warmest calls on the board, so
+          they render above everything else. Stage stays Closed; surfacing a
+          past client is not reopening them. */}
+      {pastClientReentries.length > 0 && (
+        <section className="mb-10">
+          <SectionHeader
+            icon={History}
+            color="text-teal-300"
+            title="Past Clients — Lease Back in the Window"
+            count={pastClientReentries.length}
+          />
+          <div className="space-y-3">
+            {pastClientReentries.map(r => (
+              <div
+                key={r.contact_id}
+                className="bg-surface-card border border-teal-400/40 rounded-xl p-4 flex items-start gap-4"
+              >
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap mb-1.5">
+                    <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-bold tracking-wide
+                                     bg-teal-500/20 text-teal-200 border border-teal-400/50">
+                      ● PAST CLIENT
+                    </span>
+                    <span className="text-sm font-semibold text-ink-primary truncate">
+                      {r.contact_name}
+                    </span>
+                    {r.company_name && (
+                      <span className="text-[11px] text-emerald-400 truncate">{r.company_name}</span>
+                    )}
+                    {/* Their stage as it stands — Closed, not reset to Sent. */}
+                    <StageChip stage={r.contact_stage} />
+                  </div>
+                  <div className="flex items-center gap-3 text-[11px] text-ink-secondary flex-wrap">
+                    {r.lease_expiry_months != null && (
+                      <span className="text-teal-300 font-semibold">
+                        {r.lease_expiry_months}mo to expiry
+                      </span>
+                    )}
+                    {r.submarket && <span>{r.submarket}</span>}
+                    {r.sf_occupied != null && <span>{r.sf_occupied.toLocaleString()} SF</span>}
+                    {r.closed_at && <span>Placed {r.closed_at}</span>}
+                    {r.lease_sourced_expiry && (
+                      <span
+                        className="text-[9px] px-1 py-0.5 rounded bg-teal-500/10 text-teal-300
+                                   border border-teal-500/30"
+                        title="Expiry read off the signed lease."
+                      >
+                        lease-sourced expiry
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-[10px] text-ink-muted mt-1">
+                    You placed this tenant in this building — open with that.
+                  </p>
+                </div>
+                <button
+                  onClick={() => navigate(`/activity?contact=${r.contact_id}`)}
+                  className="flex-shrink-0 flex items-center gap-1 text-[10px] px-3 py-1.5 rounded-lg
+                             bg-teal-600 hover:bg-teal-700 text-white font-semibold transition-colors"
+                >
+                  <MessageSquarePlus size={11} />
+                  Open Thread
+                </button>
+              </div>
+            ))}
+          </div>
+        </section>
       )}
 
       {/* Expired Leases — Action Required (renders above Section A) */}

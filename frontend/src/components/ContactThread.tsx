@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   ArrowLeft, ArrowDownLeft, ArrowUpRight, Building2, Check, ChevronDown,
-  ChevronRight, Clock, Mail, Pencil, Phone, Plus, Trash2, TriangleAlert, Users,
-  UserRound, X,
+  ChevronRight, Clock, History, Mail, Pencil, Phone, Plus, Trash2,
+  TriangleAlert, Users, UserRound, X,
 } from 'lucide-react'
 import {
   acceptConflict, addContactFact, createActivity, deleteContact,
@@ -15,9 +15,11 @@ import type {
   ThreadHeader, TimelineEntry,
 } from '../types'
 import {
-  CHANNELS, CONTACT_TYPE_LABELS, STAGES, STAGE_CHANGE_ACTION, UI_CONTACT_TYPES,
+  CHANNELS, CLOSED_STAGE, CONTACT_STAGES, CONTACT_TYPE_LABELS,
+  LEASE_SOURCE, STAGE_CHANGE_ACTION, UI_CONTACT_TYPES,
 } from '../types'
 import EntryEditor from './EntryEditor'
+import LeaseCard from './LeaseCard'
 import StageChangeDivider from './StageChangeDivider'
 
 const OUTREACH_TYPE_LABELS: Record<string, string> = {
@@ -40,6 +42,7 @@ const STAGE_ACTIVE: Record<ActivityStage, string> = {
   'In Play':        'bg-amber-500/20 text-amber-300 border-amber-500/50',
   'Not Interested': 'bg-red-500/20 text-red-300 border-red-500/50',
   'Dormant':        'bg-surface-muted text-ink-secondary border-ink-muted/40',
+  'Closed':         'bg-teal-500/20 text-teal-300 border-teal-500/50',
 }
 
 const fmtDate = (d: string | null) =>
@@ -406,14 +409,36 @@ function WhereWeAre({
         )}
       </div>
 
+      {/* A placed tenant whose lease has come back around. This is the line
+          Jack opens the call with, so it sits above the open loop. */}
+      {header.past_client_reentry && (
+        <div className="mb-3 bg-teal-500/10 border border-teal-400/40 rounded-lg px-3 py-2">
+          <p className="text-xs text-teal-200 font-bold flex items-center gap-1.5">
+            <History size={12} />
+            You placed this tenant — their lease is back in the window
+            {header.company_lease_expiry_months !== null &&
+              ` (${header.company_lease_expiry_months} months out)`}
+          </p>
+          <p className="text-[10px] text-ink-secondary mt-0.5">
+            Stage stays Closed until you move it. The whole history is below.
+          </p>
+        </div>
+      )}
+      {/* Empty when the newest entry carries no open loop — a stale follow-up
+          from an older entry is worse than no line at all. */}
       {header.open_loop && (
         <div className="text-sm text-ink-primary font-semibold mb-3">
           ↳ {header.open_loop}
         </div>
       )}
+      {!header.open_loop && stage === CLOSED_STAGE && (
+        <div className="text-[11px] text-ink-muted italic mb-3">
+          Placed — nothing owed in either direction.
+        </div>
+      )}
 
       <div className="flex flex-wrap gap-1 mb-3">
-        {STAGES.map(s => (
+        {CONTACT_STAGES.map(s => (
           <button
             key={s}
             onClick={() => s !== stage && onStage(s)}
@@ -644,12 +669,13 @@ function RelationshipContext({
 
 // ── Slot 3 — Deal context ────────────────────────────────────────────────────
 function DealContext({
-  header, onAccept, onReject, onOpenCompany,
+  header, onAccept, onReject, onOpenCompany, onLeaseConfirmed,
 }: {
   header: ThreadHeader
   onAccept: (c: DataConflict) => void
   onReject: (c: DataConflict) => void
   onOpenCompany: () => void
+  onLeaseConfirmed: () => void
 }) {
   if (!header.company_name) {
     return (
@@ -676,10 +702,22 @@ function DealContext({
           <span className="text-ink-secondary">{header.company_submarket}</span>
         )}
         {header.company_sf !== null && (
-          <span className="text-ink-secondary">{header.company_sf.toLocaleString()} SF</span>
+          <span className="text-ink-secondary flex items-center gap-1">
+            {header.company_sf.toLocaleString()} SF
+            <SourceMark source={header.company_sf_source} />
+          </span>
         )}
         {header.company_lease_expiry && (
-          <span className="text-ink-secondary">Expiry {fmtDate(header.company_lease_expiry)}</span>
+          <span className="text-ink-secondary flex items-center gap-1">
+            Expiry {fmtDate(header.company_lease_expiry)}
+            <SourceMark source={header.company_lease_expiry_source} />
+          </span>
+        )}
+        {header.company_address && (
+          <span className="text-ink-secondary flex items-center gap-1">
+            {header.company_address}
+            <SourceMark source={header.company_address_source} />
+          </span>
         )}
         {/* A small marker, not a separate conflicts page — a disagreement is
             itself a lead, so it is surfaced here and on the company record. */}
@@ -722,8 +760,41 @@ function DealContext({
           </div>
         </div>
       ))}
+
+      {/* The signed lease. Upload from here or from the company record; the
+          extraction lands in a review panel, never straight onto the record. */}
+      {header.contact.company_id !== null && (
+        <LeaseCard
+          companyPk={header.contact.company_id}
+          onConfirmed={onLeaseConfirmed}
+        />
+      )}
     </div>
   )
+}
+
+// A small marker distinguishing a value read off the signed lease from a
+// CoStar-imported one. A lease outranks CoStar, so which is which matters.
+function SourceMark({ source }: { source: string | null }) {
+  if (source === LEASE_SOURCE) {
+    return (
+      <span
+        className="text-[9px] px-1 py-0.5 rounded bg-teal-500/10 text-teal-300
+                   border border-teal-500/30"
+        title="Read off the signed lease and confirmed — outranks CoStar."
+      >
+        lease
+      </span>
+    )
+  }
+  if (source === 'costar') {
+    return (
+      <span className="text-[9px] text-ink-muted/70" title="Imported from CoStar.">
+        costar
+      </span>
+    )
+  }
+  return null
 }
 
 // ── Move an entry's company stamp ────────────────────────────────────────────
@@ -1238,6 +1309,7 @@ export default function ContactThread({
           onDeleteFact={handleDeleteFact}
         />
         <DealContext
+          onLeaseConfirmed={() => void load(false)}
           header={header}
           onAccept={handleAccept}
           onReject={handleReject}

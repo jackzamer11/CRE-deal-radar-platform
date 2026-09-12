@@ -108,6 +108,29 @@ class ExpiredLease(BaseModel):
     headcount:  Optional[int]
 
 
+class PastClientReentry(BaseModel):
+    """A tenant Jack PLACED whose lease has come back into the 6-9 month window.
+
+    The marker is the point: "you placed this tenant in this building" is the
+    strongest opening line available on that call. The contact keeps stage
+    Closed here — surfacing them is not the same as reopening them, and nothing
+    resets them to Sent.
+    """
+    contact_id:   int
+    contact_name: str
+    contact_stage: str
+    closed_at:    Optional[date] = None
+    company_id:   Optional[int] = None
+    company_business_id: Optional[str] = None
+    company_name: Optional[str] = None
+    submarket:    Optional[str] = None
+    lease_expiry_date:   Optional[date] = None
+    lease_expiry_months: Optional[int] = None
+    sf_occupied:  Optional[int] = None
+    # True when the expiry driving this row was read off the signed lease.
+    lease_sourced_expiry: bool = False
+
+
 class DailyBriefing(BaseModel):
     briefing_date: date
     stats: DashboardStats
@@ -122,6 +145,9 @@ class DailyBriefing(BaseModel):
     snoozed_tenant_match_actions: List[TenantMatchAction] = []
     snoozed_acquisition_targets:  List[AcquisitionTarget] = []
     expired_leases: List[ExpiredLease] = []
+    # Past clients whose lease clock has come back around. Additive to the
+    # briefing contract — existing consumers that ignore it are unaffected.
+    past_client_reentries: List[PastClientReentry] = []
     # property_ids whose snooze expired on this briefing load — show "Returned from Snooze" badge
     returned_from_snooze_property_ids: List[str] = []
     signal_refresh_timestamp: Optional[str] = None
