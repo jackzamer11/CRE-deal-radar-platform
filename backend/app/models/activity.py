@@ -18,6 +18,36 @@ class ActivityLog(Base):
     property_id = Column(Integer, ForeignKey("properties.id"), nullable=True)
     company_id = Column(Integer, ForeignKey("companies.id"), nullable=True)
 
+    # The person this entry belongs to. Nullable: an entry can attach to a
+    # company with no person behind it — a voicemail to a main line, a note on
+    # an account. Indexed because the contact timeline filters on it.
+    contact_id = Column(
+        Integer, ForeignKey("contacts.id"), nullable=True, index=True,
+    )
+
+    # The company the conversation was ABOUT, at the time it happened.
+    # IMMUTABLE after create. Contact.company_id is current employment and may
+    # change; this stamp is what keeps a departed contact's history on the old
+    # company's page while their personal thread stays complete.
+    company_stamp_id = Column(
+        Integer, ForeignKey("companies.id"), nullable=True, index=True,
+    )
+
+    # outbound = Jack reached out. inbound = they came to him.
+    direction = Column(
+        String, nullable=True, default="outbound", server_default=text("'outbound'"),
+    )
+    # email | call | meeting | text | linkedin | other
+    channel = Column(
+        String, nullable=True, default="other", server_default=text("'other'"),
+    )
+
+    # Provider message id (Outlook internetMessageId) for the email automation's
+    # dedup. Indexed and unique — it lives here rather than in `notes` precisely
+    # because `notes` is user-editable and editing one used to destroy the
+    # marker, relogging the email on the next run.
+    source_message_id = Column(String, nullable=True, unique=True, index=True)
+
     # What happened
     action_type = Column(String, nullable=False)  # CALL / EMAIL / MEETING / SIGNAL_UPDATE / RESEARCH / NOTE
     action_taken = Column(Text, nullable=False)
@@ -45,6 +75,19 @@ class ActivityLog(Base):
     follow_up_date = Column(Date, nullable=True)
     follow_up_action = Column(Text, nullable=True)
 
+    # ── Discovery — captured during or right after a call ────────────────────
+    # What the tenant said about their own situation. Nullable and inert: nothing
+    # consumes these this build. They are deliberately NOT wired into scoring or
+    # outreach generation — a tenant's claim is not verified data, and the
+    # confirmation flow on the Company record is the only path from a claim to a
+    # scoring field.
+    disc_current_rent_psf   = Column(Float,   nullable=True)
+    disc_current_sf         = Column(Integer, nullable=True)
+    disc_lease_expiry       = Column(Date,    nullable=True)
+    disc_decision_timeline  = Column(Text,    nullable=True)
+    disc_buildout_needs     = Column(Text,    nullable=True)
+    disc_decision_maker     = Column(Text,    nullable=True)
+
     # Meta
     created_by = Column(String, default="system")
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -52,4 +95,14 @@ class ActivityLog(Base):
     # Relationships
     opportunity = relationship("Opportunity", back_populates="activity_logs")
     property = relationship("Property", back_populates="activity_logs")
-    company = relationship("Company", back_populates="activity_logs")
+    # Two paths to a company: `company` is the legacy free link (company_id),
+    # `stamped_company` is the immutable record of what the conversation was
+    # about. foreign_keys is required — the table now has two FKs to companies.
+    company = relationship(
+        "Company", back_populates="activity_logs", foreign_keys=[company_id],
+    )
+    stamped_company = relationship(
+        "Company", back_populates="stamped_activity_logs",
+        foreign_keys=[company_stamp_id],
+    )
+    contact = relationship("Contact", back_populates="activity_logs")

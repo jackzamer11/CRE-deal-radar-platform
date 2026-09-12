@@ -120,6 +120,7 @@ def verify_observation(
         source_page=original.source_page,
         source_snippet=original.source_snippet,
         human_verified=True,
+        verified_by="human",
     )
     db.add(corrected)
     db.flush()

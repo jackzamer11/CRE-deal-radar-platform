@@ -30,6 +30,20 @@ const DISPOSITION_STYLE: Record<string, string> = {
   accepted: 'text-emerald-400 bg-emerald-500/10 border-emerald-500/30',
   rejected: 'text-red-400 bg-red-500/10 border-red-500/30',
   deferred: 'text-amber-400 bg-amber-500/10 border-amber-500/30',
+  // Machine tidy-up, not a human decision — kept visually neutral.
+  superseded: 'text-ink-muted bg-surface-muted border-surface-border',
+}
+
+// Link an opportunity's evidence to where the fact actually came from:
+// the source note in the Activity Log, else the Review queue.
+function evidenceLink(opp: IntelOpportunity): { href: string; label: string } {
+  const src = opp.signals[0]?.source_doc
+  if (src && src.startsWith('activity_log:')) {
+    const logId = src.split(':')[1]
+    return { href: `/activity?focus=${logId}`, label: 'View source note' }
+  }
+  if (src) return { href: '/review', label: `View evidence (${src})` }
+  return { href: '/review', label: 'View evidence' }
 }
 
 function primarySignal(opp: IntelOpportunity): string {
@@ -95,9 +109,14 @@ function OppCard({
       )}
 
       <div className="mt-2 flex items-center gap-3 flex-wrap">
-        <a href="/review" className="text-[10px] text-accent-blue hover:underline flex items-center gap-1">
-          View evidence <ArrowRight size={11} />
-        </a>
+        {(() => {
+          const ev = evidenceLink(opp)
+          return (
+            <a href={ev.href} className="text-[10px] text-accent-blue hover:underline flex items-center gap-1">
+              {ev.label} <ArrowRight size={11} />
+            </a>
+          )
+        })()}
         {opp.signals[0]?.evidence_observation_id != null && (
           <span className="text-[10px] text-ink-muted">observation #{opp.signals[0].evidence_observation_id}</span>
         )}

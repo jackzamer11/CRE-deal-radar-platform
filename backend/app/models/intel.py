@@ -66,6 +66,23 @@ class IntelFeedback(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
 
+class IntelActivityExtraction(Base):
+    """Record of which activity logs have been mined for structured facts.
+
+    Exists purely so re-running the miner is idempotent. ActivityLog rows are
+    READ-ONLY to this pipeline — nothing here ever writes to activity_logs.
+    """
+
+    __tablename__ = "intel_activity_extractions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    activity_log_id = Column(Integer, nullable=False, index=True)
+    status = Column(String, nullable=False, default="done")  # done / failed / empty
+    fields_found = Column(Integer, nullable=False, default=0)
+    error = Column(Text, nullable=True)
+    extracted_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
 class IntelCriterion(Base):
     __tablename__ = "intel_criteria"
 

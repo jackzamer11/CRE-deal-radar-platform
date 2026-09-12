@@ -2,13 +2,18 @@ from app.models.property import Property
 from app.models.company import Company
 from app.models.opportunity import Opportunity
 from app.models.activity import ActivityLog
+from app.models.contact import Contact, ContactFact
 from app.models.tenant_class_feedback import TenantClassFeedback
 from app.models.observation import Observation
 from app.models.document import Document
-from app.models.intel import IntelSignal, IntelOpportunity, IntelFeedback, IntelCriterion
+from app.models.intel import (
+    IntelSignal, IntelOpportunity, IntelFeedback, IntelCriterion,
+    IntelActivityExtraction,
+)
 
 __all__ = [
-    "Property", "Company", "Opportunity", "ActivityLog", "TenantClassFeedback",
+    "Property", "Company", "Opportunity", "ActivityLog", "Contact", "ContactFact",
+    "TenantClassFeedback",
     "Observation", "Document", "IntelSignal", "IntelOpportunity",
-    "IntelFeedback", "IntelCriterion",
+    "IntelFeedback", "IntelCriterion", "IntelActivityExtraction",
 ]

@@ -18,6 +18,11 @@ class Observation(Base):
     source_page = Column(Integer, nullable=True)
     source_snippet = Column(Text, nullable=True)
     human_verified = Column(Boolean, default=False, nullable=False)
+    # Who cleared this fact: "human" (Jack confirmed/corrected it in Review) or
+    # "auto" (a low-risk field auto-approved by the intelligence layer). Null
+    # while unverified. Kept distinct so machine approvals never masquerade as
+    # human judgement in the feedback loop.
+    verified_by = Column(String, nullable=True)
     superseded_by_id = Column(Integer, ForeignKey("observations.id"), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 

@@ -1,9 +1,12 @@
-import { useEffect, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { ClipboardList, Plus, X, Phone, Mail, Users, FileText, Search, RefreshCw, Pencil } from 'lucide-react'
-import { getActivity, createActivity, updateActivityNote, updateActivityStage } from '../api/client'
+import { ClipboardList, Plus, X, Phone, Mail, Users, FileText, Search, RefreshCw, Pencil, Trash2 } from 'lucide-react'
+import { getActivity, createActivity, updateActivityNote, updateActivityStage, editActivity, deleteActivity } from '../api/client'
 import type { ActivityLog, ActionType, ActivityStage } from '../types'
 import { STAGES, REVISIT_STAGES } from '../types'
+import ContactList from '../components/ContactList'
+import ContactThread from '../components/ContactThread'
+import CompanyTimelinePanel from '../components/CompanyTimelinePanel'
 
 const ACTION_ICONS: Record<ActionType, React.ElementType> = {
   CALL:          Phone,
@@ -71,6 +74,11 @@ function formatDate(dateStr: string): string {
 
 const todayISO = () => new Date().toISOString().slice(0, 10)
 
+// How many entries are mounted at a time. Everything stays loaded in state
+// and in the filter counts — this caps only the DOM, which is what made
+// filter switches and note saves slow once the log passed ~300 entries.
+const PAGE_SIZE = 60
+
 // ── Stage selector (button set) with inline revisit / follow-up date picker ────
 function StageSelector({
   log,
@@ -127,6 +135,98 @@ function StageSelector({
   )
 }
 
+// ── Full entry editor ────────────────────────────────────────────────────────
+// Every freeform field is editable. Saving re-mines the entry so the
+// intelligence layer's extracted facts match the corrected text.
+function EditSection({
+  log,
+  onSaved,
+  onCancel,
+}: {
+  log: ActivityLog
+  onSaved: (updated: ActivityLog) => void
+  onCancel: () => void
+}) {
+  const [form, setForm] = useState<Record<string, string>>({
+    action_type: log.action_type ?? 'CALL',
+    action_taken: log.action_taken ?? '',
+    outcome: log.outcome ?? '',
+    notes: log.notes ?? '',
+    follow_up_action: log.follow_up_action ?? '',
+  })
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const save = async () => {
+    if (!form.action_taken.trim()) {
+      setError('Action taken cannot be empty.')
+      return
+    }
+    setSaving(true)
+    setError(null)
+    try {
+      onSaved(await editActivity(log.id, form))
+    } catch {
+      setError('Could not save. Please try again.')
+      setSaving(false)
+    }
+  }
+
+  const field = (label: string, key: keyof typeof form, rows = 2) => (
+    <div className="flex gap-3">
+      <label className="text-[10px] text-ink-muted w-20 pt-2 flex-shrink-0">{label}</label>
+      <textarea
+        value={form[key]}
+        onChange={e => setForm(f => ({ ...f, [key]: e.target.value }))}
+        rows={rows}
+        className="flex-1 text-xs bg-surface-muted border border-surface-border rounded-lg px-3 py-2
+                   text-ink-primary placeholder:text-ink-muted focus:outline-none
+                   focus:border-accent-blue/50 resize-none"
+      />
+    </div>
+  )
+
+  return (
+    <div className="mt-2 space-y-2 border-t border-surface-border pt-3">
+      <div className="flex items-center gap-3">
+        <label className="text-[10px] text-ink-muted w-20 flex-shrink-0">Type</label>
+        <select
+          value={form.action_type}
+          onChange={e => setForm(f => ({ ...f, action_type: e.target.value }))}
+          className="bg-surface-muted border border-surface-border text-ink-secondary text-xs
+                     rounded-lg px-3 py-1.5"
+        >
+          {['CALL', 'EMAIL', 'MEETING', 'RESEARCH', 'NOTE', 'SIGNAL_UPDATE'].map(t => (
+            <option key={t} value={t}>{t}</option>
+          ))}
+        </select>
+      </div>
+      {field('Action', 'action_taken')}
+      {field('Outcome', 'outcome')}
+      {field('Notes', 'notes')}
+      {field('Follow-up', 'follow_up_action', 1)}
+
+      {error && <p className="text-[10px] text-red-400 ml-[92px]">{error}</p>}
+      <div className="flex items-center gap-2 ml-[92px]">
+        <button
+          onClick={save}
+          disabled={saving}
+          className="text-[10px] px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700
+                     text-white font-semibold disabled:opacity-50"
+        >
+          {saving ? 'Saving & re-reading…' : 'Save Changes'}
+        </button>
+        <button onClick={onCancel} className="text-[10px] text-ink-muted hover:text-ink-primary">
+          Cancel
+        </button>
+        <span className="text-[9px] text-ink-muted">
+          Saving updates the extracted facts for this entry.
+        </span>
+      </div>
+    </div>
+  )
+}
+
 function NoteSection({
   log,
   onSaved,
@@ -137,13 +237,19 @@ function NoteSection({
   const [editing, setEditing] = useState(false)
   const [input, setInput]     = useState(log.notes ?? '')
   const [saving, setSaving]   = useState(false)
+  const [error, setError]     = useState<string | null>(null)
 
+  // A failed save used to leave the box open with no explanation, which read as
+  // "the button does nothing" — surface it instead.
   const handleSave = async () => {
     setSaving(true)
+    setError(null)
     try {
       const updated = await updateActivityNote(log.id, input)
       onSaved(updated)
       setEditing(false)
+    } catch {
+      setError('Could not save the note. Please try again.')
     } finally {
       setSaving(false)
     }
@@ -171,12 +277,13 @@ function NoteSection({
             {saving ? 'Saving…' : 'Save Note'}
           </button>
           <button
-            onClick={() => { setEditing(false); setInput(log.notes ?? '') }}
+            onClick={() => { setEditing(false); setInput(log.notes ?? ''); setError(null) }}
             className="text-[10px] text-ink-muted hover:text-ink-primary"
           >
             Cancel
           </button>
         </div>
+        {error && <p className="text-[10px] text-red-400">{error}</p>}
       </div>
     )
   }
@@ -206,13 +313,16 @@ function NoteSection({
   )
 }
 
-export default function ActivityLogPage() {
-  const [searchParams, setSearchParams] = useSearchParams()
-  const [logs, setLogs] = useState<ActivityLog[]>([])
-  const [loading, setLoading] = useState(true)
-  const [showForm, setShowForm] = useState(false)
-  const [stageFilter, setStageFilter] = useState<'All' | ActivityStage>('All')
-  const [highlightId, setHighlightId] = useState<number | null>(null)
+// ── New entry form ───────────────────────────────────────────────────────────
+// Owns its own draft state, so typing here re-renders only this form instead of
+// every log entry behind it.
+function NewActivityForm({
+  onCreated,
+  onCancel,
+}: {
+  onCreated: () => void | Promise<void>
+  onCancel: () => void
+}) {
   const [form, setForm] = useState({
     action_type: 'CALL',
     action_taken: '',
@@ -220,37 +330,6 @@ export default function ActivityLogPage() {
     follow_up_action: '',
   })
   const [saving, setSaving] = useState(false)
-
-  const load = async () => {
-    setLoading(true)
-    try {
-      const data = await getActivity({ limit: 1000 })
-      setLogs(data)
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  useEffect(() => { load() }, [])
-
-  // Deep link: /activity?focus=<id> scrolls to and highlights that entry.
-  useEffect(() => {
-    if (loading) return
-    const focus = Number(searchParams.get('focus'))
-    if (!focus) return
-    const el = document.getElementById(`activity-${focus}`)
-    if (el) {
-      el.scrollIntoView({ behavior: 'smooth', block: 'center' })
-      setHighlightId(focus)
-      const t = setTimeout(() => setHighlightId(null), 2800)
-      // Clear the param so a refresh doesn't re-trigger.
-      const next = new URLSearchParams(searchParams)
-      next.delete('focus')
-      setSearchParams(next, { replace: true })
-      return () => clearTimeout(t)
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loading, logs.length])
 
   const handleCreate = async () => {
     if (!form.action_taken.trim()) return
@@ -263,19 +342,293 @@ export default function ActivityLogPage() {
         follow_up_action: form.follow_up_action || undefined,
       })
       setForm({ action_type: 'CALL', action_taken: '', outcome: '', follow_up_action: '' })
-      setShowForm(false)
-      await load()
     } finally {
       setSaving(false)
     }
+    await onCreated()
   }
 
-  const handleNoteUpdated = (updated: ActivityLog) => {
+  return (
+    <div className="bg-surface-card border border-surface-border rounded-xl p-5 mb-6">
+      <div className="flex items-center justify-between mb-4">
+        <div className="text-sm font-semibold text-ink-primary">New Activity Entry</div>
+        <button onClick={onCancel} className="text-ink-muted hover:text-ink-primary">
+          <X size={16} />
+        </button>
+      </div>
+      <div className="space-y-3">
+        <div className="flex items-center gap-3">
+          <label className="text-xs text-ink-muted w-24">Type</label>
+          <select
+            value={form.action_type}
+            onChange={e => setForm(f => ({ ...f, action_type: e.target.value }))}
+            className="bg-surface-muted border border-surface-border text-ink-secondary text-xs rounded-lg px-3 py-1.5"
+          >
+            {['CALL','EMAIL','MEETING','RESEARCH','NOTE','SIGNAL_UPDATE'].map(t => (
+              <option key={t} value={t}>{t}</option>
+            ))}
+          </select>
+        </div>
+        <div className="flex gap-3">
+          <label className="text-xs text-ink-muted w-24 pt-2">Action Taken</label>
+          <textarea
+            value={form.action_taken}
+            onChange={e => setForm(f => ({ ...f, action_taken: e.target.value }))}
+            placeholder="What did you do? Who did you contact?"
+            rows={2}
+            className="flex-1 bg-surface-muted border border-surface-border text-ink-secondary text-xs
+                       rounded-lg px-3 py-2 resize-none outline-none focus:border-accent-blue"
+          />
+        </div>
+        <div className="flex gap-3">
+          <label className="text-xs text-ink-muted w-24 pt-2">Outcome</label>
+          <textarea
+            value={form.outcome}
+            onChange={e => setForm(f => ({ ...f, outcome: e.target.value }))}
+            placeholder="Result of the action (optional)"
+            rows={2}
+            className="flex-1 bg-surface-muted border border-surface-border text-ink-secondary text-xs
+                       rounded-lg px-3 py-2 resize-none outline-none focus:border-accent-blue"
+          />
+        </div>
+        <div className="flex gap-3">
+          <label className="text-xs text-ink-muted w-24 pt-2">Follow-up</label>
+          <input
+            value={form.follow_up_action}
+            onChange={e => setForm(f => ({ ...f, follow_up_action: e.target.value }))}
+            placeholder="Follow-up action (optional)"
+            className="flex-1 bg-surface-muted border border-surface-border text-ink-secondary text-xs
+                       rounded-lg px-3 py-2 outline-none focus:border-accent-blue"
+          />
+        </div>
+      </div>
+      <div className="flex justify-end gap-2 mt-4">
+        <button
+          onClick={onCancel}
+          className="px-4 py-2 text-xs text-ink-muted hover:text-ink-primary"
+        >
+          Cancel
+        </button>
+        <button
+          onClick={handleCreate}
+          disabled={saving || !form.action_taken.trim()}
+          className="px-4 py-2 rounded-lg bg-accent-blue text-white text-xs font-semibold
+                     hover:bg-accent-blueDim transition-colors disabled:opacity-50"
+        >
+          {saving ? 'Saving...' : 'Save Entry'}
+        </button>
+      </div>
+    </div>
+  )
+}
+
+// ── One log entry ────────────────────────────────────────────────────────────
+// memo'd: paired with the page's stable callbacks, a keystroke or a stage click
+// re-renders only the rows whose own data changed, not all of them.
+const LogRow = memo(function LogRow({
+  log,
+  highlighted,
+  editing,
+  onStageChange,
+  onNoteSaved,
+  onEdited,
+  onStartEdit,
+  onCancelEdit,
+  onDelete,
+}: {
+  log: ActivityLog
+  highlighted: boolean
+  editing: boolean
+  onStageChange: (log: ActivityLog, stage: ActivityStage, nextTouchDate?: string | null) => void
+  onNoteSaved: (updated: ActivityLog) => void
+  onEdited: (updated: ActivityLog) => void
+  onStartEdit: (id: number) => void
+  onCancelEdit: () => void
+  onDelete: (log: ActivityLog) => void
+}) {
+  return (
+    <div
+      id={`activity-${log.id}`}
+      className={`flex items-start gap-3 bg-surface-card border rounded-xl p-3 transition-colors
+        ${highlighted ? 'border-accent-blue ring-2 ring-accent-blue/40' : 'border-surface-border'}`}
+    >
+      <ActionBadge type={log.action_type as ActionType} />
+      <div className="flex-1 min-w-0">
+        {log.contact_name ? (
+          <>
+            {/* Contact-first hierarchy */}
+            <div className="text-sm font-bold text-ink-primary truncate">{log.contact_name}</div>
+            <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-ink-muted">
+                {log.action_type}
+              </span>
+              {log.property_address && (
+                <span className="text-[11px] text-accent-blue truncate">{log.property_address}</span>
+              )}
+              {log.company_name && (
+                <span className="text-[11px] text-emerald-400">{log.company_name}</span>
+              )}
+              {log.opportunity_ref && (
+                <span className="text-[10px] text-ink-muted">{log.opportunity_ref}</span>
+              )}
+            </div>
+          </>
+        ) : (
+          <div className="flex items-center gap-2 mb-0.5 flex-wrap">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-ink-muted">
+              {log.action_type}
+            </span>
+            {log.property_address && (
+              <span className="text-[11px] text-accent-blue truncate">{log.property_address}</span>
+            )}
+            {log.company_name && (
+              <span className="text-[11px] text-emerald-400">{log.company_name}</span>
+            )}
+            {log.opportunity_ref && (
+              <span className="text-[10px] text-ink-muted">{log.opportunity_ref}</span>
+            )}
+          </div>
+        )}
+        {editing ? (
+          <EditSection
+            log={log}
+            onSaved={onEdited}
+            onCancel={onCancelEdit}
+          />
+        ) : (
+        <>
+        <p className="text-xs text-ink-secondary mt-0.5">{log.action_taken}</p>
+        {log.outreach_type && (
+          <div className="mt-1">
+            <OutreachTypeBadge outreachType={log.outreach_type} />
+          </div>
+        )}
+        {log.outcome && (
+          <p className="text-xs text-ink-muted mt-1">→ {log.outcome}</p>
+        )}
+        {log.follow_up_action && (
+          <p className="text-xs text-amber-400 mt-1">↻ {log.follow_up_action}</p>
+        )}
+        <StageSelector log={log} onChange={(stage, nextDate) => onStageChange(log, stage, nextDate)} />
+        <div className="flex items-center gap-3">
+          <NoteSection log={log} onSaved={onNoteSaved} />
+          <button
+            onClick={() => onStartEdit(log.id)}
+            className="mt-1 text-[10px] text-ink-muted hover:text-accent-blue flex items-center gap-1"
+            title="Edit this entry"
+          >
+            <Pencil size={10} /> Edit entry
+          </button>
+          <button
+            onClick={() => onDelete(log)}
+            className="mt-1 text-[10px] text-ink-muted hover:text-red-400 flex items-center gap-1"
+            title="Delete this entry"
+          >
+            <Trash2 size={10} /> Delete
+          </button>
+        </div>
+        </>
+        )}
+      </div>
+    </div>
+  )
+})
+
+// ── All Activity — the original flat feed, preserved exactly as it was ───────
+// Nothing in here changed when contact threads landed: the same load, the same
+// stage pills, the same grouping, the same deep link. It stays the fallback
+// view for the 355 entries that have no contact attached yet.
+function AllActivityFeed() {
+  const [searchParams, setSearchParams] = useSearchParams()
+  const [logs, setLogs] = useState<ActivityLog[]>([])
+  const [loading, setLoading] = useState(true)
+  const [showForm, setShowForm] = useState(false)
+  const [stageFilter, setStageFilter] = useState<'All' | ActivityStage>('All')
+  const [highlightId, setHighlightId] = useState<number | null>(null)
+  const [editingId, setEditingId] = useState<number | null>(null)
+  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE)
+  const sentinelRef = useRef<HTMLDivElement | null>(null)
+
+  // Mirror of `logs` for handlers that need the current list without depending
+  // on it — a dependency would make every callback unstable and defeat memo.
+  const logsRef = useRef<ActivityLog[]>([])
+  useEffect(() => { logsRef.current = logs }, [logs])
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    try {
+      const data = await getActivity({ limit: 1000 })
+      setLogs(data)
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => { load() }, [load])
+
+  // Deep link: /activity?focus=<id> scrolls to and highlights that entry.
+  useEffect(() => {
+    if (loading) return
+    const focus = Number(searchParams.get('focus'))
+    if (!focus) return
+    // The linked entry may sit past the current page — mount enough rows to
+    // reach it first, so a deep link never lands on nothing.
+    const idx = displayedLogs.findIndex(l => l.id === focus)
+    if (idx >= 0 && idx >= visibleCount) {
+      setVisibleCount(idx + 1)
+      return
+    }
+    const el = document.getElementById(`activity-${focus}`)
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      setHighlightId(focus)
+      const t = setTimeout(() => setHighlightId(null), 2800)
+      // Clear the param so a refresh doesn't re-trigger.
+      const next = new URLSearchParams(searchParams)
+      next.delete('focus')
+      setSearchParams(next, { replace: true })
+      return () => clearTimeout(t)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading, logs.length, visibleCount])
+
+  const handleCreated = useCallback(async () => {
+    setShowForm(false)
+    await load()
+  }, [load])
+
+  const handleNoteUpdated = useCallback((updated: ActivityLog) => {
     setLogs(prev => prev.map(l => l.id === updated.id ? { ...l, notes: updated.notes } : l))
-  }
+  }, [])
+
+  // Full-entry edits replace the row outright (any field may have changed).
+  const handleEdited = useCallback((updated: ActivityLog) => {
+    setLogs(prev => prev.map(l => l.id === updated.id ? updated : l))
+    setEditingId(null)
+  }, [])
+
+  const handleStartEdit = useCallback((id: number) => setEditingId(id), [])
+  const handleCancelEdit = useCallback(() => setEditingId(null), [])
+
+  const handleDelete = useCallback(async (log: ActivityLog) => {
+    const label = log.contact_name || log.action_taken?.slice(0, 60) || `entry #${log.id}`
+    if (!window.confirm(
+      `Delete this activity log?\n\n"${label}"\n\n` +
+      `This also removes any facts the intelligence layer extracted from it. ` +
+      `Other Deal Radar data is untouched. This cannot be undone.`
+    )) return
+    const prev = logsRef.current
+    setLogs(cur => cur.filter(l => l.id !== log.id))  // optimistic
+    try {
+      await deleteActivity(log.id)
+    } catch {
+      setLogs(prev)  // restore on failure
+      window.alert('Could not delete. Please try again.')
+    }
+  }, [])
 
   // Optimistic stage move — no page reload.
-  const handleStageChange = async (log: ActivityLog, stage: ActivityStage, nextTouchDate?: string | null) => {
+  const handleStageChange = useCallback(async (log: ActivityLog, stage: ActivityStage, nextTouchDate?: string | null) => {
     const optimisticDate = stage === 'Sent' ? null : (nextTouchDate !== undefined ? nextTouchDate : log.next_touch_date)
     setLogs(prev => prev.map(l => l.id === log.id ? { ...l, stage, next_touch_date: optimisticDate } : l))
     try {
@@ -287,28 +640,63 @@ export default function ActivityLogPage() {
     } catch {
       load() // revert to server truth on failure
     }
-  }
+  }, [load])
 
-  const displayedLogs = stageFilter === 'All' ? logs : logs.filter(l => (l.stage ?? 'Sent') === stageFilter)
+  const displayedLogs = useMemo(
+    () => stageFilter === 'All' ? logs : logs.filter(l => (l.stage ?? 'Sent') === stageFilter),
+    [logs, stageFilter],
+  )
 
-  const stageCount = (s: ActivityStage) => logs.filter(l => (l.stage ?? 'Sent') === s).length
+  // One pass over logs instead of a full filter per stage pill, per render.
+  const stageCounts = useMemo(() => {
+    const counts = {} as Record<ActivityStage, number>
+    for (const s of STAGES) counts[s] = 0
+    for (const l of logs) {
+      const s = (l.stage ?? 'Sent') as ActivityStage
+      if (s in counts) counts[s] += 1
+    }
+    return counts
+  }, [logs])
 
-  // Group by date
-  const grouped: Record<string, ActivityLog[]> = {}
-  for (const log of displayedLogs) {
-    const key = log.log_date
-    if (!grouped[key]) grouped[key] = []
-    grouped[key].push(log)
-  }
+  const visibleLogs = useMemo(
+    () => displayedLogs.slice(0, visibleCount),
+    [displayedLogs, visibleCount],
+  )
+  const hasMore = displayedLogs.length > visibleCount
+
+  const showMore = useCallback(
+    () => setVisibleCount(c => c + PAGE_SIZE),
+    [],
+  )
+
+  // Mount the next page as the end of the list comes into view.
+  useEffect(() => {
+    if (!hasMore) return
+    const el = sentinelRef.current
+    if (!el) return
+    const io = new IntersectionObserver(
+      entries => { if (entries[0]?.isIntersecting) showMore() },
+      { rootMargin: '400px' },
+    )
+    io.observe(el)
+    return () => io.disconnect()
+  }, [hasMore, showMore])
+
+  // Group by date (newest day first)
+  const dateGroups = useMemo(() => {
+    const grouped: Record<string, ActivityLog[]> = {}
+    for (const log of visibleLogs) {
+      const key = log.log_date
+      if (!grouped[key]) grouped[key] = []
+      grouped[key].push(log)
+    }
+    return Object.entries(grouped).sort(([a], [b]) => b.localeCompare(a))
+  }, [visibleLogs])
 
   return (
-    <div className="p-6 max-w-3xl">
-      <div className="flex items-center justify-between mb-6">
-        <div className="flex items-center gap-3">
-          <ClipboardList size={20} className="text-blue-400" />
-          <h1 className="text-xl font-bold text-ink-primary">Activity Log</h1>
-          <span className="text-ink-muted text-sm">({displayedLogs.length})</span>
-        </div>
+    <div>
+      <div className="flex items-center justify-between mb-4">
+        <span className="text-ink-muted text-sm">{displayedLogs.length} entries</span>
         <button
           onClick={() => setShowForm(true)}
           className="flex items-center gap-2 px-4 py-2 rounded-lg bg-accent-blue text-white text-xs font-semibold
@@ -323,11 +711,11 @@ export default function ActivityLogPage() {
       <div className="flex items-center gap-1.5 mb-5 flex-wrap">
         {(['All', ...STAGES] as const).map(opt => {
           const active = stageFilter === opt
-          const count = opt === 'All' ? logs.length : stageCount(opt)
+          const count = opt === 'All' ? logs.length : stageCounts[opt]
           return (
             <button
               key={opt}
-              onClick={() => setStageFilter(opt)}
+              onClick={() => { setStageFilter(opt); setVisibleCount(PAGE_SIZE) }}
               className={`text-[11px] px-2.5 py-1 rounded-full border font-semibold transition-colors
                 ${active ? 'bg-accent-blue/20 text-accent-blue border-accent-blue/50'
                          : 'bg-surface-card text-ink-muted border-surface-border hover:text-ink-secondary'}`}
@@ -341,76 +729,7 @@ export default function ActivityLogPage() {
 
       {/* New entry form */}
       {showForm && (
-        <div className="bg-surface-card border border-surface-border rounded-xl p-5 mb-6">
-          <div className="flex items-center justify-between mb-4">
-            <div className="text-sm font-semibold text-ink-primary">New Activity Entry</div>
-            <button onClick={() => setShowForm(false)} className="text-ink-muted hover:text-ink-primary">
-              <X size={16} />
-            </button>
-          </div>
-          <div className="space-y-3">
-            <div className="flex items-center gap-3">
-              <label className="text-xs text-ink-muted w-24">Type</label>
-              <select
-                value={form.action_type}
-                onChange={e => setForm(f => ({ ...f, action_type: e.target.value }))}
-                className="bg-surface-muted border border-surface-border text-ink-secondary text-xs rounded-lg px-3 py-1.5"
-              >
-                {['CALL','EMAIL','MEETING','RESEARCH','NOTE','SIGNAL_UPDATE'].map(t => (
-                  <option key={t} value={t}>{t}</option>
-                ))}
-              </select>
-            </div>
-            <div className="flex gap-3">
-              <label className="text-xs text-ink-muted w-24 pt-2">Action Taken</label>
-              <textarea
-                value={form.action_taken}
-                onChange={e => setForm(f => ({ ...f, action_taken: e.target.value }))}
-                placeholder="What did you do? Who did you contact?"
-                rows={2}
-                className="flex-1 bg-surface-muted border border-surface-border text-ink-secondary text-xs
-                           rounded-lg px-3 py-2 resize-none outline-none focus:border-accent-blue"
-              />
-            </div>
-            <div className="flex gap-3">
-              <label className="text-xs text-ink-muted w-24 pt-2">Outcome</label>
-              <textarea
-                value={form.outcome}
-                onChange={e => setForm(f => ({ ...f, outcome: e.target.value }))}
-                placeholder="Result of the action (optional)"
-                rows={2}
-                className="flex-1 bg-surface-muted border border-surface-border text-ink-secondary text-xs
-                           rounded-lg px-3 py-2 resize-none outline-none focus:border-accent-blue"
-              />
-            </div>
-            <div className="flex gap-3">
-              <label className="text-xs text-ink-muted w-24 pt-2">Follow-up</label>
-              <input
-                value={form.follow_up_action}
-                onChange={e => setForm(f => ({ ...f, follow_up_action: e.target.value }))}
-                placeholder="Follow-up action (optional)"
-                className="flex-1 bg-surface-muted border border-surface-border text-ink-secondary text-xs
-                           rounded-lg px-3 py-2 outline-none focus:border-accent-blue"
-              />
-            </div>
-          </div>
-          <div className="flex justify-end gap-2 mt-4">
-            <button
-              onClick={() => setShowForm(false)}
-              className="px-4 py-2 text-xs text-ink-muted hover:text-ink-primary"
-            >
-              Cancel
-            </button>
-            <button
-              onClick={handleCreate}
-              disabled={saving || !form.action_taken.trim()}
-              className="px-4 py-2 rounded-lg bg-accent-blue text-white text-xs font-semibold
-                         hover:bg-accent-blueDim transition-colors disabled:opacity-50"
-            >
-              {saving ? 'Saving...' : 'Save Entry'}
-            </button>
-          </div>
-        </div>
+        <NewActivityForm onCreated={handleCreated} onCancel={() => setShowForm(false)} />
       )}
 
       {/* Log entries */}
@@ -426,9 +745,7 @@ export default function ActivityLogPage() {
         </div>
       ) : (
         <div className="space-y-6">
-          {Object.entries(grouped)
-            .sort(([a], [b]) => b.localeCompare(a))
-            .map(([date, entries]) => (
+          {dateGroups.map(([date, entries]) => (
               <div key={date}>
                 <div className="text-[10px] font-bold uppercase tracking-widest text-ink-muted mb-3 flex items-center gap-3">
                   {formatDate(date)}
@@ -437,71 +754,125 @@ export default function ActivityLogPage() {
                 </div>
                 <div className="space-y-2">
                   {entries.map(log => (
-                    <div
+                    <LogRow
                       key={log.id}
-                      id={`activity-${log.id}`}
-                      className={`flex items-start gap-3 bg-surface-card border rounded-xl p-3 transition-colors
-                        ${highlightId === log.id ? 'border-accent-blue ring-2 ring-accent-blue/40' : 'border-surface-border'}`}
-                    >
-                      <ActionBadge type={log.action_type as ActionType} />
-                      <div className="flex-1 min-w-0">
-                        {log.contact_name ? (
-                          <>
-                            {/* Contact-first hierarchy */}
-                            <div className="text-sm font-bold text-ink-primary truncate">{log.contact_name}</div>
-                            <div className="flex items-center gap-2 mt-0.5 flex-wrap">
-                              <span className="text-[10px] font-bold uppercase tracking-wider text-ink-muted">
-                                {log.action_type}
-                              </span>
-                              {log.property_address && (
-                                <span className="text-[11px] text-accent-blue truncate">{log.property_address}</span>
-                              )}
-                              {log.company_name && (
-                                <span className="text-[11px] text-emerald-400">{log.company_name}</span>
-                              )}
-                              {log.opportunity_ref && (
-                                <span className="text-[10px] text-ink-muted">{log.opportunity_ref}</span>
-                              )}
-                            </div>
-                          </>
-                        ) : (
-                          <div className="flex items-center gap-2 mb-0.5 flex-wrap">
-                            <span className="text-[10px] font-bold uppercase tracking-wider text-ink-muted">
-                              {log.action_type}
-                            </span>
-                            {log.property_address && (
-                              <span className="text-[11px] text-accent-blue truncate">{log.property_address}</span>
-                            )}
-                            {log.company_name && (
-                              <span className="text-[11px] text-emerald-400">{log.company_name}</span>
-                            )}
-                            {log.opportunity_ref && (
-                              <span className="text-[10px] text-ink-muted">{log.opportunity_ref}</span>
-                            )}
-                          </div>
-                        )}
-                        <p className="text-xs text-ink-secondary mt-0.5">{log.action_taken}</p>
-                        {log.outreach_type && (
-                          <div className="mt-1">
-                            <OutreachTypeBadge outreachType={log.outreach_type} />
-                          </div>
-                        )}
-                        {log.outcome && (
-                          <p className="text-xs text-ink-muted mt-1">→ {log.outcome}</p>
-                        )}
-                        {log.follow_up_action && (
-                          <p className="text-xs text-amber-400 mt-1">↻ {log.follow_up_action}</p>
-                        )}
-                        <StageSelector log={log} onChange={(stage, nextDate) => handleStageChange(log, stage, nextDate)} />
-                        <NoteSection log={log} onSaved={handleNoteUpdated} />
-                      </div>
-                    </div>
+                      log={log}
+                      highlighted={highlightId === log.id}
+                      editing={editingId === log.id}
+                      onStageChange={handleStageChange}
+                      onNoteSaved={handleNoteUpdated}
+                      onEdited={handleEdited}
+                      onStartEdit={handleStartEdit}
+                      onCancelEdit={handleCancelEdit}
+                      onDelete={handleDelete}
+                    />
                   ))}
                 </div>
               </div>
             ))
           }
+          {hasMore && (
+            <div ref={sentinelRef} className="pt-1 text-center">
+              <button
+                onClick={showMore}
+                className="text-[11px] px-3 py-1.5 rounded-lg bg-surface-card border border-surface-border
+                           text-ink-muted hover:text-ink-primary transition-colors"
+              >
+                Show older — {visibleLogs.length} of {displayedLogs.length} shown
+              </button>
+            </div>
+          )}
         </div>
+      )}
+    </div>
+  )
+}
+
+
+// ── The page ─────────────────────────────────────────────────────────────────
+// Two views over the same data. By Contact is the default; All Activity is the
+// original flat feed, kept intact.
+type View = 'contacts' | 'all'
+
+export default function ActivityLogPage() {
+  const [searchParams, setSearchParams] = useSearchParams()
+
+  // The view, the open thread and the open company all live in the URL, so a
+  // deep link from the Dashboard or a browser Back lands where it should.
+  const view = (searchParams.get('view') === 'all' ? 'all' : 'contacts') as View
+  const openContactId = Number(searchParams.get('contact')) || null
+  const openCompanyId = searchParams.get('company')
+
+  const setParam = useCallback((key: string, value: string | null) => {
+    const next = new URLSearchParams(searchParams)
+    if (value === null) next.delete(key)
+    else next.set(key, value)
+    setSearchParams(next, { replace: false })
+  }, [searchParams, setSearchParams])
+
+  const setView = (v: View) => {
+    const next = new URLSearchParams(searchParams)
+    next.set('view', v)
+    next.delete('contact')
+    setSearchParams(next, { replace: false })
+  }
+
+  // A ?focus=<entry id> deep link still means the flat feed — that is where
+  // entry ids resolve.
+  useEffect(() => {
+    if (searchParams.get('focus') && searchParams.get('view') !== 'all') {
+      const next = new URLSearchParams(searchParams)
+      next.set('view', 'all')
+      setSearchParams(next, { replace: true })
+    }
+  }, [searchParams, setSearchParams])
+
+  return (
+    <div className="p-6 max-w-3xl">
+      <div className="flex items-center justify-between mb-5 gap-3">
+        <div className="flex items-center gap-3 min-w-0">
+          <ClipboardList size={20} className="text-blue-400 flex-shrink-0" />
+          <h1 className="text-xl font-bold text-ink-primary">Activity Log</h1>
+        </div>
+        <div className="flex items-center gap-1 bg-surface-card border border-surface-border rounded-lg p-0.5">
+          {([['contacts', 'By Contact'], ['all', 'All Activity']] as const).map(([v, label]) => (
+            <button
+              key={v}
+              onClick={() => setView(v)}
+              className={`text-[11px] px-3 py-1.5 rounded-md font-semibold transition-colors
+                ${view === v ? 'bg-accent-blue text-white'
+                             : 'text-ink-muted hover:text-ink-secondary'}`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {view === 'all' ? (
+        <AllActivityFeed />
+      ) : openContactId ? (
+        <ContactThread
+          contactId={openContactId}
+          onBack={() => setParam('contact', null)}
+          onOpenCompany={businessId => setParam('company', businessId)}
+        />
+      ) : (
+        <ContactList onOpen={id => setParam('contact', String(id))} />
+      )}
+
+      {openCompanyId && (
+        <CompanyTimelinePanel
+          companyId={openCompanyId}
+          onClose={() => setParam('company', null)}
+          onOpenContact={id => {
+            const next = new URLSearchParams(searchParams)
+            next.delete('company')
+            next.set('view', 'contacts')
+            next.set('contact', String(id))
+            setSearchParams(next, { replace: false })
+          }}
+        />
       )}
     </div>
   )

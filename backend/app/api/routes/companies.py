@@ -972,6 +972,91 @@ def update_medical(
     return _company_out(company, db)
 
 
+class CompanyTimelineEntry(BaseModel):
+    id: int
+    log_date: date
+    contact_id: Optional[int] = None
+    contact_name: Optional[str] = None
+    action_type: str
+    action_taken: str
+    outcome: Optional[str] = None
+    notes: Optional[str] = None
+    direction: Optional[str] = "outbound"
+    channel: Optional[str] = "other"
+    outreach_type: Optional[str] = None
+    subject: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+class CompanyTimelinePage(BaseModel):
+    total: int
+    limit: int
+    offset: int
+    company_id: int
+    company_name: str
+    has_data_conflict: bool = False
+    entries: List[CompanyTimelineEntry]
+
+
+@router.get("/{company_id}/timeline", response_model=CompanyTimelinePage)
+def company_timeline(
+    company_id: str,
+    limit: int = 100,
+    offset: int = 0,
+    db: Session = Depends(get_db),
+):
+    """Every entry stamped to this company, interleaved by date across all
+    contacts — including entries with a null contact_id (a voicemail to a main
+    line, a note on the account).
+
+    Reads company_stamp_id, not the contact's current employer: that is what
+    keeps a departed contact's history on the old company's page.
+
+    Accepts either the CO-nnn business key or the integer primary key, since
+    both are in circulation. Paginated, no hard ceiling, and an empty timeline
+    returns an empty page rather than a 500.
+    """
+    from sqlalchemy.orm import joinedload as _joinedload
+    from app.models.activity import ActivityLog
+    from app.models.contact import Contact
+
+    company = db.query(Company).filter(Company.company_id == company_id).first()
+    if not company and str(company_id).isdigit():
+        company = db.query(Company).filter(Company.id == int(company_id)).first()
+    if not company:
+        raise HTTPException(status_code=404, detail="Company not found")
+
+    base = db.query(ActivityLog).filter(ActivityLog.company_stamp_id == company.id)
+    total = base.count()
+    rows = (
+        base.options(_joinedload(ActivityLog.contact))
+        .order_by(ActivityLog.log_date.desc(), ActivityLog.id.desc())
+        .offset(max(0, offset))
+        .limit(max(1, limit))
+        .all()
+    )
+
+    entries = []
+    for log in rows:
+        item = CompanyTimelineEntry.model_validate(log)
+        # Null-safe: an unattached entry keeps a null contact_name, it does not
+        # fall out of the timeline.
+        item.contact_name = log.contact.name if log.contact is not None else None
+        entries.append(item)
+
+    return CompanyTimelinePage(
+        total=total,
+        limit=limit,
+        offset=offset,
+        company_id=company.id,
+        company_name=company.name,
+        has_data_conflict=bool(company.has_data_conflict),
+        entries=entries,
+    )
+
+
 @router.post("/refresh-signals", response_model=dict)
 def refresh_all_signals(db: Session = Depends(get_db)):
     companies = db.query(Company).all()

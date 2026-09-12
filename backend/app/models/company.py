@@ -1,6 +1,6 @@
 # backend/app/models/company.py
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, Float, Boolean, Text, Date, DateTime
+from sqlalchemy import Column, Integer, String, Float, Boolean, Text, Date, DateTime, ForeignKey, text
 from sqlalchemy.orm import relationship
 
 from app.database import Base
@@ -104,6 +104,54 @@ class Company(Base):
     snooze_reason        = Column(String,  nullable=True)   # free text (e.g. "Just signed renewal — revisit next cycle")
     returned_from_snooze = Column(Boolean, nullable=True)   # set True when snooze expires on queue load
 
+    # ── Contact-thread bookkeeping ───────────────────────────────────────────
+    # triaged=False means auto-created and not yet engaged with. It flips to True
+    # on any real engagement (see services/triage_service.py) — never through a
+    # manual queue. The default list view shows triaged records only.
+    triaged      = Column(Boolean, nullable=False, default=False, server_default=text("0"))
+    auto_created = Column(Boolean, nullable=False, default=False, server_default=text("0"))
+    # Email domain this company owns (e.g. "mm-realestate.com"), used to resolve
+    # an inbound sender to an existing company instead of creating a duplicate.
+    # Never set for free-mail domains.
+    email_domain = Column(String, nullable=True, index=True)
+    # tenant | counterparty | owner. Nullable on purpose: an auto-created company
+    # gets no type until Jack sets one, so a guess never hardens into a fact.
+    company_type = Column(String, nullable=True)
+
+    # ── Conversation-sourced claims ──────────────────────────────────────────
+    # What a contact SAID, kept strictly separate from the CoStar-sourced fields
+    # above so a tenant's claim can never silently overwrite verified data.
+    # Nothing here feeds scoring. A claim reaches a scoring field only by Jack
+    # accepting it (see the conflict endpoints), which copies the value across.
+    #
+    # _resolution: NULL = still pending Jack's call, "accepted" = copied to the
+    # verified field, "rejected" = Jack kept the verified value. Without it a
+    # rejected claim would re-prompt forever, and a surface that nags is a
+    # surface Jack abandons.
+    # use_alter=True on the source-entry FKs: activity_logs already points at
+    # companies, so these back-pointers close a cycle. It tells SQLAlchemy to
+    # ignore them when ordering CREATE/DROP; the columns themselves are plain
+    # INTEGERs in SQLite either way (see ensure_schema).
+    contact_reported_lease_expiry                 = Column(Date, nullable=True)
+    contact_reported_lease_expiry_source_entry_id = Column(Integer, ForeignKey("activity_logs.id", use_alter=True), nullable=True)
+    contact_reported_lease_expiry_reported_at     = Column(Date, nullable=True)
+    contact_reported_lease_expiry_resolution      = Column(String, nullable=True)
+
+    contact_reported_rent_psf                 = Column(Float, nullable=True)
+    contact_reported_rent_psf_source_entry_id = Column(Integer, ForeignKey("activity_logs.id", use_alter=True), nullable=True)
+    contact_reported_rent_psf_reported_at     = Column(Date, nullable=True)
+    contact_reported_rent_psf_resolution      = Column(String, nullable=True)
+
+    contact_reported_sf                 = Column(Integer, nullable=True)
+    contact_reported_sf_source_entry_id = Column(Integer, ForeignKey("activity_logs.id", use_alter=True), nullable=True)
+    contact_reported_sf_reported_at     = Column(Date, nullable=True)
+    contact_reported_sf_resolution      = Column(String, nullable=True)
+
+    # Set when Jack rejects a claim. A tenant who believes their lease ends a
+    # year later than the record is itself a lead — a renewal option, a
+    # sublease, a phased expiry — so the disagreement is surfaced, not discarded.
+    has_data_conflict = Column(Boolean, nullable=False, default=False, server_default=text("0"))
+
     # Timestamps
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -113,5 +161,17 @@ class Company(Base):
 
     # Relationships
     opportunities  = relationship("Opportunity", back_populates="company")
-    activity_logs  = relationship("ActivityLog", back_populates="company")
+    # activity_logs = the legacy free link. stamped_activity_logs = entries whose
+    # conversation was ABOUT this company (company_stamp_id), which is what the
+    # company timeline reads. foreign_keys is required — activity_logs has two
+    # FKs pointing here.
+    activity_logs  = relationship(
+        "ActivityLog", back_populates="company",
+        foreign_keys="ActivityLog.company_id",
+    )
+    stamped_activity_logs = relationship(
+        "ActivityLog", back_populates="stamped_company",
+        foreign_keys="ActivityLog.company_stamp_id",
+    )
     outreach_logs  = relationship("OutreachLog", back_populates="company")
+    contacts       = relationship("Contact", back_populates="company")

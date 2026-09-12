@@ -6,7 +6,12 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models.intel import IntelCriterion, IntelFeedback, IntelOpportunity
+from app.models.activity import ActivityLog
+from app.models.intel import (
+    IntelActivityExtraction, IntelCriterion, IntelFeedback, IntelOpportunity,
+)
+from app.services.activity_intel_service import mine_all_activity_logs
+from app.services.document_extraction_service import MissingAPIKeyError
 from app.services.intel_feedback_service import (
     FeedbackError,
     disposition_opportunity,
@@ -145,6 +150,57 @@ def history(db: Session = Depends(get_db)):
             reason_text=fb.reason_text if fb else None,
         ))
     return out
+
+
+# ── Activity-log mining ──────────────────────────────────────────────────────
+
+class ActivityMineIn(BaseModel):
+    limit: Optional[int] = None   # process at most N logs this run
+    force: bool = False           # re-process logs already mined
+
+
+class ActivityMineOut(BaseModel):
+    processed: int
+    facts: int
+    skipped: int
+    failed: int
+
+
+class ActivityStatusOut(BaseModel):
+    total_logs: int
+    mined: int
+    remaining: int
+    facts_extracted: int
+    failed: int
+
+
+@router.post("/activity/mine", response_model=ActivityMineOut)
+def mine_activity(payload: ActivityMineIn, db: Session = Depends(get_db)):
+    """Mine freeform activity-log text into structured observations.
+
+    Read-only with respect to activity logs — it never edits or deletes them.
+    Idempotent: already-mined logs are skipped unless force=true.
+    """
+    try:
+        result = mine_all_activity_logs(db, limit=payload.limit, force=payload.force)
+    except MissingAPIKeyError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return ActivityMineOut(**result)
+
+
+@router.get("/activity/status", response_model=ActivityStatusOut)
+def activity_status(db: Session = Depends(get_db)):
+    """How much of the activity log has been turned into structured facts."""
+    total = db.query(ActivityLog).count()
+    rows = db.query(IntelActivityExtraction).all()
+    mined = len({r.activity_log_id for r in rows})
+    return ActivityStatusOut(
+        total_logs=total,
+        mined=mined,
+        remaining=max(0, total - mined),
+        facts_extracted=sum(r.fields_found for r in rows),
+        failed=sum(1 for r in rows if r.status == "failed"),
+    )
 
 
 @router.get("/criteria", response_model=List[CriterionOut])

@@ -79,6 +79,75 @@ def test_lease_expiring_generates_from_natural_language_date(db):
     assert len(opps) == 1
 
 
+def test_activity_note_facts_do_not_raise_stale_data(db):
+    # Facts mined from a call note are conversation intel, not a lease abstract.
+    # An entity known only from notes must NOT be flagged "incomplete lease record".
+    db.add(Observation(entity_type="company", entity_id=88, field="req_submarkets",
+                       value="Arlington", confidence=0.9, human_verified=False,
+                       source_doc="activity_log:12"))
+    db.add(Observation(entity_type="company", entity_id=88, field="req_space_type",
+                       value="Office", confidence=0.9, human_verified=False,
+                       source_doc="activity_log:12"))
+    db.commit()
+
+    generate_opportunities(db)
+    stale = db.query(IntelOpportunity).filter_by(dedup_key="company:88:stale_data").all()
+    assert stale == []
+
+    # But a real lease document with missing fields still does raise it.
+    db.add(Observation(entity_type="company", entity_id=99, field="tenant_name",
+                       value="Acme", confidence=0.9, human_verified=True,
+                       source_doc="acme_lease.pdf", source_page=1))
+    db.commit()
+    generate_opportunities(db)
+    assert db.query(IntelOpportunity).filter_by(dedup_key="company:99:stale_data").count() == 1
+
+
+def test_verifying_a_fact_retires_the_stale_verify_first_card(db):
+    """The same fact must never appear twice under contradictory framing."""
+    exp = date.today() + timedelta(days=8)
+    obs = Observation(entity_type="activity_log", entity_id=188, field="expiration_date",
+                      value=exp.isoformat(), confidence=0.9, human_verified=False,
+                      source_doc="activity_log:188")
+    db.add(obs)
+    db.commit()
+
+    generate_opportunities(db)   # unverified -> "verify first"
+    assert db.query(IntelOpportunity).filter_by(
+        dedup_key="activity_log:188:expiration_unverified", status="open").count() == 1
+
+    obs.human_verified = True    # fact gets approved
+    db.commit()
+    generate_opportunities(db)
+
+    open_opps = db.query(IntelOpportunity).filter_by(status="open").all()
+    assert len(open_opps) == 1
+    assert open_opps[0].dedup_key == "activity_log:188:lease_expiring"
+    stale = db.query(IntelOpportunity).filter_by(
+        dedup_key="activity_log:188:expiration_unverified").one()
+    assert stale.status == "superseded"  # retired, not dispositioned
+
+
+def test_label_falls_back_to_contact_name_and_space_type(db):
+    """Activity notes carry contact_name, not tenant_name — the card must still
+    read like something a human recognizes."""
+    exp = date.today() + timedelta(days=8)
+    for field, value in (("expiration_date", exp.isoformat()),
+                         ("contact_name", "Hoda Murad"),
+                         ("req_space_type", "home health care")):
+        db.add(Observation(entity_type="activity_log", entity_id=188, field=field,
+                           value=value, human_verified=True, source_doc="activity_log:188"))
+    db.commit()
+
+    generate_opportunities(db)
+    opp = db.query(IntelOpportunity).filter_by(dedup_key="activity_log:188:lease_expiring").one()
+    assert opp.title == "Lease expiring — Hoda Murad (home health care)"
+    assert "activity_log #188" not in opp.rationale
+    # Evidence link data is carried through for the UI.
+    import json
+    assert json.loads(opp.signals_json)[0]["source_doc"] == "activity_log:188"
+
+
 def test_generate_produces_right_opportunities_in_right_order(db):
     today = date.today()
     # #1 verified, expiring in 90 days -> lease_expiring (highest).

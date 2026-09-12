@@ -1,0 +1,352 @@
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import {
+  Mail, Phone, Plus, Search, TriangleAlert, Users, X,
+} from 'lucide-react'
+import { createContact, getContacts, searchContacts } from '../api/client'
+import type {
+  ActivityStage, Channel, Contact, ContactListRow, ContactType,
+} from '../types'
+import { CONTACT_TYPE_LABELS, STAGES, UI_CONTACT_TYPES } from '../types'
+
+const STAGE_PILL: Record<ActivityStage, string> = {
+  'Sent':           'bg-blue-500/15 text-blue-300 border-blue-500/40',
+  'Replied':        'bg-violet-500/15 text-violet-300 border-violet-500/40',
+  'Interested':     'bg-emerald-500/15 text-emerald-300 border-emerald-500/40',
+  'In Play':        'bg-amber-500/15 text-amber-300 border-amber-500/40',
+  'Not Interested': 'bg-red-500/15 text-red-300 border-red-500/40',
+  'Dormant':        'bg-surface-muted text-ink-secondary border-ink-muted/40',
+}
+
+const CHANNEL_ICONS: Partial<Record<Channel, React.ElementType>> = {
+  email: Mail, call: Phone, meeting: Users,
+}
+
+const fmtDate = (d: string | null) =>
+  d ? new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '—'
+
+// ── New-contact form ─────────────────────────────────────────────────────────
+function NewContactForm({
+  onCreated, onCancel, initialName,
+}: {
+  onCreated: (c: Contact) => void
+  onCancel: () => void
+  initialName?: string
+}) {
+  const [form, setForm] = useState({
+    name: initialName ?? '', email: '', phone: '', title: '',
+    contact_type: 'tenant' as ContactType,
+  })
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const save = async () => {
+    if (!form.name.trim()) return
+    setSaving(true)
+    setError(null)
+    try {
+      const created = await createContact({
+        name: form.name.trim(),
+        email: form.email.trim() || null,
+        phone: form.phone.trim() || null,
+        title: form.title.trim() || null,
+        contact_type: form.contact_type,
+      })
+      onCreated(created)
+    } catch (e: any) {
+      setError(e?.response?.data?.detail ?? 'Could not create this contact.')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const field = "text-[11px] bg-surface-muted border border-surface-border rounded-lg px-2 py-1.5 text-ink-primary focus:outline-none focus:border-accent-blue/50"
+
+  return (
+    <div className="bg-surface-card border border-accent-blue/40 rounded-xl p-4 mb-4">
+      <div className="grid grid-cols-2 gap-2">
+        <input autoFocus placeholder="Name *" value={form.name}
+               onChange={e => setForm({ ...form, name: e.target.value })} className={field} />
+        <input placeholder="Email" value={form.email}
+               onChange={e => setForm({ ...form, email: e.target.value })} className={field} />
+        <input placeholder="Title" value={form.title}
+               onChange={e => setForm({ ...form, title: e.target.value })} className={field} />
+        <input placeholder="Phone" value={form.phone}
+               onChange={e => setForm({ ...form, phone: e.target.value })} className={field} />
+      </div>
+      <div className="flex items-center gap-1.5 mt-2">
+        {UI_CONTACT_TYPES.map(t => (
+          <button
+            key={t}
+            onClick={() => setForm({ ...form, contact_type: t })}
+            className={`text-[10px] px-2.5 py-1 rounded-full border font-semibold transition-colors
+              ${form.contact_type === t ? 'bg-accent-blue/20 text-accent-blue border-accent-blue/50'
+                                        : 'bg-surface-muted text-ink-muted border-surface-border'}`}
+          >
+            {CONTACT_TYPE_LABELS[t]}
+          </button>
+        ))}
+      </div>
+      {error && <p className="text-[11px] text-red-400 mt-2">{error}</p>}
+      <div className="flex justify-end gap-2 mt-3">
+        <button onClick={onCancel} className="px-3 py-1.5 text-[11px] text-ink-muted hover:text-ink-primary">
+          Cancel
+        </button>
+        <button
+          onClick={save}
+          disabled={saving || !form.name.trim()}
+          className="px-3 py-1.5 rounded-lg bg-accent-blue text-white text-[11px] font-semibold
+                     hover:bg-accent-blueDim disabled:opacity-50"
+        >
+          {saving ? 'Saving…' : 'Create contact'}
+        </button>
+      </div>
+    </div>
+  )
+}
+
+// ── One contact row ──────────────────────────────────────────────────────────
+function ContactRow({ row, onOpen }: { row: ContactListRow; onOpen: (id: number) => void }) {
+  const LastIcon = CHANNEL_ICONS[row.latest_entry_channel ?? 'other']
+  const stage = (row.stage ?? 'Sent') as ActivityStage
+
+  return (
+    <button
+      onClick={() => onOpen(row.id)}
+      className="w-full text-left bg-surface-card border border-surface-border rounded-xl p-3
+                 hover:border-accent-blue/50 transition-colors"
+    >
+      <div className="flex items-start gap-3">
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-sm font-bold text-ink-primary truncate">{row.name}</span>
+            {row.company_name && (
+              <span className="text-[11px] text-emerald-400 truncate">{row.company_name}</span>
+            )}
+            <span className={`text-[9px] px-2 py-0.5 rounded-full border font-semibold ${STAGE_PILL[stage]}`}>
+              {stage}
+            </span>
+            {row.days_in_stage !== null && (
+              <span className="text-[10px] text-ink-muted">{row.days_in_stage}d in stage</span>
+            )}
+            {!row.triaged && (
+              <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400/90
+                               border border-amber-500/20">
+                untriaged
+              </span>
+            )}
+          </div>
+
+          <div className="flex items-center gap-3 mt-1 flex-wrap text-[11px] text-ink-muted">
+            <span className="flex items-center gap-1">
+              {LastIcon && <LastIcon size={10} />}
+              {row.latest_entry_date ? `Last ${fmtDate(row.latest_entry_date)}` : 'No activity'}
+            </span>
+            <span>{row.entry_count} {row.entry_count === 1 ? 'entry' : 'entries'}</span>
+            <span className="uppercase tracking-wider">{row.contact_type}</span>
+          </div>
+
+          {row.latest_entry_summary && (
+            <p className="text-[11px] text-ink-secondary mt-1 truncate">
+              {row.latest_entry_summary}
+            </p>
+          )}
+        </div>
+
+        {row.next_touch_date && (
+          <span className={`flex-shrink-0 text-[10px] px-2 py-1 rounded-lg font-semibold border
+            ${row.overdue ? 'bg-amber-500/15 text-amber-300 border-amber-500/40'
+                          : 'bg-surface-muted text-ink-muted border-surface-border'}`}>
+            {row.overdue ? 'Due ' : 'Next '}{fmtDate(row.next_touch_date)}
+          </span>
+        )}
+      </div>
+    </button>
+  )
+}
+
+// ── The list ─────────────────────────────────────────────────────────────────
+export default function ContactList({ onOpen }: { onOpen: (id: number) => void }) {
+  const [rows, setRows] = useState<ContactListRow[]>([])
+  const [loading, setLoading] = useState(true)
+  const [typeFilter, setTypeFilter] = useState<'All' | ContactType>('All')
+  const [stageFilter, setStageFilter] = useState<'All' | ActivityStage>('All')
+  // The default list shows triaged records only; untriaged sit behind this
+  // toggle and stay fully searchable either way.
+  const [showUntriaged, setShowUntriaged] = useState(false)
+  const [creating, setCreating] = useState(false)
+  const [query, setQuery] = useState('')
+  const [searchHits, setSearchHits] = useState<Contact[] | null>(null)
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    try {
+      setRows(await getContacts({
+        contact_type: typeFilter === 'All' ? undefined : typeFilter,
+        stage: stageFilter === 'All' ? undefined : stageFilter,
+        triaged: showUntriaged ? undefined : true,
+        limit: 1000,
+      }))
+    } finally {
+      setLoading(false)
+    }
+  }, [typeFilter, stageFilter, showUntriaged])
+
+  useEffect(() => { void load() }, [load])
+
+  // Type-ahead reaches untriaged contacts regardless of the toggle.
+  useEffect(() => {
+    const term = query.trim()
+    if (!term) { setSearchHits(null); return }
+    let cancelled = false
+    const t = setTimeout(async () => {
+      const hits = await searchContacts(term)
+      if (!cancelled) setSearchHits(hits)
+    }, 180)
+    return () => { cancelled = true; clearTimeout(t) }
+  }, [query])
+
+  const untriagedCount = useMemo(
+    () => rows.filter(r => !r.triaged).length,
+    [rows],
+  )
+
+  return (
+    <div>
+      <div className="flex items-center justify-between gap-3 mb-4">
+        <div className="relative flex-1 max-w-xs">
+          <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-ink-muted" />
+          <input
+            value={query}
+            onChange={e => setQuery(e.target.value)}
+            placeholder="Search name or email…"
+            className="w-full text-[11px] bg-surface-card border border-surface-border rounded-lg
+                       pl-8 pr-7 py-1.5 text-ink-primary focus:outline-none focus:border-accent-blue/50"
+          />
+          {query && (
+            <button
+              onClick={() => setQuery('')}
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-ink-muted hover:text-ink-primary"
+            >
+              <X size={12} />
+            </button>
+          )}
+        </div>
+        <button
+          onClick={() => setCreating(v => !v)}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-accent-blue text-white
+                     text-[11px] font-semibold hover:bg-accent-blueDim"
+        >
+          <Plus size={12} /> New contact
+        </button>
+      </div>
+
+      {creating && (
+        <NewContactForm
+          initialName={query.trim() || undefined}
+          onCancel={() => setCreating(false)}
+          onCreated={c => { setCreating(false); setQuery(''); onOpen(c.id) }}
+        />
+      )}
+
+      {/* Search results short-circuit the filtered list. */}
+      {searchHits !== null ? (
+        <div className="space-y-2">
+          <div className="text-[10px] uppercase tracking-widest text-ink-muted">
+            {searchHits.length} match{searchHits.length === 1 ? '' : 'es'}
+          </div>
+          {searchHits.map(c => (
+            <button
+              key={c.id}
+              onClick={() => onOpen(c.id)}
+              className="w-full text-left bg-surface-card border border-surface-border rounded-xl p-3
+                         hover:border-accent-blue/50 transition-colors"
+            >
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-sm font-bold text-ink-primary">{c.name}</span>
+                {c.company_name && <span className="text-[11px] text-emerald-400">{c.company_name}</span>}
+                {!c.triaged && (
+                  <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400/90
+                                   border border-amber-500/20">untriaged</span>
+                )}
+              </div>
+              {c.email && <div className="text-[11px] text-ink-muted mt-0.5">{c.email}</div>}
+            </button>
+          ))}
+          {searchHits.length === 0 && (
+            <div className="text-center py-8 text-ink-muted">
+              <p className="text-xs">No contact matches “{query}”.</p>
+              <button
+                onClick={() => setCreating(true)}
+                className="mt-2 text-[11px] text-accent-blue hover:underline"
+              >
+                Create “{query.trim()}” as a new contact
+              </button>
+            </div>
+          )}
+        </div>
+      ) : (
+        <>
+          <div className="flex items-center gap-1.5 mb-3 flex-wrap">
+            {(['All', ...UI_CONTACT_TYPES] as const).map(t => (
+              <button
+                key={t}
+                onClick={() => setTypeFilter(t as 'All' | ContactType)}
+                className={`text-[11px] px-2.5 py-1 rounded-full border font-semibold transition-colors
+                  ${typeFilter === t ? 'bg-accent-blue/20 text-accent-blue border-accent-blue/50'
+                                     : 'bg-surface-card text-ink-muted border-surface-border hover:text-ink-secondary'}`}
+              >
+                {t === 'All' ? 'All' : CONTACT_TYPE_LABELS[t as ContactType]}
+              </button>
+            ))}
+            <div className="w-px h-4 bg-surface-border mx-1" />
+            {(['All', ...STAGES] as const).map(s => (
+              <button
+                key={s}
+                onClick={() => setStageFilter(s as 'All' | ActivityStage)}
+                className={`text-[11px] px-2.5 py-1 rounded-full border font-semibold transition-colors
+                  ${stageFilter === s ? 'bg-accent-blue/20 text-accent-blue border-accent-blue/50'
+                                      : 'bg-surface-card text-ink-muted border-surface-border hover:text-ink-secondary'}`}
+              >
+                {s}
+              </button>
+            ))}
+          </div>
+
+          <div className="flex items-center justify-between mb-3">
+            <span className="text-[11px] text-ink-muted">
+              {rows.length} contact{rows.length === 1 ? '' : 's'}
+            </span>
+            <button
+              onClick={() => setShowUntriaged(v => !v)}
+              className={`text-[10px] px-2.5 py-1 rounded-full border font-semibold transition-colors
+                ${showUntriaged ? 'bg-amber-500/15 text-amber-300 border-amber-500/40'
+                                : 'bg-surface-card text-ink-muted border-surface-border hover:text-ink-secondary'}`}
+            >
+              {showUntriaged
+                ? `Hiding nothing — ${untriagedCount} untriaged shown`
+                : 'Show untriaged'}
+            </button>
+          </div>
+
+          {loading ? (
+            <div className="text-center py-12 text-ink-muted">Loading…</div>
+          ) : rows.length === 0 ? (
+            <div className="text-center py-12 text-ink-muted">
+              <Users size={32} className="mx-auto mb-3 opacity-30" />
+              <p className="text-sm">No contacts yet.</p>
+              <p className="text-xs mt-1">
+                Create one, or log an email — contacts appear as you work.
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {rows.map(row => (
+                <ContactRow key={row.id} row={row} onOpen={onOpen} />
+              ))}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  )
+}

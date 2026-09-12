@@ -18,8 +18,19 @@ import type {
   IntelHistoryItem,
   IntelDispositionResult,
   IntelCriterion,
+  IntelGenerateResult,
+  RequeueDatesResult,
   DocumentOut,
   ExtractionResult,
+  ActivityMineResult,
+  ActivityMiningStatus,
+  Contact,
+  ContactListRow,
+  ContactFact,
+  ThreadHeader,
+  TimelinePage,
+  CompanyTimelinePage,
+  DataConflict,
 } from '../types'
 
 const api = axios.create({
@@ -323,13 +334,34 @@ export const updateActivityNote = (
   entryId: number,
   notes: string,
 ): Promise<ActivityLog> =>
-  api.patch(`/activity/${entryId}/notes/`, { notes }).then(r => r.data)
+  api.patch(`/activity/${entryId}/notes`, { notes }).then(r => r.data)
+
+// Edit any freeform field. The backend re-mines the entry so the intelligence
+// layer's extracted facts stay in sync with what the note now says.
+export const editActivity = (
+  entryId: number,
+  payload: {
+    action_type?: string
+    action_taken?: string
+    outcome?: string
+    notes?: string
+    follow_up_action?: string
+    subject?: string
+  },
+): Promise<ActivityLog> =>
+  api.patch(`/activity/${entryId}`, payload).then(r => r.data)
+
+// Delete an entry and the facts the intelligence layer derived from it.
+export const deleteActivity = (
+  entryId: number,
+): Promise<{ deleted: number }> =>
+  api.delete(`/activity/${entryId}`).then(r => r.data)
 
 export const updateActivityStage = (
   entryId: number,
   payload: { stage: string; next_touch_date?: string | null },
 ): Promise<ActivityLog> =>
-  api.patch(`/activity/${entryId}/stage/`, payload).then(r => r.data)
+  api.patch(`/activity/${entryId}/stage`, payload).then(r => r.data)
 
 export const getReEngage = (): Promise<ActivityLog[]> =>
   api.get('/activity/re-engage').then(r => r.data)
@@ -347,8 +379,151 @@ export const createActivity = (payload: {
   target_type?: string
   contact_method?: string
   subject?: string
+  // Contact threads — every field optional, so existing callers are unchanged.
+  contact_id?: number
+  company_stamp_id?: number
+  direction?: string
+  channel?: string
+  source_message_id?: string
+  disc_current_rent_psf?: number | null
+  disc_current_sf?: number | null
+  disc_lease_expiry?: string | null
+  disc_decision_timeline?: string | null
+  disc_buildout_needs?: string | null
+  disc_decision_maker?: string | null
 }): Promise<ActivityLog> =>
   api.post('/activity/', payload).then(r => r.data)
+
+// Attach an existing entry to a contact — retroactive assignment (a March
+// voicemail attached to Dana once you learn her name) or manual correction.
+export const assignActivity = (
+  entryId: number,
+  payload: { contact_id: number | null; company_stamp_id?: number },
+): Promise<ActivityLog> =>
+  api.patch(`/activity/${entryId}/assign`, payload).then(r => r.data)
+
+// ── Contacts ───────────────────────────────────────────────────────────────
+
+export interface ContactFilters {
+  contact_type?: string
+  triaged?: boolean
+  responded?: boolean
+  stage?: string
+  q?: string
+  limit?: number
+  offset?: number
+}
+
+export const getContacts = (filters?: ContactFilters): Promise<ContactListRow[]> =>
+  api.get('/contacts/', { params: filters }).then(r => r.data)
+
+export const getContactThread = (contactId: number): Promise<ThreadHeader> =>
+  api.get(`/contacts/${contactId}`).then(r => r.data)
+
+export const getContactTimeline = (
+  contactId: number,
+  params?: { limit?: number; offset?: number },
+): Promise<TimelinePage> =>
+  api.get(`/contacts/${contactId}/timeline`, { params }).then(r => r.data)
+
+export const searchContacts = (q: string): Promise<Contact[]> =>
+  api.get('/contacts/search', { params: { q } }).then(r => r.data)
+
+export const resolveContact = (
+  payload: { email?: string; name?: string },
+): Promise<{ found: boolean; contact: Contact | null }> =>
+  api.post('/contacts/resolve', payload).then(r => r.data)
+
+export const createContact = (payload: {
+  name: string
+  email?: string | null
+  phone?: string | null
+  title?: string | null
+  company_id?: number | null
+  contact_type?: string
+  stage?: string
+  next_touch_date?: string | null
+  triaged?: boolean
+}): Promise<Contact> =>
+  api.post('/contacts/', payload).then(r => r.data)
+
+export const updateContact = (
+  contactId: number,
+  payload: {
+    name?: string
+    email?: string | null
+    phone?: string | null
+    title?: string | null
+    company_id?: number | null
+    contact_type?: string
+    stage?: string
+    next_touch_date?: string | null
+    responded?: boolean
+    triaged?: boolean
+    clear_next_touch?: boolean
+  },
+): Promise<Contact> =>
+  api.patch(`/contacts/${contactId}`, payload).then(r => r.data)
+
+// ── Contact facts ──────────────────────────────────────────────────────────
+
+export const getContactFacts = (
+  contactId: number,
+  includeSuperseded = false,
+): Promise<ContactFact[]> =>
+  api.get('/contacts/facts', {
+    params: { contact_id: contactId, include_superseded: includeSuperseded },
+  }).then(r => r.data)
+
+export const addContactFact = (payload: {
+  contact_id: number
+  fact_text: string
+  source_entry_id?: number | null
+  learned_date?: string | null
+  supersedes_id?: number | null
+}): Promise<ContactFact> =>
+  api.post('/contacts/facts', payload).then(r => r.data)
+
+// Supersede rather than delete when a new fact contradicts an old one — the
+// old one stops showing but stays retrievable.
+export const supersedeContactFact = (
+  factId: number,
+  payload: { fact_text: string; source_entry_id?: number | null },
+): Promise<ContactFact> =>
+  api.post(`/contacts/facts/${factId}/supersede`, payload).then(r => r.data)
+
+export const deleteContactFact = (factId: number): Promise<{ deleted: number }> =>
+  api.delete(`/contacts/facts/${factId}`).then(r => r.data)
+
+// ── Data conflicts ─────────────────────────────────────────────────────────
+// Lease expiry, headcount, growth rate and SF never write silently.
+
+export const getConflicts = (companyPk: number): Promise<DataConflict[]> =>
+  api.get(`/contacts/conflicts/${companyPk}`).then(r => r.data)
+
+export const reportConflict = (
+  companyPk: number,
+  payload: { field: string; value: string; source_entry_id?: number | null },
+): Promise<DataConflict[]> =>
+  api.post(`/contacts/conflicts/${companyPk}/report`, payload).then(r => r.data)
+
+export const acceptConflict = (
+  companyPk: number, field: string,
+): Promise<DataConflict[]> =>
+  api.post(`/contacts/conflicts/${companyPk}/${field}/accept`).then(r => r.data)
+
+export const rejectConflict = (
+  companyPk: number, field: string,
+): Promise<DataConflict[]> =>
+  api.post(`/contacts/conflicts/${companyPk}/${field}/reject`).then(r => r.data)
+
+// Every entry stamped to a company, interleaved across all contacts —
+// including entries with no contact attached.
+export const getCompanyTimeline = (
+  companyId: string,
+  params?: { limit?: number; offset?: number },
+): Promise<CompanyTimelinePage> =>
+  api.get(`/companies/${companyId}/timeline`, { params }).then(r => r.data)
 
 // ── Pipeline ───────────────────────────────────────────────────────────────
 
@@ -534,8 +709,14 @@ export const verifyObservation = (
 
 // ── Intel (Phase D — signal-driven opportunities) ────────────────────────────
 
-export const generateIntelOpportunities = (): Promise<IntelOpportunity[]> =>
+// Returns the opportunities AND a summary of what was scanned — a run that
+// finds nothing must be distinguishable from a button that did nothing.
+export const generateIntelOpportunities = (): Promise<IntelGenerateResult> =>
   api.post('/intel/opportunities/generate').then(r => r.data)
+
+// One-time backfill: send auto-approved but imprecise lease dates back to Review.
+export const requeueFuzzyDates = (): Promise<RequeueDatesResult> =>
+  api.post('/intel/activity/requeue-dates').then(r => r.data)
 
 export const getIntelOpportunities = (status = 'open'): Promise<IntelOpportunity[]> =>
   api.get('/intel/opportunities', { params: { status } }).then(r => r.data)
@@ -572,3 +753,15 @@ export const uploadDocument = (file: File): Promise<DocumentOut> => {
 
 export const extractDocument = (documentId: number): Promise<ExtractionResult> =>
   api.post(`/documents/${documentId}/extract`).then(r => r.data)
+
+// ── Activity-log mining (freeform notes → structured facts) ──────────────────
+
+export const getActivityMiningStatus = (): Promise<ActivityMiningStatus> =>
+  api.get('/intel/activity/status').then(r => r.data)
+
+// Mined in batches so a long backfill never blocks on one HTTP request.
+export const mineActivityLogs = (
+  limit?: number,
+  force = false,
+): Promise<ActivityMineResult> =>
+  api.post('/intel/activity/mine', { limit, force }).then(r => r.data)

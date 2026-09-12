@@ -1,8 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
-import { ClipboardCheck, Check, Pencil, FileText, X, Upload } from 'lucide-react'
+import { ClipboardCheck, Check, Pencil, FileText, X, Upload, Wand2 } from 'lucide-react'
 import axios from 'axios'
-import { getObservations, verifyObservation, uploadDocument, extractDocument } from '../api/client'
-import type { Observation } from '../types'
+import {
+  getObservations, verifyObservation, uploadDocument, extractDocument,
+  getActivityMiningStatus, mineActivityLogs,
+} from '../api/client'
+import type { Observation, ActivityMiningStatus } from '../types'
 
 // Turn a raw field name (e.g. "base_rent_annual") into a readable label.
 function fieldLabel(field: string): string {
@@ -146,9 +149,113 @@ function ReviewRow({
   )
 }
 
+// ── Activity-log mining panel ────────────────────────────────────────────────
+// Turns freeform notes into structured facts. Runs in small batches so a long
+// backfill never blocks on a single HTTP request. Never edits the logs.
+const MINE_BATCH_SIZE = 20
+
+function ActivityMiningPanel({ onMined }: { onMined: () => void }) {
+  const [status, setStatus] = useState<ActivityMiningStatus | null>(null)
+  const [running, setRunning] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const refresh = async () => {
+    try {
+      setStatus(await getActivityMiningStatus())
+    } catch {
+      /* panel is non-critical; stay quiet */
+    }
+  }
+
+  useEffect(() => { refresh() }, [])
+
+  const run = async () => {
+    setRunning(true)
+    setError(null)
+    try {
+      // Loop batches until nothing is left (or a batch makes no progress).
+      for (;;) {
+        const res = await mineActivityLogs(MINE_BATCH_SIZE)
+        const next = await getActivityMiningStatus()
+        setStatus(next)
+        onMined()
+        if (next.remaining <= 0 || res.processed === 0) break
+      }
+    } catch (err) {
+      let msg = 'Mining failed.'
+      if (axios.isAxiosError(err) && err.response?.data?.detail) msg = String(err.response.data.detail)
+      setError(msg)
+    } finally {
+      setRunning(false)
+    }
+  }
+
+  if (!status || status.total_logs === 0) return null
+
+  const pct = status.total_logs
+    ? Math.round((status.mined / status.total_logs) * 100)
+    : 0
+  const done = status.remaining === 0
+
+  return (
+    <div className="mb-5 bg-surface-card border border-surface-border rounded-xl p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-sm font-semibold text-ink-primary flex items-center gap-2">
+            <Wand2 size={14} className="text-accent-blue" />
+            Activity log intelligence
+          </div>
+          <p className="text-[11px] text-ink-muted mt-0.5 leading-relaxed">
+            Reads your call and email notes and turns what tenants actually said into
+            structured facts. Your activity logs are never changed.
+          </p>
+        </div>
+        {!done && (
+          <button
+            onClick={run}
+            disabled={running}
+            className="flex-shrink-0 text-[10px] px-3 py-1.5 rounded-lg bg-accent-blue
+                       hover:bg-accent-blueDim text-white font-semibold disabled:opacity-50"
+          >
+            {running ? 'Mining…' : `Mine ${status.remaining} logs`}
+          </button>
+        )}
+      </div>
+
+      {/* Progress */}
+      <div className="mt-3">
+        <div className="h-1.5 bg-surface-muted rounded-full overflow-hidden">
+          <div
+            className={`h-full rounded-full transition-all ${done ? 'bg-emerald-500' : 'bg-accent-blue'}`}
+            style={{ width: `${pct}%` }}
+          />
+        </div>
+        <div className="flex items-center gap-3 mt-1.5 text-[10px] text-ink-muted flex-wrap">
+          <span>{status.mined} / {status.total_logs} notes read ({pct}%)</span>
+          <span className="text-emerald-400">{status.facts_extracted} facts extracted</span>
+          {status.failed > 0 && <span className="text-red-400">{status.failed} failed</span>}
+          {done && <span className="text-emerald-400 font-semibold">✓ all notes processed</span>}
+        </div>
+      </div>
+
+      {error && <p className="mt-2 text-[11px] text-red-400">{error}</p>}
+    </div>
+  )
+}
+
+// Where a fact came from, derived from its source_doc.
+function isFromNote(obs: Observation): boolean {
+  return !!obs.source_doc && obs.source_doc.startsWith('activity_log:')
+}
+
+type SourceFilter = 'all' | 'notes' | 'docs'
+const PAGE_SIZE = 50
+
 export default function ReviewPage() {
   const [rows, setRows] = useState<Observation[]>([])
   const [loading, setLoading] = useState(true)
+  const [sourceFilter, setSourceFilter] = useState<SourceFilter>('all')
+  const [visible, setVisible] = useState(PAGE_SIZE)
 
   const load = async () => {
     setLoading(true)
@@ -206,6 +313,13 @@ export default function ReviewPage() {
 
   const busy = uploadState !== 'idle'
 
+  const noteCount = rows.filter(isFromNote).length
+  const filtered = rows.filter(obs =>
+    sourceFilter === 'all' ? true
+      : sourceFilter === 'notes' ? isFromNote(obs)
+      : !isFromNote(obs),
+  )
+
   return (
     <div className="p-6 max-w-3xl">
       <div className="flex items-center justify-between mb-6">
@@ -236,6 +350,8 @@ export default function ReviewPage() {
         </button>
       </div>
 
+      <ActivityMiningPanel onMined={load} />
+
       {uploadMsg && (
         <div
           className={`mb-5 rounded-xl p-3 text-xs flex items-start justify-between gap-3 border
@@ -250,23 +366,56 @@ export default function ReviewPage() {
         </div>
       )}
 
+      {/* Source filter — separates conversation intel from lease abstracts */}
+      {!loading && rows.length > 0 && (
+        <div className="flex items-center gap-1.5 mb-4 flex-wrap">
+          {([
+            ['all', 'All', rows.length],
+            ['notes', 'From call/email notes', noteCount],
+            ['docs', 'From lease documents', rows.length - noteCount],
+          ] as [SourceFilter, string, number][]).map(([key, label, count]) => (
+            <button
+              key={key}
+              onClick={() => { setSourceFilter(key); setVisible(PAGE_SIZE) }}
+              className={`text-[11px] px-2.5 py-1 rounded-full border font-semibold transition-colors
+                ${sourceFilter === key
+                  ? 'bg-accent-blue/20 text-accent-blue border-accent-blue/50'
+                  : 'bg-surface-card text-ink-muted border-surface-border hover:text-ink-secondary'}`}
+            >
+              {label} <span className="ml-1 text-ink-muted">{count}</span>
+            </button>
+          ))}
+        </div>
+      )}
+
       {loading ? (
         <div className="text-center py-12 text-ink-muted">Loading…</div>
-      ) : rows.length === 0 ? (
+      ) : filtered.length === 0 ? (
         <div className="text-center py-12 text-ink-muted">
           <ClipboardCheck size={32} className="mx-auto mb-3 opacity-30" />
           <p className="text-sm">Nothing awaiting review.</p>
           <p className="text-xs mt-1 text-ink-muted">
-            Upload a lease PDF above — extracted facts land here for you to confirm
-            before they drive signals.
+            Upload a lease PDF or mine your activity notes above — extracted facts
+            land here for you to confirm before they drive signals.
           </p>
         </div>
       ) : (
-        <div className="space-y-3">
-          {rows.map(obs => (
-            <ReviewRow key={obs.id} obs={obs} onResolved={handleResolved} />
-          ))}
-        </div>
+        <>
+          <div className="space-y-3">
+            {filtered.slice(0, visible).map(obs => (
+              <ReviewRow key={obs.id} obs={obs} onResolved={handleResolved} />
+            ))}
+          </div>
+          {filtered.length > visible && (
+            <button
+              onClick={() => setVisible(v => v + PAGE_SIZE)}
+              className="mt-4 w-full text-[11px] py-2 rounded-lg bg-surface-muted hover:bg-surface-hover
+                         text-ink-secondary hover:text-ink-primary font-semibold border border-surface-border"
+            >
+              Show more ({filtered.length - visible} remaining)
+            </button>
+          )}
+        </>
       )}
     </div>
   )
