@@ -42,3 +42,10 @@ google_credentials.json
 
 # CoStar lookup Excel files — large, local-only, not committed to repo
 costar_lookup/
+
+# Call recordings — private audio/video of real conversations, local-only
+callrecordings/
+
+# Backfill report — real contact names, addresses and note text pulled out of
+# the live database. Regenerate it with scripts/backfill_contacts.py; never commit it.
+backend/scripts/backfill_report.json

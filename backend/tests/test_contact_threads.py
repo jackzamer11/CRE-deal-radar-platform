@@ -1095,3 +1095,984 @@ def test_counterparty_facts_are_not_in_the_generator_input_dict(db_session, clie
     # The conversation-sourced claim columns must not be fed in either — only a
     # value Jack has accepted (which lands on the verified column) may be used.
     assert "contact_reported" not in source
+
+
+# ══ Phase two ═════════════════════════════════════════════════════════════════
+#
+# Everything below locks the phase-two behaviours: the manual inbound rule,
+# stage changes rendering as collapsible dividers rather than entries, the edit
+# and delete surfaces, and the backfill. In-memory inputs only — the backfill's
+# model step is mocked, so no test here makes a network call.
+
+
+def _stage_events(db, contact_id):
+    """The divider rows on a contact, oldest first."""
+    return (
+        db.query(ActivityLog)
+        .filter(
+            ActivityLog.contact_id == contact_id,
+            ActivityLog.action_type == "STAGE_CHANGE",
+        )
+        .order_by(ActivityLog.id.asc())
+        .all()
+    )
+
+
+# ── 1. A manual inbound entry advances the stage ─────────────────────────────
+
+def test_manual_inbound_entry_sets_responded_and_moves_sent_to_replied(db_session, client):
+    """Logging a reply by hand left the header reading "They replied — owed a
+    response" while the stage pill still said Sent. Same rule as from-email now,
+    through the same shared code path."""
+    contact = _contact(db_session, "Dana Reply", email="dana@acme.com", stage="Sent")
+
+    r = client.post("/api/activity/", json={
+        "action_type": "EMAIL",
+        "action_taken": "Dana emailed back about the Reston space",
+        "contact_id": contact.id,
+        "direction": "inbound",
+        "channel": "email",
+    })
+    assert r.status_code == 200, r.text
+
+    db_session.refresh(contact)
+    assert contact.responded is True
+    assert contact.stage == "Replied"
+
+
+def test_manual_inbound_does_not_regress_a_contact_already_in_play(db_session, client):
+    """Sent to Replied only. A contact further down the pipeline is never pulled
+    backwards by logging an inbound touch."""
+    contact = _contact(db_session, "Ed Deep", email="ed@acme.com", stage="In Play")
+
+    client.post("/api/activity/", json={
+        "action_type": "CALL",
+        "action_taken": "Ed called back",
+        "contact_id": contact.id,
+        "direction": "inbound",
+        "channel": "call",
+    })
+
+    db_session.refresh(contact)
+    assert contact.stage == "In Play"     # not regressed
+    assert contact.responded is True      # but the reply is still recorded
+
+
+@pytest.mark.parametrize("stage", ["Interested", "In Play", "Not Interested", "Dormant"])
+def test_manual_inbound_never_regresses_any_later_stage(db_session, client, stage):
+    slug = stage.replace(" ", "").lower()
+    contact = _contact(db_session, f"Person {stage}", email=f"{slug}@acme.com", stage=stage)
+    client.post("/api/activity/", json={
+        "action_type": "EMAIL", "action_taken": "they wrote in",
+        "contact_id": contact.id, "direction": "inbound",
+    })
+    db_session.refresh(contact)
+    assert contact.stage == stage
+
+
+def test_manual_outbound_entry_does_not_set_responded(db_session, client):
+    contact = _contact(db_session, "Fay Quiet", email="fay@acme.com", stage="Sent")
+    client.post("/api/activity/", json={
+        "action_type": "EMAIL", "action_taken": "Emailed Fay",
+        "contact_id": contact.id, "direction": "outbound",
+    })
+    db_session.refresh(contact)
+    assert contact.responded is False
+    assert contact.stage == "Sent"
+
+
+# ── 2. Stage changes are dividers, and they collapse ─────────────────────────
+
+def test_a_stage_change_writes_a_divider_not_an_entry(db_session, client):
+    """No direction, no channel, not outreach, and never stamped to a company —
+    the old rows read as OUT / OTHER outreach cards."""
+    contact = _contact(db_session, "Gil Pill", stage="Sent")
+    company = _company(db_session, "Gil Corp", "CO-GIL")
+    contact.company_id = company.id
+    db_session.commit()
+
+    client.patch(f"/api/contacts/{contact.id}", json={"stage": "Replied"})
+
+    events = _stage_events(db_session, contact.id)
+    assert len(events) == 1
+    event = events[0]
+    assert event.action_type == "STAGE_CHANGE"
+    assert event.stage_from == "Sent"
+    assert event.stage_to == "Replied"
+    assert event.direction is None
+    assert event.channel is None
+    assert event.company_stamp_id is None      # stays off the company timeline
+
+
+def test_two_stage_changes_in_the_window_collapse_to_the_net_move(db_session, client):
+    """Six clicks used to produce six cards. Consecutive changes with no real
+    entry between them resolve to one event showing where it ended up."""
+    contact = _contact(db_session, "Hal Burst", stage="Sent")
+
+    client.patch(f"/api/contacts/{contact.id}", json={"stage": "Replied"})
+    client.patch(f"/api/contacts/{contact.id}", json={"stage": "Interested"})
+
+    events = _stage_events(db_session, contact.id)
+    assert len(events) == 1, "two changes in the window must be one divider"
+    assert events[0].stage_from == "Sent"
+    assert events[0].stage_to == "Interested"     # the net move, not the middle
+
+
+def test_a_long_burst_of_stage_changes_collapses_to_one_divider(db_session, client):
+    """The reported case: clicking along the whole pill row leaves one line."""
+    contact = _contact(db_session, "Ivy Clicks", stage="Sent")
+    for stage in ["Replied", "Interested", "In Play", "Not Interested", "Dormant"]:
+        client.patch(f"/api/contacts/{contact.id}", json={"stage": stage})
+
+    events = _stage_events(db_session, contact.id)
+    assert len(events) == 1
+    assert events[0].stage_from == "Sent"
+    assert events[0].stage_to == "Dormant"
+
+
+def test_a_stage_change_returning_to_the_start_leaves_no_event_at_all(db_session, client):
+    """A misclick corrected is not history."""
+    contact = _contact(db_session, "Jo Misclick", stage="Sent")
+
+    client.patch(f"/api/contacts/{contact.id}", json={"stage": "Replied"})
+    client.patch(f"/api/contacts/{contact.id}", json={"stage": "Sent"})
+
+    assert _stage_events(db_session, contact.id) == []
+    db_session.refresh(contact)
+    assert contact.stage == "Sent"
+
+
+def test_a_round_trip_through_several_stages_also_leaves_no_event(db_session, client):
+    contact = _contact(db_session, "Kim Roundtrip", stage="Replied")
+    for stage in ["Interested", "In Play", "Dormant", "Replied"]:
+        client.patch(f"/api/contacts/{contact.id}", json={"stage": stage})
+    assert _stage_events(db_session, contact.id) == []
+
+
+def test_a_real_entry_between_two_stage_changes_stops_the_collapse(db_session, client):
+    """A touch means the thread moved on, so the next stage change is a new
+    decision rather than a correction of the last one."""
+    contact = _contact(db_session, "Lee Between", stage="Sent")
+
+    client.patch(f"/api/contacts/{contact.id}", json={"stage": "Replied"})
+    client.post("/api/activity/", json={
+        "action_type": "CALL", "action_taken": "Spoke to Lee",
+        "contact_id": contact.id, "direction": "outbound",
+    })
+    client.patch(f"/api/contacts/{contact.id}", json={"stage": "Interested"})
+
+    events = _stage_events(db_session, contact.id)
+    assert len(events) == 2
+    assert [e.stage_to for e in events] == ["Replied", "Interested"]
+
+
+def test_stage_changes_outside_the_window_do_not_collapse(db_session, client):
+    """Thirty minutes is the window. Past it, two changes are two decisions."""
+    from datetime import datetime as _dt, timedelta as _td
+
+    contact = _contact(db_session, "Mo Later", stage="Sent")
+    client.patch(f"/api/contacts/{contact.id}", json={"stage": "Replied"})
+
+    old = _stage_events(db_session, contact.id)[0]
+    old.created_at = _dt.utcnow() - _td(minutes=31)
+    db_session.commit()
+
+    client.patch(f"/api/contacts/{contact.id}", json={"stage": "Interested"})
+
+    events = _stage_events(db_session, contact.id)
+    assert len(events) == 2
+    assert [e.stage_to for e in events] == ["Replied", "Interested"]
+
+
+def test_a_return_to_start_outside_the_window_keeps_both_events(db_session, client):
+    """Only a burst is a misclick. A day later, going back is real history."""
+    from datetime import datetime as _dt, timedelta as _td
+
+    contact = _contact(db_session, "Ned Slow", stage="Sent")
+    client.patch(f"/api/contacts/{contact.id}", json={"stage": "Replied"})
+    old = _stage_events(db_session, contact.id)[0]
+    old.created_at = _dt.utcnow() - _td(hours=30)
+    db_session.commit()
+
+    client.patch(f"/api/contacts/{contact.id}", json={"stage": "Sent"})
+    assert len(_stage_events(db_session, contact.id)) == 2
+
+
+# ── 3. entry_count means real touches ────────────────────────────────────────
+
+def test_entry_count_excludes_stage_change_events(db_session, client):
+    contact = _contact(db_session, "Ola Count", stage="Sent")
+    _entry(db_session, contact_id=contact.id, action_taken="Real touch one")
+    _entry(db_session, contact_id=contact.id, action_taken="Real touch two")
+    client.patch(f"/api/contacts/{contact.id}", json={"stage": "Replied"})
+    assert len(_stage_events(db_session, contact.id)) == 1   # the divider exists
+
+    header = client.get(f"/api/contacts/{contact.id}").json()
+    assert header["entry_count"] == 2, "entry count means real touches"
+
+    row = next(r for r in client.get("/api/contacts/").json() if r["id"] == contact.id)
+    assert row["entry_count"] == 2
+
+
+def test_the_contact_list_summary_is_never_a_stage_change(db_session, client):
+    """A pill click must not become the last thing that happened with a person."""
+    contact = _contact(db_session, "Pia Summary", stage="Sent")
+    _entry(db_session, contact_id=contact.id, action_taken="Left a voicemail")
+    client.patch(f"/api/contacts/{contact.id}", json={"stage": "Replied"})
+
+    row = next(r for r in client.get("/api/contacts/").json() if r["id"] == contact.id)
+    assert row["latest_entry_summary"] == "Left a voicemail"
+
+
+def test_a_stage_change_does_not_become_the_open_loop(db_session, client):
+    """The divider has no direction, so letting it into the header produced
+    'Awaiting their reply' off the back of a pill click."""
+    contact = _contact(db_session, "Quinn Loop", stage="Sent")
+    _entry(db_session, contact_id=contact.id, action_taken="They wrote in",
+           direction="inbound")
+    client.patch(f"/api/contacts/{contact.id}", json={"stage": "Replied"})
+
+    header = client.get(f"/api/contacts/{contact.id}").json()
+    assert header["open_loop"] == "They replied — owed a response"
+
+
+def test_stage_change_dividers_stay_off_the_company_timeline(db_session, client):
+    company = _company(db_session, "Divider Co", "CO-DIV")
+    contact = _contact(db_session, "Rae Stamp", company_id=company.id, stage="Sent")
+    _entry(db_session, contact_id=contact.id, company_stamp_id=company.id,
+           action_taken="A real conversation")
+    client.patch(f"/api/contacts/{contact.id}", json={"stage": "Replied"})
+
+    page = client.get(f"/api/companies/{company.company_id}/timeline").json()
+    assert page["total"] == 1
+    assert page["entries"][0]["action_taken"] == "A real conversation"
+
+
+def test_stage_change_dividers_still_appear_on_the_contact_timeline(db_session, client):
+    """Excluded from counts, not from the thread — the transition is shown."""
+    contact = _contact(db_session, "Sam Shown", stage="Sent")
+    client.patch(f"/api/contacts/{contact.id}", json={"stage": "Interested"})
+
+    page = client.get(f"/api/contacts/{contact.id}/timeline").json()
+    divider = next(e for e in page["entries"] if e["action_type"] == "STAGE_CHANGE")
+    assert divider["stage_from"] == "Sent"
+    assert divider["stage_to"] == "Interested"
+
+
+# ── 4. Editing ───────────────────────────────────────────────────────────────
+
+def test_editing_a_contacts_company_leaves_every_existing_stamp_unchanged(db_session, client):
+    """Current employment moves; history does not. This is what keeps a
+    departed contact's entries on the old company's page."""
+    old_co = _company(db_session, "Old Employer", "CO-OLD")
+    new_co = _company(db_session, "New Employer", "CO-NEW")
+    contact = _contact(db_session, "Tom Moved", company_id=old_co.id)
+    ids = [
+        _entry(db_session, contact_id=contact.id, company_stamp_id=old_co.id,
+               action_taken=f"Touch {i}").id
+        for i in range(3)
+    ]
+
+    r = client.patch(f"/api/contacts/{contact.id}", json={"company_id": new_co.id})
+    assert r.status_code == 200
+
+    db_session.refresh(contact)
+    assert contact.company_id == new_co.id
+    for entry_id in ids:
+        entry = db_session.query(ActivityLog).filter(ActivityLog.id == entry_id).first()
+        assert entry.company_stamp_id == old_co.id
+
+
+def test_editing_every_contact_field_round_trips(db_session, client):
+    company = _company(db_session, "Edit Co", "CO-EDIT")
+    contact = _contact(db_session, "Una Before", email="before@x.com")
+
+    r = client.patch(f"/api/contacts/{contact.id}", json={
+        "name": "Una After", "email": "after@x.com", "phone": "703-555-0100",
+        "title": "Head of Ops", "contact_type": "counterparty",
+        "company_id": company.id, "stage": "Interested",
+        "next_touch_date": "2026-10-01", "triaged": True,
+    })
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["name"] == "Una After"
+    assert body["email"] == "after@x.com"
+    assert body["phone"] == "703-555-0100"
+    assert body["title"] == "Head of Ops"
+    assert body["contact_type"] == "counterparty"
+    assert body["company_id"] == company.id
+    assert body["stage"] == "Interested"
+    assert body["next_touch_date"] == "2026-10-01"
+    assert body["triaged"] is True
+
+
+def test_editing_an_entrys_action_taken_does_not_alter_its_links(db_session, client):
+    """An edit corrects what an entry says, never who it belongs to."""
+    company = _company(db_session, "Link Co", "CO-LINK")
+    other = _company(db_session, "Other Co", "CO-OTHER")
+    contact = _contact(db_session, "Vic Edit", company_id=other.id)
+    entry = _entry(db_session, contact_id=contact.id, company_stamp_id=company.id,
+                   action_taken="Origianl typo")
+
+    r = client.patch(f"/api/activity/{entry.id}", json={"action_taken": "Original, fixed"})
+    assert r.status_code == 200, r.text
+
+    db_session.refresh(entry)
+    assert entry.action_taken == "Original, fixed"
+    assert entry.contact_id == contact.id
+    assert entry.company_stamp_id == company.id
+
+
+def test_an_entrys_direction_channel_date_and_discovery_are_all_editable(db_session, client):
+    contact = _contact(db_session, "Wes Fields")
+    entry = _entry(db_session, contact_id=contact.id, direction="outbound",
+                   channel="email", action_taken="Something")
+
+    r = client.patch(f"/api/activity/{entry.id}", json={
+        "direction": "inbound", "channel": "call", "log_date": "2026-03-04",
+        "outcome": "They want to see space",
+        "notes": "Call back Tuesday",
+        "follow_up_action": "Send comps",
+        "disc_current_rent_psf": 42.5, "disc_current_sf": 8200,
+        "disc_lease_expiry": "2027-06-30",
+        "disc_decision_timeline": "Q1", "disc_buildout_needs": "Open plan",
+        "disc_decision_maker": "The two partners",
+    })
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["direction"] == "inbound"
+    assert body["channel"] == "call"
+    assert body["log_date"] == "2026-03-04"
+    assert body["outcome"] == "They want to see space"
+    assert body["notes"] == "Call back Tuesday"
+    assert body["follow_up_action"] == "Send comps"
+    assert body["disc_current_rent_psf"] == 42.5
+    assert body["disc_current_sf"] == 8200
+    assert body["disc_lease_expiry"] == "2027-06-30"
+    assert body["disc_decision_timeline"] == "Q1"
+    assert body["disc_buildout_needs"] == "Open plan"
+    assert body["disc_decision_maker"] == "The two partners"
+
+
+def test_an_edit_can_clear_a_field_it_previously_set(db_session, client):
+    contact = _contact(db_session, "Xan Clear")
+    entry = _entry(db_session, contact_id=contact.id, action_taken="Something",
+                   outcome="A wrong outcome", disc_current_sf=5000)
+
+    r = client.patch(f"/api/activity/{entry.id}", json={
+        "clear_fields": ["outcome", "disc_current_sf"],
+    })
+    assert r.status_code == 200, r.text
+    db_session.refresh(entry)
+    assert entry.outcome is None
+    assert entry.disc_current_sf is None
+
+
+def test_an_invalid_direction_or_channel_on_an_edit_is_400_not_500(db_session, client):
+    entry = _entry(db_session, action_taken="Something")
+    assert client.patch(f"/api/activity/{entry.id}",
+                        json={"direction": "sideways"}).status_code == 400
+    assert client.patch(f"/api/activity/{entry.id}",
+                        json={"channel": "telepathy"}).status_code == 400
+    assert client.patch(f"/api/activity/{entry.id}",
+                        json={"clear_fields": ["contact_id"]}).status_code == 400
+
+
+def test_a_fact_can_be_edited_in_place(db_session, client):
+    contact = _contact(db_session, "Yui Fact")
+    fact = client.post("/api/contacts/facts", json={
+        "contact_id": contact.id, "fact_text": "brds is split on relocating",
+    }).json()
+
+    r = client.patch(f"/api/contacts/facts/{fact['id']}",
+                     json={"fact_text": "board is split on relocating"})
+    assert r.status_code == 200, r.text
+    assert r.json()["fact_text"] == "board is split on relocating"
+    assert r.json()["is_active"] is True
+
+    active = client.get("/api/contacts/facts", params={"contact_id": contact.id}).json()
+    assert len(active) == 1, "an edit corrects a fact, it does not add one"
+
+
+def test_editing_a_fact_to_empty_is_400_and_a_missing_fact_is_404(db_session, client):
+    contact = _contact(db_session, "Zed Guard")
+    fact = client.post("/api/contacts/facts", json={
+        "contact_id": contact.id, "fact_text": "something",
+    }).json()
+    assert client.patch(f"/api/contacts/facts/{fact['id']}",
+                        json={"fact_text": "   "}).status_code == 400
+    assert client.patch("/api/contacts/facts/999999",
+                        json={"fact_text": "x"}).status_code == 404
+
+
+def test_moving_an_entrys_company_stamp_is_its_own_deliberate_action(db_session, client):
+    """company_stamp_id is immutable by ordinary edit; this endpoint is the
+    only way it moves."""
+    old_co = _company(db_session, "Stamp Old", "CO-SOLD")
+    new_co = _company(db_session, "Stamp New", "CO-SNEW")
+    contact = _contact(db_session, "Amy Restamp")
+    entry = _entry(db_session, contact_id=contact.id, company_stamp_id=old_co.id,
+                   action_taken="A conversation")
+
+    r = client.patch(f"/api/activity/{entry.id}/company-stamp",
+                     json={"company_id": new_co.id})
+    assert r.status_code == 200, r.text
+    db_session.refresh(entry)
+    assert entry.company_stamp_id == new_co.id
+    assert entry.contact_id == contact.id       # who it belongs to is untouched
+
+    assert client.patch(f"/api/activity/{entry.id}/company-stamp",
+                        json={"company_id": 999999}).status_code == 404
+
+
+def test_reassigning_an_entry_to_another_contact_keeps_its_stamp(db_session, client):
+    company = _company(db_session, "Keep Co", "CO-KEEP")
+    a = _contact(db_session, "Ben From")
+    b = _contact(db_session, "Cal To")
+    entry = _entry(db_session, contact_id=a.id, company_stamp_id=company.id,
+                   action_taken="Misfiled")
+
+    r = client.patch(f"/api/activity/{entry.id}/assign", json={"contact_id": b.id})
+    assert r.status_code == 200
+    db_session.refresh(entry)
+    assert entry.contact_id == b.id
+    assert entry.company_stamp_id == company.id
+
+
+# ── 5. Deleting a contact ────────────────────────────────────────────────────
+
+def test_deleting_a_contact_with_unattach_preserves_the_entries(db_session, client):
+    contact = _contact(db_session, "Dee Unattach")
+    ids = [_entry(db_session, contact_id=contact.id, action_taken=f"Kept {i}").id
+           for i in range(3)]
+    client.post("/api/contacts/facts", json={
+        "contact_id": contact.id, "fact_text": "a fact",
+    })
+
+    r = client.delete(f"/api/contacts/{contact.id}", params={"mode": "unattach"})
+    assert r.status_code == 200, r.text
+    assert r.json()["entries_unattached"] == 3
+
+    assert db_session.query(Contact).filter(Contact.id == contact.id).first() is None
+    for entry_id in ids:
+        entry = db_session.query(ActivityLog).filter(ActivityLog.id == entry_id).first()
+        assert entry is not None, "the conversation survives the person record"
+        assert entry.contact_id is None
+    assert db_session.query(ContactFact).filter(
+        ContactFact.contact_id == contact.id).count() == 0
+
+
+def test_deleting_a_contact_with_cascade_removes_the_entries(db_session, client):
+    contact = _contact(db_session, "Eli Cascade")
+    ids = [_entry(db_session, contact_id=contact.id, action_taken=f"Gone {i}").id
+           for i in range(3)]
+    client.post("/api/contacts/facts", json={
+        "contact_id": contact.id, "fact_text": "a fact",
+    })
+
+    r = client.delete(f"/api/contacts/{contact.id}", params={"mode": "cascade"})
+    assert r.status_code == 200, r.text
+    assert r.json()["entries_deleted"] == 3
+
+    assert db_session.query(Contact).filter(Contact.id == contact.id).first() is None
+    for entry_id in ids:
+        assert db_session.query(ActivityLog).filter(
+            ActivityLog.id == entry_id).first() is None
+    assert db_session.query(ContactFact).filter(
+        ContactFact.contact_id == contact.id).count() == 0
+
+
+def test_deleting_a_contact_never_touches_another_contacts_entries(db_session, client):
+    keep = _contact(db_session, "Fin Keeper")
+    kept = _entry(db_session, contact_id=keep.id, action_taken="Untouched")
+    doomed = _contact(db_session, "Gus Doomed")
+    _entry(db_session, contact_id=doomed.id, action_taken="Gone")
+
+    client.delete(f"/api/contacts/{doomed.id}", params={"mode": "cascade"})
+
+    survivor = db_session.query(ActivityLog).filter(ActivityLog.id == kept.id).first()
+    assert survivor is not None and survivor.contact_id == keep.id
+
+
+def test_an_unattach_delete_drops_the_dividers_rather_than_orphaning_them(db_session, client):
+    """A 'Stage: Sent -> Replied' line detached from the person it described is
+    noise in All Activity, not history."""
+    contact = _contact(db_session, "Hana Divider", stage="Sent")
+    real = _entry(db_session, contact_id=contact.id, action_taken="A real touch")
+    client.patch(f"/api/contacts/{contact.id}", json={"stage": "Replied"})
+    assert len(_stage_events(db_session, contact.id)) == 1
+
+    client.delete(f"/api/contacts/{contact.id}", params={"mode": "unattach"})
+
+    assert db_session.query(ActivityLog).filter(
+        ActivityLog.action_type == "STAGE_CHANGE").count() == 0
+    assert db_session.query(ActivityLog).filter(ActivityLog.id == real.id).first() is not None
+
+
+def test_an_invalid_delete_mode_is_400_and_a_missing_contact_is_404(db_session, client):
+    contact = _contact(db_session, "Ida Guard")
+    assert client.delete(f"/api/contacts/{contact.id}",
+                         params={"mode": "sideways"}).status_code == 400
+    assert client.delete("/api/contacts/999999",
+                         params={"mode": "cascade"}).status_code == 404
+
+
+# ── 6. The backfill ──────────────────────────────────────────────────────────
+#
+# The model step is mocked throughout: _extract_batch is the single seam where
+# the script talks to Anthropic, so patching it keeps these tests offline while
+# still exercising the real resolution, grouping and write paths.
+
+import sys                                     # noqa: E402
+import scripts.backfill_contacts as backfill   # noqa: E402
+
+
+def _counts(db):
+    """A snapshot of everything the backfill could possibly write to."""
+    return {
+        "contacts": db.query(Contact).count(),
+        "companies": db.query(Company).count(),
+        "entries": db.query(ActivityLog).count(),
+        "linked": db.query(ActivityLog).filter(
+            ActivityLog.contact_id.isnot(None)).count(),
+        "facts": db.query(ContactFact).count(),
+    }
+
+
+def _no_model(*_args, **_kwargs):
+    """Stand-in for a run where the prose step resolves nothing."""
+    return []
+
+
+def _run_report(db, extractor=_no_model, with_key=True):
+    """build_report with the model seam patched and the key state controlled."""
+    env = {"ANTHROPIC_API_KEY": "test-key"} if with_key else {}
+    with patch.dict("os.environ", env, clear=not with_key):
+        with patch.object(backfill, "_extract_batch", extractor):
+            # The client is only ever handed to _extract_batch, which is mocked.
+            with patch.dict("sys.modules", {"anthropic": _FakeAnthropicModule()}):
+                return backfill.build_report(db, verbose=False)
+
+
+class _FakeAnthropicModule:
+    """Enough of the anthropic module for the client construction to succeed.
+    Nothing on it is ever called — _extract_batch is patched out."""
+    @staticmethod
+    def Anthropic(**_kwargs):
+        return object()
+
+
+def test_backfill_report_mode_writes_zero_rows(db_session):
+    """Report mode reads. It must not create a contact, a company, or touch an
+    entry — the whole point is that Jack reviews the mapping first."""
+    company = _company(db_session, "Report Co", "CO-REP", email_domain="reportco.com")
+    _entry(db_session, action_taken="Emailed Nia Hart (nia@reportco.com) re the Reston space")
+    _entry(db_session, action_taken="Called someone, no idea who")
+    before = _counts(db_session)
+
+    report = _run_report(db_session)
+
+    assert _counts(db_session) == before, "report mode wrote to the database"
+    assert report["total_entries"] == 2
+    assert company.id is not None
+
+
+def test_an_address_in_the_prose_resolves_at_high_confidence(db_session):
+    """Email is identity. No model judgment is involved and none is wanted."""
+    _entry(db_session, action_taken="Emailed Miriam Miller (miriam@mm-realestate.com), "
+                                    "Corcoran McEnearney re 1205 North Pitt Street")
+
+    report = _run_report(db_session)
+    proposal = report["proposals"][0]
+
+    assert proposal["source"] == "address"
+    assert proposal["confidence"] == "high"
+    assert proposal["email"] == "miriam@mm-realestate.com"
+    assert proposal["contact_name"] == "Miriam Miller"
+
+
+def test_an_address_matching_an_existing_contact_reuses_it(db_session):
+    existing = _contact(db_session, "Olu Known", email="olu@known.com")
+    _entry(db_session, action_taken="Emailed Olu Known (olu@known.com) re the lease")
+
+    report = _run_report(db_session)
+    assert report["proposals"][0]["existing_contact_id"] == existing.id
+    assert report["contacts"][0]["existing_contact_id"] == existing.id
+
+
+def test_backfill_write_mode_applies_high_confidence_only(db_session):
+    """A low-confidence row is left for Jack. Nothing is created for it."""
+    high = _entry(db_session, action_taken="Emailed Pat Sure (pat@sureco.com) re the space")
+    low = _entry(db_session, action_taken="Called someone about a thing")
+
+    def extractor(entries, _client):
+        return [{
+            "entry_id": e.id, "contact_name": "Maybe Person", "company_name": None,
+            "email": None, "inbound": False, "confidence": "low",
+        } for e in entries]
+
+    report = _run_report(db_session, extractor)
+    stats = backfill.apply_report(db_session, report)
+
+    assert stats["entries_linked"] == 1
+    assert stats["low_confidence_skipped"] == 1
+
+    db_session.refresh(high)
+    db_session.refresh(low)
+    assert high.contact_id is not None
+    assert low.contact_id is None, "a low-confidence guess must not be written"
+    assert db_session.query(Contact).filter(Contact.name == "Maybe Person").count() == 0
+
+
+def test_backfill_write_mode_is_idempotent(db_session):
+    """Run twice, and the second run changes nothing — no duplicate contacts,
+    no rewritten rows."""
+    _entry(db_session, action_taken="Emailed Rudy Twice (rudy@twiceco.com) re the space")
+    _entry(db_session, action_taken="Emailed Rudy Twice (rudy@twiceco.com) again")
+
+    report = _run_report(db_session)
+    first = backfill.apply_report(db_session, report)
+    after_first = _counts(db_session)
+
+    second = backfill.apply_report(db_session, report)
+    after_second = _counts(db_session)
+
+    assert first["entries_linked"] == 2
+    assert second["entries_linked"] == 0
+    assert second["entries_already_linked"] == 2
+    assert second["contacts_created"] == 0
+    assert second["companies_created"] == 0
+    assert after_second == after_first
+    assert db_session.query(Contact).filter(Contact.email == "rudy@twiceco.com").count() == 1
+
+
+def test_the_backfill_never_rewrites_prose(db_session):
+    """It says who an entry was about. It never touches what it says."""
+    entry = _entry(
+        db_session,
+        action_taken="Emailed Sia Prose (sia@proseco.com) re 100 King Street",
+        outcome="Outreach sent: Leasing opportunity",
+        notes="She mentioned a board meeting in March",
+    )
+    original = (entry.action_taken, entry.outcome, entry.notes)
+
+    report = _run_report(db_session)
+    backfill.apply_report(db_session, report)
+
+    db_session.refresh(entry)
+    assert (entry.action_taken, entry.outcome, entry.notes) == original
+    assert entry.contact_id is not None, "it did attach the entry"
+
+
+def test_an_outlook_marker_migrates_and_is_stripped_without_disturbing_the_note(db_session):
+    """The marker sharing a user-editable field is what relogged old emails."""
+    entry = _entry(
+        db_session,
+        action_taken="Emailed Tia Mark (tia@markco.com) re the sublease",
+        notes="Wants a March start. [outlook:<AAA111@mail.example.com>] Call Tuesday.",
+    )
+
+    report = _run_report(db_session)
+    backfill.apply_report(db_session, report)
+
+    db_session.refresh(entry)
+    assert entry.source_message_id == "<AAA111@mail.example.com>"
+    assert "outlook:" not in (entry.notes or "")
+    assert "Wants a March start." in entry.notes
+    assert "Call Tuesday." in entry.notes
+
+
+def test_a_marker_migrates_even_when_the_entry_resolves_to_nobody(db_session):
+    """An unresolved entry still needs its dedup marker out of the note."""
+    entry = _entry(db_session, action_taken="Sent something to someone",
+                   notes="No idea. [outlook:<BBB222@mail.example.com>]")
+
+    report = _run_report(db_session)
+    backfill.apply_report(db_session, report)
+
+    db_session.refresh(entry)
+    assert entry.contact_id is None
+    assert entry.source_message_id == "<BBB222@mail.example.com>"
+    assert "outlook:" not in (entry.notes or "")
+
+
+def test_a_duplicate_marker_is_skipped_rather_than_destroying_the_note(db_session):
+    """source_message_id is unique. A clash leaves the evidence in place."""
+    _entry(db_session, action_taken="First", source_message_id="<DUP@mail.example.com>")
+    second = _entry(db_session, action_taken="Second",
+                    notes="Keep me. [outlook:<DUP@mail.example.com>]")
+
+    report = _run_report(db_session)
+    stats = backfill.apply_report(db_session, report)
+
+    db_session.refresh(second)
+    assert stats["markers_skipped"] == 1
+    assert second.source_message_id is None
+    assert "outlook:" in second.notes
+
+
+def test_a_free_mail_address_creates_a_contact_with_no_company(db_session):
+    """A contact from gmail gets a null company_id — never a company called
+    "Gmail"."""
+    _entry(db_session, action_taken="Emailed Uma Free (uma.free@gmail.com) re 413 N Lee St")
+    companies_before = db_session.query(Company).count()
+
+    report = _run_report(db_session)
+    backfill.apply_report(db_session, report)
+
+    contact = db_session.query(Contact).filter(Contact.email == "uma.free@gmail.com").first()
+    assert contact is not None
+    assert contact.company_id is None
+    assert db_session.query(Company).count() == companies_before, "no company was invented"
+
+
+@pytest.mark.parametrize("addr", [
+    "a@gmail.com", "b@outlook.com", "c@yahoo.com", "d@hotmail.com",
+    "e@icloud.com", "f@aol.com", "g@proton.me",
+])
+def test_no_free_mail_domain_creates_a_company(db_session, addr):
+    _entry(db_session, action_taken=f"Emailed Someone Named ({addr}) re a space")
+    before = db_session.query(Company).count()
+    report = _run_report(db_session)
+    backfill.apply_report(db_session, report)
+    assert db_session.query(Company).count() == before
+
+
+def test_a_business_domain_matching_an_existing_company_reuses_it(db_session):
+    """Domain match first, exactly as the from-email path resolves it."""
+    existing = _company(db_session, "Corcoran McEnearney", "CO-CORC",
+                        email_domain="mm-realestate.com")
+    _entry(db_session, action_taken="Emailed Vik Match (vik@mm-realestate.com) re a space")
+    before = db_session.query(Company).count()
+
+    report = _run_report(db_session)
+    backfill.apply_report(db_session, report)
+
+    assert db_session.query(Company).count() == before, "no duplicate company"
+    contact = db_session.query(Contact).filter(Contact.email == "vik@mm-realestate.com").first()
+    assert contact.company_id == existing.id
+    entry = db_session.query(ActivityLog).filter(
+        ActivityLog.contact_id == contact.id).first()
+    assert entry.company_stamp_id == existing.id
+
+
+def test_where_no_company_resolves_the_stamp_stays_null(db_session):
+    """None is invented. A null stamp is the honest answer."""
+    def extractor(entries, _client):
+        return [{
+            "entry_id": e.id, "contact_name": "Wen Nocompany", "company_name": None,
+            "email": None, "inbound": False, "confidence": "high",
+        } for e in entries]
+
+    entry = _entry(db_session, action_taken="Spoke to Wen about their lease")
+    report = _run_report(db_session, extractor)
+    backfill.apply_report(db_session, report)
+
+    db_session.refresh(entry)
+    assert entry.contact_id is not None
+    assert entry.company_stamp_id is None
+
+
+def test_backfilled_contacts_and_companies_are_auto_created_and_untriaged(db_session):
+    _entry(db_session, action_taken="Emailed Xia New (xia@brandnewco.com) re a space")
+
+    report = _run_report(db_session)
+    backfill.apply_report(db_session, report)
+
+    contact = db_session.query(Contact).filter(Contact.email == "xia@brandnewco.com").first()
+    assert contact.auto_created is True
+    assert contact.triaged is False
+
+    company = db_session.query(Company).filter(
+        Company.email_domain == "brandnewco.com").first()
+    assert company is not None
+    assert company.auto_created is True
+    assert company.triaged is False
+    assert company.company_type is None, "the backfill does not guess a company type"
+
+
+def test_an_extracted_first_name_lands_on_the_contact_resolved_by_address(db_session):
+    """"Miriam" and "Miriam Miller" are one record, not two — the name is
+    matched against what the addresses already pinned down."""
+    _entry(db_session, action_taken="Emailed Miriam Miller (miriam@mm-realestate.com) re a space")
+    prose_entry = _entry(db_session, action_taken="Followed up with her about the tour")
+
+    def extractor(entries, _client):
+        return [{
+            "entry_id": e.id, "contact_name": "Miriam Miller", "company_name": None,
+            "email": None, "inbound": False, "confidence": "high",
+        } for e in entries]
+
+    report = _run_report(db_session, extractor)
+    backfill.apply_report(db_session, report)
+
+    assert db_session.query(Contact).filter(
+        Contact.name.like("Miriam%")).count() == 1, "one person, one record"
+    db_session.refresh(prose_entry)
+    assert prose_entry.contact_id is not None
+
+
+def test_similar_names_are_reported_as_duplicates_and_never_merged(db_session):
+    """Two similar names are two people until a human says otherwise."""
+    _entry(db_session, action_taken="Emailed Robert Blumel (rob@blumelco.com) re a space")
+    _entry(db_session, action_taken="Emailed Bob Blumel (bob@blumelco.com) re a space")
+
+    report = _run_report(db_session)
+    backfill.apply_report(db_session, report)
+
+    assert db_session.query(Contact).count() == 2, "similar names must not merge"
+    names = {c.name for c in db_session.query(Contact).all()}
+    assert names == {"Robert Blumel", "Bob Blumel"}
+
+
+def test_an_exact_repeated_name_is_flagged_for_review(db_session):
+    def extractor(entries, _client):
+        return [{
+            "entry_id": e.id,
+            "contact_name": "Dana Reed" if "first" in e.action_taken else "Dana Reed Jr",
+            "company_name": None, "email": None, "inbound": False,
+            "confidence": "high",
+        } for e in entries]
+
+    _entry(db_session, action_taken="Called about the first thing")
+    _entry(db_session, action_taken="Called about the second thing")
+
+    report = _run_report(db_session, extractor)
+    assert report["suspected_duplicates"], "near-identical names must be surfaced"
+    pair = report["suspected_duplicates"][0]
+    assert {pair["a"]["name"], pair["b"]["name"]} == {"Dana Reed", "Dana Reed Jr"}
+
+
+def test_an_inbound_entry_is_marked_and_the_contact_marked_responded(db_session):
+    def extractor(entries, _client):
+        return [{
+            "entry_id": e.id, "contact_name": "Yara Inbound",
+            "company_name": None, "email": "yara@inboundco.com",
+            "inbound": True, "confidence": "high",
+        } for e in entries]
+
+    entry = _entry(db_session, action_taken="Yara replied about the Reston space",
+                   direction="outbound")
+    report = _run_report(db_session, extractor)
+    backfill.apply_report(db_session, report)
+
+    db_session.refresh(entry)
+    assert entry.direction == "inbound"
+    contact = db_session.query(Contact).filter(Contact.email == "yara@inboundco.com").first()
+    assert contact.responded is True
+
+
+def test_the_backfill_never_flips_an_entry_to_outbound(db_session):
+    """Only ever set inbound. A hand-marked inbound entry is not overwritten by
+    a prose heuristic that disagrees."""
+    entry = _entry(db_session, action_taken="Emailed Zoe Fixed (zoe@fixedco.com) re a space",
+                   direction="inbound")
+
+    report = _run_report(db_session)
+    backfill.apply_report(db_session, report)
+
+    db_session.refresh(entry)
+    assert entry.direction == "inbound"
+
+
+def test_a_contacts_stage_comes_from_their_most_recent_entry(db_session):
+    _entry(db_session, action_taken="Emailed Ana Stage (ana@stageco.com) re a space",
+           log_date=date.today() - timedelta(days=30), stage="Sent")
+    _entry(db_session, action_taken="Emailed Ana Stage (ana@stageco.com) again",
+           log_date=date.today(), stage="Interested")
+
+    report = _run_report(db_session)
+    backfill.apply_report(db_session, report)
+
+    contact = db_session.query(Contact).filter(Contact.email == "ana@stageco.com").first()
+    assert contact.stage == "Interested"
+
+
+def test_a_contact_with_no_stage_on_any_entry_defaults_to_sent(db_session):
+    _entry(db_session, action_taken="Emailed Bo Default (bo@defaultco.com) re a space")
+    report = _run_report(db_session)
+    backfill.apply_report(db_session, report)
+    contact = db_session.query(Contact).filter(Contact.email == "bo@defaultco.com").first()
+    assert contact.stage == "Sent"
+
+
+def test_without_an_api_key_address_matching_runs_and_the_rest_is_unresolved(db_session):
+    """No crash, and no silent skip — the unresolved entries are named as
+    unresolved so the gap is visible."""
+    _entry(db_session, action_taken="Emailed Cy Keyed (cy@keyedco.com) re a space")
+    _entry(db_session, action_taken="Called somebody about something")
+
+    report = _run_report(db_session, with_key=False)
+
+    assert report["model_available"] is False
+    by_conf = {p["confidence"] for p in report["proposals"]}
+    assert "high" in by_conf
+    unresolved = [p for p in report["proposals"] if p["confidence"] == "unresolved"]
+    assert len(unresolved) == 1
+    assert unresolved[0]["source"] == "skipped-no-api-key"
+
+
+def test_a_model_failure_part_way_records_what_resolved_and_marks_it_partial(db_session):
+    """It exits cleanly with what it has. It never leaves a partial write."""
+    _entry(db_session, action_taken="Emailed Di Safe (di@safeco.com) re a space")
+    _entry(db_session, action_taken="Called somebody about something")
+    before = _counts(db_session)
+
+    def boom(_entries, _client):
+        raise RuntimeError("rate limited")
+
+    report = _run_report(db_session, boom)
+
+    assert report["partial"] is True
+    assert "rate limited" in report["model_error"]
+    assert any(p["confidence"] == "high" for p in report["proposals"])
+    assert _counts(db_session) == before, "a failed run must write nothing"
+
+
+def test_write_mode_refuses_a_partial_report(db_session, tmp_path):
+    """A report that does not cover every entry is not what Jack reviewed."""
+    import json as _json
+
+    _entry(db_session, action_taken="Emailed Eve Partial (eve@partialco.com) re a space")
+
+    def boom(_entries, _client):
+        raise RuntimeError("connection reset")
+
+    _entry(db_session, action_taken="Called somebody")
+    report = _run_report(db_session, boom)
+    assert report["partial"] is True
+
+    path = tmp_path / "backfill_report.json"
+    path.write_text(_json.dumps(report), encoding="utf-8")
+
+    before = _counts(db_session)
+    with patch.object(backfill, "REPORT_PATH", path),             patch.object(sys, "argv", ["backfill_contacts", "--confirm"]),             patch.object(backfill, "make_session", lambda _p: db_session),             patch.object(backfill, "require_contact_schema", lambda _p: None),             patch.object(backfill, "load_env", lambda: None),             patch.object(backfill, "resolve_db_path", lambda _o: "x.db"):
+        rc = backfill.main()
+    assert rc == 1
+    assert _counts(db_session) == before
+
+
+def test_the_report_covers_every_unattached_entry(db_session):
+    """Nothing falls off the list silently."""
+    ids = [
+        _entry(db_session, action_taken=f"Emailed P{i} (p{i}@coveredco.com) re a space").id
+        for i in range(5)
+    ]
+    ids += [_entry(db_session, action_taken=f"Unclear note {i}").id for i in range(3)]
+
+    report = _run_report(db_session)
+
+    assert report["total_entries"] == len(ids)
+    assert report["entries_missing"] == []
+    assert {p["entry_id"] for p in report["proposals"]} == set(ids)
+
+
+def test_an_already_attached_entry_is_never_reconsidered(db_session):
+    """The backfill looks only at entries with no contact."""
+    contact = _contact(db_session, "Fay Attached", email="fay@attachedco.com")
+    _entry(db_session, contact_id=contact.id, action_taken="Already filed")
+    _entry(db_session, action_taken="Emailed Gil Loose (gil@looseco.com) re a space")
+
+    report = _run_report(db_session)
+    assert report["total_entries"] == 1
+    assert report["proposals"][0]["email"] == "gil@looseco.com"

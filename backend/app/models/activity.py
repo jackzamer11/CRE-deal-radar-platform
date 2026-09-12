@@ -58,6 +58,15 @@ class ActivityLog(Base):
     # Defaults to Sent for every new entry (and every migrated legacy entry).
     stage = Column(String, nullable=False, default="Sent", server_default=text("'Sent'"))
 
+    # ── Stage-change events ──────────────────────────────────────────────────
+    # A stage change is a divider, not a touch: it has no direction and no
+    # channel, and it is not outreach. Rows carrying action_type=STAGE_CHANGE
+    # record the transition here rather than only in `action_taken` prose, so
+    # collapsing consecutive changes into a net move never parses display text.
+    # Null on every real entry.
+    stage_from = Column(String, nullable=True)
+    stage_to   = Column(String, nullable=True)
+
     # Optional revisit / follow-up reminder. Required by the UI when the stage is
     # moved to Dormant or Not Interested; optional for Interested / In Play.
     next_touch_date = Column(Date, nullable=True)

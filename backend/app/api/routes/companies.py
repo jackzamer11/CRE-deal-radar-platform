@@ -6,7 +6,7 @@ import pandas as pd
 from dateutil import parser as _dateparser
 from pydantic import BaseModel
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -416,6 +416,51 @@ def list_companies(
         ]
 
     return companies
+
+
+class CompanyPickerRow(BaseModel):
+    """The minimum a company picker needs: which company, and its name."""
+    id: int
+    company_id: str
+    name: str
+    submarket: Optional[str] = None
+
+
+@router.get("/search", response_model=List[CompanyPickerRow])
+def search_companies(
+    q: str = Query("", description="Type-ahead over company name and CO-nnn id"),
+    limit: int = 20,
+    db: Session = Depends(get_db),
+):
+    """Type-ahead for the company pickers — moving an entry's stamp, or setting
+    a contact's employer.
+
+    Declared before /{company_id} so the static path is not parsed as an id.
+    Returns four columns rather than the full company row: the picker never
+    needs scores or benchmarks, and GET /companies/ is an unpaginated fetch of
+    every company.
+    """
+    term = (q or "").strip()
+    if not term:
+        return []
+    like = f"%{term.lower()}%"
+    rows = (
+        db.query(Company)
+        .filter(or_(
+            func.lower(Company.name).like(like),
+            func.lower(Company.company_id).like(like),
+        ))
+        .order_by(Company.name.asc())
+        .limit(max(1, limit))
+        .all()
+    )
+    return [
+        CompanyPickerRow(
+            id=c.id, company_id=c.company_id, name=c.name,
+            submarket=c.current_submarket,
+        )
+        for c in rows
+    ]
 
 
 @router.post("/costar-import")
@@ -1028,7 +1073,15 @@ def company_timeline(
     if not company:
         raise HTTPException(status_code=404, detail="Company not found")
 
-    base = db.query(ActivityLog).filter(ActivityLog.company_stamp_id == company.id)
+    from app.services.contact_service import STAGE_CHANGE_ACTION
+
+    # Stage-change dividers belong to a person's thread, not to a company's
+    # conversation history. They are never stamped, so this is belt and braces
+    # for any database still carrying pre-cleanup rows.
+    base = db.query(ActivityLog).filter(
+        ActivityLog.company_stamp_id == company.id,
+        ActivityLog.action_type != STAGE_CHANGE_ACTION,
+    )
     total = base.count()
     rows = (
         base.options(_joinedload(ActivityLog.contact))

@@ -255,6 +255,17 @@ def ensure_activity_logs(cur: sqlite3.Cursor) -> int:
     added += _add_activity_column(cur, "channel",   "TEXT DEFAULT 'other'")
     added += _add_activity_column(cur, "source_message_id", "TEXT")
 
+    # ── Stage-change events ───────────────────────────────────────────────────
+    # A stage change is a divider, not a touch. STAGE_CHANGE rows record the
+    # transition in these columns rather than only in `action_taken` prose, so
+    # collapsing consecutive changes into a net move never parses display text.
+    # Null on every real entry, so ADD COLUMN backfills correctly.
+    try:
+        added += _add_activity_column(cur, "stage_from", "TEXT")
+        added += _add_activity_column(cur, "stage_to",   "TEXT")
+    except sqlite3.OperationalError as exc:
+        print(f"  ! activity_logs stage_from/stage_to add skipped: {exc}")
+
     # Discovery capture — inert this build, nothing reads them.
     added += _add_activity_column(cur, "disc_current_rent_psf",  "REAL")
     added += _add_activity_column(cur, "disc_current_sf",        "INTEGER")
@@ -276,6 +287,10 @@ def ensure_activity_logs(cur: sqlite3.Cursor) -> int:
         "ON activity_logs (company_stamp_id)",
         "CREATE UNIQUE INDEX IF NOT EXISTS ix_activity_logs_source_message_id "
         "ON activity_logs (source_message_id) WHERE source_message_id IS NOT NULL",
+        # entry_count and the contact list exclude STAGE_CHANGE rows on every
+        # read, so the filter is indexed rather than scanned.
+        "CREATE INDEX IF NOT EXISTS ix_activity_logs_action_type "
+        "ON activity_logs (action_type)",
     ):
         try:
             cur.execute(stmt)
