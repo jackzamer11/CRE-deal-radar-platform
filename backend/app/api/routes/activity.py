@@ -12,8 +12,9 @@ from app.models.activity import ActivityLog
 from app.models.company import Company
 from app.models.contact import Contact
 from app.services.contact_service import (
-    apply_inbound_stage_rules, email_domain_of, mark_engaged, normalize_email,
-    resolve_company_for_email, resolve_or_create_contact,
+    STAGE_CHANGE_ACTION, apply_inbound_stage_rules, email_domain_of,
+    mark_engaged, normalize_email, resolve_company_for_email,
+    resolve_or_create_contact,
 )
 
 router = APIRouter(prefix="/activity", tags=["activity"])
@@ -96,6 +97,10 @@ class ActivityOut(BaseModel):
     direction:         Optional[str] = "outbound"
     channel:           Optional[str] = "other"
     source_message_id: Optional[str] = None
+
+    # Set only on a STAGE_CHANGE row — the transition the divider renders.
+    stage_from: Optional[str] = None
+    stage_to:   Optional[str] = None
 
     # Discovery capture — displayed only; nothing consumes these.
     disc_current_rent_psf:  Optional[float] = None
@@ -265,7 +270,10 @@ def list_re_engage(db: Session = Depends(get_db)):
         # The most recent entry gives the row something to link to and open.
         latest = (
             db.query(ActivityLog)
-            .filter(ActivityLog.contact_id == contact.id)
+            .filter(
+                ActivityLog.contact_id == contact.id,
+                ActivityLog.action_type != STAGE_CHANGE_ACTION,
+            )
             .order_by(ActivityLog.log_date.desc(), ActivityLog.id.desc())
             .first()
         )
@@ -469,7 +477,17 @@ def update_activity_notes(
 
 
 class ActivityEdit(BaseModel):
-    """Any freeform field on an entry. Omitted fields are left unchanged."""
+    """Any correctable field on an entry. Omitted fields are left unchanged.
+
+    Everything the automation writes has to be correctable by hand, so this
+    covers the prose, the direction and channel it guessed, the date it stamped
+    and the discovery capture.
+
+    Two fields are deliberately absent. contact_id moves through
+    PATCH /{id}/assign, and company_stamp_id through PATCH /{id}/company-stamp —
+    both are re-attachments rather than edits, and the stamp in particular is
+    what keeps a departed contact's history on the old company's page.
+    """
     action_type: Optional[str] = None
     action_taken: Optional[str] = None
     outcome: Optional[str] = None
@@ -477,11 +495,40 @@ class ActivityEdit(BaseModel):
     follow_up_action: Optional[str] = None
     subject: Optional[str] = None
 
+    # What kind of touch it was, and when.
+    direction: Optional[str] = None
+    channel: Optional[str] = None
+    log_date: Optional[date] = None
+
+    # Discovery capture — stored and displayed, never consumed by scoring or
+    # generation.
+    disc_current_rent_psf:  Optional[float] = None
+    disc_current_sf:        Optional[int]   = None
+    disc_lease_expiry:      Optional[date]  = None
+    disc_decision_timeline: Optional[str]   = None
+    disc_buildout_needs:    Optional[str]   = None
+    disc_decision_maker:    Optional[str]   = None
+    # None means "omitted" above, so clearing a discovery field needs its own
+    # signal. Names the fields to blank out.
+    clear_fields: List[str] = []
+
 
 # Editing any of these changes what the note says, so the intelligence layer
-# has to re-read it. Stage/date edits don't affect the extracted facts.
+# has to re-read it. Stage/date/channel edits don't affect the extracted facts.
 _TEXT_FIELDS = ("action_type", "action_taken", "outcome", "notes",
                 "follow_up_action", "subject")
+
+# Correctable but inert to the intelligence layer — changing one saves without
+# paying for a re-mine.
+_PLAIN_FIELDS = ("direction", "channel", "log_date",
+                 "disc_current_rent_psf", "disc_current_sf", "disc_lease_expiry",
+                 "disc_decision_timeline", "disc_buildout_needs",
+                 "disc_decision_maker")
+
+_CLEARABLE = set(_PLAIN_FIELDS) | {"outcome", "notes", "follow_up_action", "subject"}
+
+VALID_DIRECTIONS = ("outbound", "inbound")
+VALID_CHANNELS = ("email", "call", "meeting", "text", "linkedin", "other")
 
 
 @router.patch("/{entry_id}", response_model=ActivityOut)
@@ -501,17 +548,54 @@ def edit_activity(
     if not log:
         raise HTTPException(status_code=404, detail="Activity log entry not found")
 
+    if payload.direction is not None and payload.direction not in VALID_DIRECTIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"direction must be one of: {', '.join(VALID_DIRECTIONS)}",
+        )
+    if payload.channel is not None and payload.channel not in VALID_CHANNELS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"channel must be one of: {', '.join(VALID_CHANNELS)}",
+        )
+    bad = [f for f in payload.clear_fields if f not in _CLEARABLE]
+    if bad:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot clear: {', '.join(bad)}",
+        )
+
+    text_changed = False
     changed = False
     for field in _TEXT_FIELDS:
         value = getattr(payload, field)
         if value is not None and value != getattr(log, field):
             setattr(log, field, value)
+            text_changed = changed = True
+    for field in _PLAIN_FIELDS:
+        value = getattr(payload, field)
+        if value is not None and value != getattr(log, field):
+            setattr(log, field, value)
             changed = True
+    for field in payload.clear_fields:
+        if getattr(log, field, None) is not None:
+            setattr(log, field, None)
+            changed = True
+            if field in _TEXT_FIELDS:
+                text_changed = True
+
+    # contact_id and company_stamp_id are untouched by every branch above —
+    # an edit corrects what an entry says, never who it belongs to.
     if not changed:
         return _to_out(log)
 
     db.commit()
     db.refresh(log)
+
+    # Only a prose change invalidates the extracted facts; correcting a channel
+    # or a date does not, and must not cost an API call.
+    if not text_changed:
+        return _to_out(log)
 
     try:
         from app.services.activity_intel_service import remine_activity_log
@@ -627,6 +711,13 @@ def create_activity(payload: ActivityCreate, db: Session = Depends(get_db)):
     if company_stamp_id is None:
         company_stamp_id = payload.company_id or (contact.company_id if contact else None)
 
+    # A manual inbound entry advances the stage exactly as an inbound email
+    # does: responded=True, Sent -> Replied, never a regression from Interested,
+    # In Play, Not Interested or Dormant. Logging a reply by hand used to leave
+    # the header reading "They replied" while the pill still said Sent.
+    if contact is not None:
+        apply_inbound_stage_rules(contact, payload.direction)
+
     log = ActivityLog(
         log_date       = payload.log_date or date.today(),
         opportunity_id = payload.opportunity_id,
@@ -678,6 +769,41 @@ def create_activity(payload: ActivityCreate, db: Session = Depends(get_db)):
 
 
 # ── Contact-thread endpoints ─────────────────────────────────────────────────
+
+class ActivityCompanyStamp(BaseModel):
+    """Move an entry to a different company. company_id may be null to clear."""
+    company_id: Optional[int] = None
+
+
+@router.patch("/{entry_id}/company-stamp", response_model=ActivityOut)
+def restamp_activity(
+    entry_id: int, payload: ActivityCompanyStamp, db: Session = Depends(get_db),
+):
+    """Move one entry to a different company.
+
+    Deliberately its own endpoint rather than a field on the ordinary edit.
+    company_stamp_id records what a conversation was about at the time it
+    happened — it is what keeps a departed contact's history on the old
+    company's page while their personal thread stays whole. Changing it rewrites
+    which company's timeline the entry appears on, so it is an explicit action
+    behind a confirmation, never something an edit form changes in passing.
+    """
+    log = db.query(ActivityLog).filter(ActivityLog.id == entry_id).first()
+    if not log:
+        raise HTTPException(status_code=404, detail="Activity log entry not found")
+
+    if payload.company_id is not None:
+        company = db.query(Company).filter(Company.id == payload.company_id).first()
+        if not company:
+            raise HTTPException(status_code=404, detail="Company not found")
+
+    log.company_stamp_id = payload.company_id
+    if log.contact is not None:
+        mark_engaged(db, log.contact)
+    db.commit()
+    db.refresh(log)
+    return _to_out(log)
+
 
 @router.patch("/{entry_id}/assign", response_model=ActivityOut)
 def assign_activity(

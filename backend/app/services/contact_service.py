@@ -8,10 +8,13 @@ Design rules enforced here rather than in the routes:
     path that constitutes real engagement; nothing else sets triaged.
   - Email is the identity key. A display name is never used to match a contact.
   - Free-mail senders never create a company.
+  - A stage change is a divider, not a touch. `record_stage_change()` is the one
+    writer, and it collapses a burst of clicks into the net move.
 """
-from datetime import date, datetime
-from typing import Optional, Tuple
+from datetime import date, datetime, timedelta
+from typing import List, Optional, Tuple
 
+from sqlalchemy import null
 from sqlalchemy.orm import Session
 
 from app.models.activity import ActivityLog
@@ -30,6 +33,21 @@ FREE_MAIL_DOMAINS = {
     "bellsouth.net", "earthlink.net", "juno.com", "aim.com", "hushmail.com",
     "tutanota.com", "duck.com", "hey.com",
 }
+
+
+# The action_type marking a row as a stage-change event rather than a real
+# touch. Kept distinct so entry counts, last-touch dates and the company
+# timeline can all exclude it with one filter.
+STAGE_CHANGE_ACTION = "STAGE_CHANGE"
+
+# Two stage changes closer together than this, with no real entry between them,
+# are one decision expressed in several clicks — they collapse to the net move.
+STAGE_CHANGE_COLLAPSE_MINUTES = 30
+
+
+def is_real_touch(action_type: Optional[str]) -> bool:
+    """True for anything that is an actual contact event rather than a divider."""
+    return (action_type or "") != STAGE_CHANGE_ACTION
 
 
 def is_free_mail(domain: Optional[str]) -> bool:
@@ -90,6 +108,119 @@ def mark_engaged(db: Session, contact: Optional[Contact],
         ).first()
     if target_company is not None and not target_company.triaged:
         target_company.triaged = True
+
+
+# ── Stage changes ─────────────────────────────────────────────────────────────
+
+def stage_change_label(old_stage: Optional[str], new_stage: Optional[str]) -> str:
+    """The one-line text a divider renders when it has nothing else to show."""
+    return f"Stage: {old_stage or 'Sent'} → {new_stage or 'Sent'}"
+
+
+def record_stage_change(
+    db: Session,
+    contact: Contact,
+    old_stage: Optional[str],
+    new_stage: Optional[str],
+) -> Optional[ActivityLog]:
+    """Write the divider marking a stage transition, collapsing a burst of them.
+
+    A stage change has no direction and no channel and is not outreach, so it is
+    never stamped to a company and never counts as a touch. Six clicks between
+    pills used to produce six cards stamped OUT / OTHER and bury the actual
+    conversation; this is the single writer that stops that.
+
+    Collapsing rule: consecutive stage changes on the same contact, with no real
+    entry logged between them and inside a 30-minute window, resolve to one
+    event showing the net move. The window rolls forward as the burst extends —
+    nothing happened between the clicks, so they are one decision however long
+    it took to settle. If the net move returns to the starting stage the event
+    is deleted outright: a misclick corrected is not history.
+
+    Returns the surviving event, or None when the change collapsed to nothing.
+    Does not commit — the caller owns the transaction.
+    """
+    if (old_stage or "Sent") == (new_stage or "Sent"):
+        return None
+
+    # Flush first so an entry created earlier in this same transaction is
+    # visible to the "was there a real touch between them?" check below.
+    db.flush()
+    now = datetime.utcnow()
+
+    prior = (
+        db.query(ActivityLog)
+        .filter(
+            ActivityLog.contact_id == contact.id,
+            ActivityLog.action_type == STAGE_CHANGE_ACTION,
+        )
+        .order_by(ActivityLog.created_at.desc(), ActivityLog.id.desc())
+        .first()
+    )
+
+    if _is_collapsible(db, contact, prior, now):
+        prior.stage_to = new_stage
+        # Back where it started, with nothing in between — drop it entirely.
+        if (prior.stage_from or "Sent") == (prior.stage_to or "Sent"):
+            db.delete(prior)
+            db.flush()
+            return None
+        prior.action_taken = stage_change_label(prior.stage_from, prior.stage_to)
+        prior.log_date = date.today()
+        # Roll the window forward so a continuing burst keeps collapsing.
+        prior.created_at = now
+        return prior
+
+    event = ActivityLog(
+        log_date=date.today(),
+        contact_id=contact.id,
+        # Deliberately unstamped: a divider is not a conversation about a
+        # company, so it never appears on the company timeline.
+        company_id=None,
+        company_stamp_id=None,
+        action_type=STAGE_CHANGE_ACTION,
+        action_taken=stage_change_label(old_stage, new_stage),
+        stage_from=old_stage or "Sent",
+        stage_to=new_stage,
+        # No direction and no channel — that is what made the old rows read
+        # as OUT / OTHER outreach. null() rather than None: both columns carry
+        # an ORM-level default, which SQLAlchemy would otherwise apply to a
+        # None and hand the divider an "outbound email" it never was.
+        direction=null(),
+        channel=null(),
+        created_by="user",
+        created_at=now,
+    )
+    db.add(event)
+    db.flush()
+    return event
+
+
+def _is_collapsible(
+    db: Session,
+    contact: Contact,
+    prior: Optional[ActivityLog],
+    now: datetime,
+) -> bool:
+    """Can this change fold into `prior` rather than adding another divider?"""
+    if prior is None or prior.created_at is None:
+        # A legacy divider with no timestamp cannot be windowed — leave it be.
+        return False
+    if now - prior.created_at > timedelta(minutes=STAGE_CHANGE_COLLAPSE_MINUTES):
+        return False
+    # A real touch since the last divider means the thread moved on; the next
+    # stage change is a new decision, not a correction of the last one.
+    intervening = (
+        db.query(ActivityLog.id)
+        .filter(
+            ActivityLog.contact_id == contact.id,
+            ActivityLog.action_type != STAGE_CHANGE_ACTION,
+            ActivityLog.created_at.isnot(None),
+            ActivityLog.created_at > prior.created_at,
+        )
+        .first()
+    )
+    return intervening is None
 
 
 # ── Facts ─────────────────────────────────────────────────────────────────────

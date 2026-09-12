@@ -19,8 +19,8 @@ from app.models.activity import ActivityLog
 from app.models.company import Company
 from app.models.contact import Contact, ContactFact, CONTACT_STAGES, CONTACT_TYPES
 from app.services.contact_service import (
-    active_facts, create_fact, mark_engaged, normalize_email,
-    resolve_contact_by_email,
+    STAGE_CHANGE_ACTION, active_facts, create_fact, mark_engaged,
+    normalize_email, record_stage_change, resolve_contact_by_email,
 )
 
 router = APIRouter(prefix="/contacts", tags=["contacts"])
@@ -126,6 +126,9 @@ class TimelineEntry(BaseModel):
     channel: Optional[str] = "other"
     outreach_type: Optional[str] = None
     subject: Optional[str] = None
+    # Set only on a STAGE_CHANGE row — the transition the divider renders.
+    stage_from: Optional[str] = None
+    stage_to: Optional[str] = None
     # Discovery capture — displayed, never consumed by scoring or generation.
     disc_current_rent_psf: Optional[float] = None
     disc_current_sf: Optional[int] = None
@@ -370,6 +373,37 @@ def supersede_fact(
     return FactOut.model_validate(new_fact)
 
 
+class FactEdit(BaseModel):
+    """Correct a fact's wording in place."""
+    fact_text: str
+    learned_date: Optional[date] = None
+
+
+@router.patch("/facts/{fact_id}", response_model=FactOut)
+def edit_fact(fact_id: int, payload: FactEdit, db: Session = Depends(get_db)):
+    """Edit a fact's text in place.
+
+    Distinct from superseding: this is for a fact that was typed wrong, not one
+    that stopped being true. Nothing is archived because there was never a
+    second version — the correction replaces the mistake.
+    """
+    text = (payload.fact_text or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="fact_text cannot be empty")
+    fact = db.query(ContactFact).filter(ContactFact.id == fact_id).first()
+    if not fact:
+        raise HTTPException(status_code=404, detail="Fact not found")
+    fact.fact_text = text
+    if payload.learned_date is not None:
+        fact.learned_date = payload.learned_date
+    contact = db.query(Contact).filter(Contact.id == fact.contact_id).first()
+    if contact is not None:
+        mark_engaged(db, contact)   # correcting a fact is engagement
+    db.commit()
+    db.refresh(fact)
+    return FactOut.model_validate(fact)
+
+
 @router.delete("/facts/{fact_id}")
 def delete_fact(fact_id: int, db: Session = Depends(get_db)):
     """One-click delete. Unlike superseding, this removes the row outright —
@@ -553,13 +587,19 @@ def list_contacts(
     Default sort: overdue next-touch first (soonest due first), then most
     recent activity. Paginated with no hard ceiling.
     """
+    # Stage-change dividers are excluded throughout: entry count means real
+    # touches, and a row reading "Stage: Sent -> Replied" is not the last thing
+    # that happened with this person.
     counts = (
         db.query(
             ActivityLog.contact_id.label("cid"),
             func.count(ActivityLog.id).label("entry_count"),
             func.max(ActivityLog.log_date).label("latest_date"),
         )
-        .filter(ActivityLog.contact_id.isnot(None))
+        .filter(
+            ActivityLog.contact_id.isnot(None),
+            ActivityLog.action_type != STAGE_CHANGE_ACTION,
+        )
         .group_by(ActivityLog.contact_id)
         .subquery()
     )
@@ -614,7 +654,10 @@ def list_contacts(
     if contact_ids:
         for log in (
             db.query(ActivityLog)
-            .filter(ActivityLog.contact_id.in_(contact_ids))
+            .filter(
+                ActivityLog.contact_id.in_(contact_ids),
+                ActivityLog.action_type != STAGE_CHANGE_ACTION,
+            )
             .order_by(ActivityLog.log_date.desc(), ActivityLog.id.desc())
             .all()
         ):
@@ -726,9 +769,15 @@ def get_contact(contact_id: int, db: Session = Depends(get_db)):
         if contact.company_id else None
     )
 
+    # Real touches only. A stage change has no direction and no channel, so
+    # letting one in here produced "Awaiting their reply" off the back of a
+    # pill click and counted six clicks as six entries.
     entries = (
         db.query(ActivityLog)
-        .filter(ActivityLog.contact_id == contact_id)
+        .filter(
+            ActivityLog.contact_id == contact_id,
+            ActivityLog.action_type != STAGE_CHANGE_ACTION,
+        )
         .order_by(ActivityLog.log_date.desc(), ActivityLog.id.desc())
         .all()
     )
@@ -834,9 +883,9 @@ def update_contact(
                 )
         contact.email = new_email
 
-    stage_event = None
-    if payload.stage is not None and payload.stage != (contact.stage or "Sent"):
-        stage_event = f"Stage: {contact.stage or 'Sent'} → {payload.stage}"
+    old_stage = contact.stage or "Sent"
+    stage_moved = payload.stage is not None and payload.stage != old_stage
+    if stage_moved:
         contact.stage = payload.stage
         contact.stage_changed_at = date.today()
 
@@ -855,20 +904,12 @@ def update_contact(
 
     contact.updated_at = datetime.utcnow()
 
-    # A stage change is preserved as a timeline event so the thread shows how
-    # the relationship moved, not just where it ended up.
-    if stage_event:
-        db.add(ActivityLog(
-            log_date=date.today(),
-            contact_id=contact.id,
-            company_id=contact.company_id,
-            company_stamp_id=contact.company_id,
-            action_type="SIGNAL_UPDATE",
-            action_taken=stage_event,
-            direction="outbound",
-            channel="other",
-            created_by="user",
-        ))
+    # A stage change is preserved as a divider so the thread shows how the
+    # relationship moved, not just where it ended up. record_stage_change() is
+    # the single writer: it collapses a burst of clicks into the net move and
+    # deletes one that returns to where it started.
+    if stage_moved:
+        record_stage_change(db, contact, old_stage, payload.stage)
 
     # Any edit is engagement — unless Jack explicitly untriaged just now.
     if payload.triaged is not False:
@@ -877,6 +918,121 @@ def update_contact(
     db.commit()
     db.refresh(contact)
     return _contact_out(contact)
+
+
+class ContactDeleteResult(BaseModel):
+    deleted_contact_id: int
+    mode: str
+    entries_deleted: int
+    entries_unattached: int
+    facts_deleted: int
+
+
+@router.delete("/{contact_id}", response_model=ContactDeleteResult)
+def delete_contact(
+    contact_id: int,
+    mode: str = Query(
+        "unattach",
+        description=(
+            "unattach = keep the entries, detached, visible in All Activity. "
+            "cascade = delete the entries too."
+        ),
+    ),
+    db: Session = Depends(get_db),
+):
+    """Delete a contact, with an explicit choice about their entries.
+
+    Two outcomes, because they are not the same decision:
+
+      - unattach (default): the entries survive with a null contact_id and stay
+        in All Activity. Use it when the person record was wrong but the
+        conversations happened.
+      - cascade: the entries go too, along with any facts the intelligence layer
+        derived from them. Use it for test data and duplicates.
+
+    Facts are deleted either way — a fact is a thing learned about a person, so
+    it cannot outlive the person record.
+    """
+    if mode not in ("unattach", "cascade"):
+        raise HTTPException(
+            status_code=400,
+            detail="mode must be 'unattach' or 'cascade'",
+        )
+    contact = _get_contact(db, contact_id)
+
+    facts_deleted = (
+        db.query(ContactFact)
+        .filter(ContactFact.contact_id == contact_id)
+        .delete(synchronize_session=False)
+    )
+
+    entries_deleted = 0
+    entries_unattached = 0
+    entry_ids = [
+        row[0] for row in
+        db.query(ActivityLog.id).filter(ActivityLog.contact_id == contact_id).all()
+    ]
+
+    def _purge_intel(ids):
+        """Drop derived intel for entries about to disappear. Bulk deletes with
+        no commit, so a failure here can never half-apply the delete."""
+        if not ids:
+            return
+        try:
+            from app.services.activity_intel_service import purge_log_intel
+            for entry_id in ids:
+                purge_log_intel(db, entry_id)
+        except Exception as exc:  # noqa: BLE001 — never block a delete on intel
+            import logging
+            logging.getLogger(__name__).warning(
+                "intel purge skipped while deleting contact %s (%s)", contact_id, exc,
+            )
+
+    if mode == "cascade":
+        if entry_ids:
+            # Another contact's fact may cite one of these entries as its
+            # source; null the pointer rather than orphaning a dangling id.
+            db.query(ContactFact).filter(
+                ContactFact.source_entry_id.in_(entry_ids)
+            ).update({"source_entry_id": None}, synchronize_session=False)
+            _purge_intel(entry_ids)
+            entries_deleted = (
+                db.query(ActivityLog)
+                .filter(ActivityLog.id.in_(entry_ids))
+                .delete(synchronize_session=False)
+            )
+    else:
+        # Dividers go either way: "Stage: Sent -> Replied" detached from the
+        # person it described is noise in All Activity, not history.
+        divider_ids = [
+            row[0] for row in
+            db.query(ActivityLog.id).filter(
+                ActivityLog.contact_id == contact_id,
+                ActivityLog.action_type == STAGE_CHANGE_ACTION,
+            ).all()
+        ]
+        if divider_ids:
+            _purge_intel(divider_ids)
+            entries_deleted = (
+                db.query(ActivityLog)
+                .filter(ActivityLog.id.in_(divider_ids))
+                .delete(synchronize_session=False)
+            )
+        entries_unattached = (
+            db.query(ActivityLog)
+            .filter(ActivityLog.contact_id == contact_id)
+            .update({"contact_id": None}, synchronize_session=False)
+        )
+
+    db.delete(contact)
+    db.commit()
+    return ContactDeleteResult(
+        deleted_contact_id=contact_id,
+        mode=mode,
+        entries_deleted=entries_deleted,
+        entries_unattached=entries_unattached,
+        facts_deleted=facts_deleted,
+    )
 
 
 @router.get("/{contact_id}/timeline", response_model=TimelinePage)

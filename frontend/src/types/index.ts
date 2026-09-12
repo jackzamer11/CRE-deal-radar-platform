@@ -2,7 +2,19 @@ export type Priority = 'IMMEDIATE' | 'HIGH' | 'WORKABLE' | 'IGNORE'
 export type DealType = 'PRE_MARKET' | 'ACTIVE_MISPRICED' | 'TENANT_DRIVEN'
 export type Confidence = 'HIGH' | 'MEDIUM' | 'LOW'
 export type Stage = 'IDENTIFIED' | 'CONTACTED' | 'ACTIVE' | 'UNDER_LOI' | 'CLOSED' | 'DEAD'
-export type ActionType = 'CALL' | 'EMAIL' | 'MEETING' | 'SIGNAL_UPDATE' | 'RESEARCH' | 'NOTE'
+export type ActionType =
+  | 'CALL' | 'EMAIL' | 'MEETING' | 'SIGNAL_UPDATE' | 'RESEARCH' | 'NOTE'
+  // A stage transition. Not a touch: no direction, no channel, not outreach.
+  // Rendered as a thin divider, excluded from entry counts.
+  | 'STAGE_CHANGE'
+
+export const STAGE_CHANGE_ACTION: ActionType = 'STAGE_CHANGE'
+
+// The action types Jack can pick when logging or correcting an entry.
+// STAGE_CHANGE is absent on purpose — it is written by moving a stage pill,
+// never by choosing it from a list.
+export const LOGGABLE_ACTION_TYPES: ActionType[] =
+  ['CALL', 'EMAIL', 'MEETING', 'RESEARCH', 'NOTE', 'SIGNAL_UPDATE']
 
 // Activity-log pipeline stage — current state only; can move any direction.
 // (Named ActivityStage to avoid colliding with the opportunity `Stage` above.)
@@ -340,6 +352,9 @@ export interface ActivityLog {
   disc_decision_timeline: string | null
   disc_buildout_needs: string | null
   disc_decision_maker: string | null
+  // Set only on a STAGE_CHANGE row — the transition the divider shows.
+  stage_from: string | null
+  stage_to: string | null
 }
 
 // ── Contact threads ─────────────────────────────────────────────────────────
@@ -424,6 +439,30 @@ export interface TimelineEntry {
   channel: Channel | null
   outreach_type: string | null
   subject: string | null
+  // Set only on a STAGE_CHANGE row — the transition the divider shows.
+  stage_from: string | null
+  stage_to: string | null
+  disc_current_rent_psf: number | null
+  disc_current_sf: number | null
+  disc_lease_expiry: string | null
+  disc_decision_timeline: string | null
+  disc_buildout_needs: string | null
+  disc_decision_maker: string | null
+}
+
+// The fields the shared entry editor writes. Both ActivityLog (the flat feed)
+// and TimelineEntry (a contact thread) satisfy it structurally, so there is one
+// editor rather than one per surface.
+export interface EditableEntry {
+  id: number
+  action_type: ActionType
+  action_taken: string
+  outcome: string | null
+  notes: string | null
+  follow_up_action: string | null
+  direction: Direction | null
+  channel: Channel | null
+  log_date: string
   disc_current_rent_psf: number | null
   disc_current_sf: number | null
   disc_lease_expiry: string | null

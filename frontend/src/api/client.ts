@@ -102,6 +102,18 @@ export interface CompanyFilters {
 export const getCompanies = (filters?: CompanyFilters): Promise<CompanyListOut[]> =>
   api.get('/companies/', { params: filters }).then(r => r.data)
 
+export interface CompanyPickerRow {
+  id: number
+  company_id: string
+  name: string
+  submarket: string | null
+}
+
+// Type-ahead for the company pickers. Four columns rather than the full row —
+// getCompanies() is an unpaginated fetch of every company.
+export const searchCompanies = (q: string): Promise<CompanyPickerRow[]> =>
+  api.get('/companies/search', { params: { q } }).then(r => r.data)
+
 export const getCompany = (companyId: string): Promise<CompanyOut> =>
   api.get(`/companies/${companyId}`).then(r => r.data)
 
@@ -336,8 +348,12 @@ export const updateActivityNote = (
 ): Promise<ActivityLog> =>
   api.patch(`/activity/${entryId}/notes`, { notes }).then(r => r.data)
 
-// Edit any freeform field. The backend re-mines the entry so the intelligence
-// layer's extracted facts stay in sync with what the note now says.
+// Edit any correctable field. A prose change re-mines the entry so the
+// intelligence layer's extracted facts stay in sync with what the note now
+// says; a channel or date correction saves without paying for that.
+//
+// contact_id and company_stamp_id are deliberately absent — they move through
+// assignActivity() and restampActivity(), which are re-attachments, not edits.
 export const editActivity = (
   entryId: number,
   payload: {
@@ -347,9 +363,30 @@ export const editActivity = (
     notes?: string
     follow_up_action?: string
     subject?: string
+    direction?: string
+    channel?: string
+    log_date?: string
+    disc_current_rent_psf?: number
+    disc_current_sf?: number
+    disc_lease_expiry?: string
+    disc_decision_timeline?: string
+    disc_buildout_needs?: string
+    disc_decision_maker?: string
+    // None means "omitted", so blanking a field names it here instead.
+    clear_fields?: string[]
   },
 ): Promise<ActivityLog> =>
   api.patch(`/activity/${entryId}`, payload).then(r => r.data)
+
+// Move one entry to a different company. Separate from editActivity on
+// purpose: company_stamp_id is what keeps a departed contact's history on the
+// old company's page, so it changes only through a deliberate action.
+export const restampActivity = (
+  entryId: number,
+  companyId: number | null,
+): Promise<ActivityLog> =>
+  api.patch(`/activity/${entryId}/company-stamp`, { company_id: companyId })
+    .then(r => r.data)
 
 // Delete an entry and the facts the intelligence layer derived from it.
 export const deleteActivity = (
@@ -492,8 +529,32 @@ export const supersedeContactFact = (
 ): Promise<ContactFact> =>
   api.post(`/contacts/facts/${factId}/supersede`, payload).then(r => r.data)
 
+// Correct a fact's wording in place — for one typed wrong, as opposed to one
+// that stopped being true (that is supersedeContactFact).
+export const editContactFact = (
+  factId: number,
+  payload: { fact_text: string; learned_date?: string },
+): Promise<ContactFact> =>
+  api.patch(`/contacts/facts/${factId}`, payload).then(r => r.data)
+
 export const deleteContactFact = (factId: number): Promise<{ deleted: number }> =>
   api.delete(`/contacts/facts/${factId}`).then(r => r.data)
+
+export interface ContactDeleteResult {
+  deleted_contact_id: number
+  mode: 'unattach' | 'cascade'
+  entries_deleted: number
+  entries_unattached: number
+  facts_deleted: number
+}
+
+// unattach keeps the entries, detached, in All Activity; cascade deletes them.
+// Facts go either way — a fact cannot outlive the person it describes.
+export const deleteContact = (
+  contactId: number,
+  mode: 'unattach' | 'cascade',
+): Promise<ContactDeleteResult> =>
+  api.delete(`/contacts/${contactId}`, { params: { mode } }).then(r => r.data)
 
 // ── Data conflicts ─────────────────────────────────────────────────────────
 // Lease expiry, headcount, growth rate and SF never write silently.
