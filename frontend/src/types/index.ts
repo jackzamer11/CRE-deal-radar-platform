@@ -617,6 +617,18 @@ export interface LeaseStatus {
   extraction_skipped: boolean
 }
 
+// What became of the link and the file when a lease is removed.
+export interface LeaseRemovalResult {
+  company_id: string
+  removed_file_name: string | null
+  // deleted | absent | refused | error: ... — "absent" means the file was
+  // already gone from the folder, which is a clean outcome, not a failure.
+  file_outcome: string
+  // Set when the fields cleared but the file could not be deleted, so the UI
+  // says so rather than implying the document is gone.
+  warning: string | null
+}
+
 export interface LeaseConfirmResult {
   company_id: number
   written: Record<string, string | null>

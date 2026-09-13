@@ -766,6 +766,7 @@ function DealContext({
       {header.contact.company_id !== null && (
         <LeaseCard
           companyPk={header.contact.company_id}
+          companyBusinessId={header.company_business_id}
           onConfirmed={onLeaseConfirmed}
         />
       )}

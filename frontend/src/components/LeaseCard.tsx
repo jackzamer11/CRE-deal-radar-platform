@@ -12,17 +12,22 @@
 // Lease content is private: none of it reaches generated outreach copy.
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
-  Check, ChevronDown, ChevronRight, FileText, TriangleAlert, Upload,
+  Check, ChevronDown, ChevronRight, FileText, Trash2, TriangleAlert, Upload,
 } from 'lucide-react'
 import {
-  confirmLeaseExtraction, getLease, leaseFileUrl, reextractLease, uploadLease,
+  confirmLeaseExtraction, getLease, leaseFileUrl, reextractLease, removeLease,
+  uploadLease,
 } from '../api/client'
 import type { ExtractedLeaseField, LeaseStatus } from '../types'
 
 export default function LeaseCard({
-  companyPk, onConfirmed,
+  companyPk, companyBusinessId, onConfirmed,
 }: {
   companyPk: number
+  // The CO-nnn id, which is what the /companies/ routes key on. Removal lives
+  // there (DELETE /companies/{id}/lease), beside the PATCH that sets the
+  // expiry by hand; every other call here uses the integer pk.
+  companyBusinessId: string | null
   onConfirmed: () => void
 }) {
   const [lease, setLease] = useState<LeaseStatus | null>(null)
@@ -32,6 +37,9 @@ export default function LeaseCard({
   // Field name -> checked. Seeded from the extraction: found means checked.
   const [accepted, setAccepted] = useState<Record<string, boolean>>({})
   const [reviewing, setReviewing] = useState(false)
+  // Removal is destructive — it deletes the PDF — so it goes behind a
+  // confirmation that names the file.
+  const [confirmingRemove, setConfirmingRemove] = useState(false)
   const fileInput = useRef<HTMLInputElement>(null)
 
   const seedAccepted = (status: LeaseStatus) => {
@@ -117,6 +125,33 @@ export default function LeaseCard({
     }
   }
 
+  const remove = async () => {
+    if (!companyBusinessId) return
+    setBusy(true)
+    setError(null)
+    try {
+      const result = await removeLease(companyBusinessId)
+      setConfirmingRemove(false)
+      setReviewing(false)
+      setLease(null)
+      setAccepted({})
+      // "absent" means the file was already gone — a clean outcome, worth
+      // saying plainly rather than dressing up as a deletion.
+      setNote(
+        result.warning
+          ? result.warning
+          : result.file_outcome === 'absent'
+            ? `Lease unlinked. ${result.removed_file_name} was not in the leases folder.`
+            : `${result.removed_file_name} removed and deleted from the leases folder.`,
+      )
+      await load()
+    } catch (e: any) {
+      setError(e?.response?.data?.detail ?? 'Could not remove this lease.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const writeBacks = (lease?.fields ?? []).filter(f => f.writes_to_company)
   const others = (lease?.fields ?? []).filter(f => !f.writes_to_company)
 
@@ -184,6 +219,16 @@ export default function LeaseCard({
             >
               replace
             </button>
+            {companyBusinessId && (
+              <button
+                onClick={() => setConfirmingRemove(true)}
+                disabled={busy}
+                className="text-[10px] text-ink-muted hover:text-red-400 disabled:opacity-50
+                           flex items-center gap-1"
+              >
+                <Trash2 size={10} /> remove
+              </button>
+            )}
           </>
         ) : (
           <button
@@ -200,6 +245,39 @@ export default function LeaseCard({
 
       {error && <p className="text-[11px] text-red-400 mt-1.5">{error}</p>}
       {note && <p className="text-[11px] text-ink-secondary mt-1.5">{note}</p>}
+
+      {/* Names the file, and says what removal does NOT undo: a value Jack
+          already read against its clause and confirmed stays on the record. */}
+      {confirmingRemove && lease?.lease_file_name && (
+        <div className="mt-2 bg-red-500/5 border border-red-500/30 rounded-lg p-3">
+          <p className="text-xs text-ink-primary">
+            Remove <span className="font-bold">{lease.lease_file_name}</span>?
+          </p>
+          <p className="text-[11px] text-ink-secondary mt-1">
+            This unlinks the document and deletes the file from the leases
+            folder. Values you already confirmed from it — lease expiry,
+            premises address, rentable SF — stay on the company record and keep
+            their lease-sourced marker.
+          </p>
+          <div className="flex items-center gap-2 mt-2.5">
+            <button
+              onClick={remove}
+              disabled={busy}
+              className="text-[10px] px-2.5 py-1 rounded bg-red-600 hover:bg-red-700
+                         text-white font-semibold flex items-center gap-1 disabled:opacity-50"
+            >
+              <Trash2 size={10} /> {busy ? 'Removing…' : 'Remove lease'}
+            </button>
+            <button
+              onClick={() => setConfirmingRemove(false)}
+              className="text-[10px] px-2.5 py-1 rounded bg-surface-muted hover:bg-surface-border
+                         text-ink-secondary font-semibold"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
 
       {reviewing && lease?.has_extraction && (
         <div className="mt-2 bg-surface-muted/40 border border-surface-border rounded-lg p-3">

@@ -33,6 +33,7 @@ import type {
   DataConflict,
   LeaseStatus,
   LeaseConfirmResult,
+  LeaseRemovalResult,
 } from '../types'
 
 const api = axios.create({
@@ -868,8 +869,12 @@ export const confirmLeaseExtraction = (
     .post(`/leases/companies/${companyPk}/confirm`, { accepted_fields: acceptedFields })
     .then(r => r.data)
 
-export const unlinkLease = (companyPk: number): Promise<LeaseStatus> =>
-  api.delete(`/leases/companies/${companyPk}`).then(r => r.data)
+// Removes the link AND deletes the PDF from the leases folder. Confirmed
+// company values (expiry, address, SF) and their lease-sourced markers are
+// deliberately left as they are. Keyed by the CO-nnn business id, like every
+// other /companies/ call.
+export const removeLease = (companyBusinessId: string): Promise<LeaseRemovalResult> =>
+  api.delete(`/companies/${companyBusinessId}/lease`).then(r => r.data)
 
 // The URL the "open the lease" link points at. Not a request — the browser
 // navigates to it, and a missing file comes back as a plain 404 message.

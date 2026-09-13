@@ -23,6 +23,9 @@ What this file locks, in the order the build specified it:
  10. A missing ANTHROPIC_API_KEY still stores and links the file, extraction
      skipped with a plain message.
  11. /api/companies/ still returns all seven contract fields.
+ 12. Removing a lease clears all three lease fields and deletes the file, works
+     when the file is already gone, leaves confirmed company values and their
+     lease-sourced markers alone, and 404s cleanly when there is no lease.
 
 In-memory SQLite, dependency-overridden get_db, a tmp_path leases folder. No
 live DB file, no network, no real Anthropic call, and no file written outside
@@ -923,6 +926,232 @@ def test_a_costar_import_never_overwrites_a_lease_sourced_value(db_session):
     """A lease outranks CoStar, enforced where the import actually writes."""
     from app.api.routes.companies import LEASE_DOCUMENT_SOURCE, PROTECTED_LEASE_SOURCES
     assert LEASE_DOCUMENT_SOURCE in PROTECTED_LEASE_SOURCES
+
+
+# ══ 12. Removing a lease ═════════════════════════════════════════════
+
+def _upload(client, company, name="Draft.pdf", body=b"%PDF-draft"):
+    return client.post(
+        f"/api/leases/companies/{company.id}/upload",
+        files={"file": (name, body, "application/pdf")},
+    )
+
+
+def test_removing_a_lease_clears_all_three_fields_and_deletes_the_file(
+    db_session, client, leases_dir,
+):
+    """The way out of the mistake: Jack uploaded a draft and could not clear it."""
+    company = _company(db_session, "Remove Co", "CO-RMV")
+    _upload(client, company)
+    db_session.refresh(company)
+    assert company.lease_file_name == "Draft.pdf"
+    assert (leases_dir / "Draft.pdf").is_file()
+
+    r = client.delete(f"/api/companies/{company.company_id}/lease")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["removed_file_name"] == "Draft.pdf"
+    assert body["file_outcome"] == "deleted"
+    assert body["warning"] is None
+
+    db_session.refresh(company)
+    assert company.lease_file_name is None
+    assert company.lease_uploaded_at is None
+    assert company.lease_extraction_json is None
+    # And the file really is gone from the folder.
+    assert not (leases_dir / "Draft.pdf").exists()
+
+
+def test_removing_a_lease_clears_a_stored_extraction_too(
+    db_session, client, leases_dir, monkeypatch,
+):
+    """The abstract goes with the document — it is that document's reading."""
+    monkeypatch.setattr(
+        leases_route, "extract_lease_from_pdf",
+        lambda pdf_bytes, extractor=None: extract_lease(
+            ["p"], _stub_extractor(_full_extraction()),
+        ),
+    )
+    company = _company(db_session, "Extract Co", "CO-RMX")
+    _upload(client, company)
+    db_session.refresh(company)
+    assert company.lease_extraction_json is not None
+
+    client.delete(f"/api/companies/{company.company_id}/lease")
+    db_session.refresh(company)
+    assert company.lease_extraction_json is None
+    # The card reads as having no lease at all again.
+    status = client.get(f"/api/leases/companies/{company.id}").json()
+    assert status["lease_file_name"] is None
+    assert status["has_extraction"] is False
+    assert status["fields"] == []
+
+
+def test_removing_works_when_the_file_is_already_gone_from_disk(
+    db_session, client, leases_dir,
+):
+    """A file deleted out from under the app must not strand the link.
+
+    This is the state Jack would land in if he tidied the folder by hand: the
+    fields still clear, and the result says the file was already absent rather
+    than claiming a deletion that did not happen.
+    """
+    company = _company(db_session, "Ghost Co", "CO-GHO")
+    _upload(client, company, name="Ghost.pdf")
+    db_session.refresh(company)
+    os.remove(leases_dir / "Ghost.pdf")
+
+    r = client.delete(f"/api/companies/{company.company_id}/lease")
+    assert r.status_code == 200, r.text
+    assert r.json()["file_outcome"] == "absent"
+    assert r.json()["warning"] is None
+
+    db_session.refresh(company)
+    assert company.lease_file_name is None
+    assert company.lease_uploaded_at is None
+    assert company.lease_extraction_json is None
+
+
+def test_removing_leaves_confirmed_company_values_and_their_markers_intact(
+    db_session, client, leases_dir, monkeypatch,
+):
+    """Removing the document does not un-know what Jack already confirmed.
+
+    He read those three values against their clauses and accepted them. Silently
+    reverting a confirmed expiry would move a tenant's place in the queue behind
+    his back — and dropping the lease-sourced markers would hand the next CoStar
+    import permission to overwrite them.
+    """
+    monkeypatch.setattr(
+        leases_route, "extract_lease_from_pdf",
+        lambda pdf_bytes, extractor=None: extract_lease(
+            ["p"], _stub_extractor(_full_extraction()),
+        ),
+    )
+    company = _company(db_session, "Keep Co", "CO-KEP")
+    _upload(client, company)
+    client.post(f"/api/leases/companies/{company.id}/confirm",
+                json={"accepted_fields": list(LEASE_FIELDS)})
+
+    db_session.refresh(company)
+    expiry = company.lease_expiry_date
+    months = company.lease_expiry_months
+    assert expiry == date(2027, 6, 30)
+    assert company.current_address == "1750 Tysons Blvd, McLean, VA"
+    assert company.current_sf_occupied == 12500
+
+    client.delete(f"/api/companies/{company.company_id}/lease")
+
+    db_session.refresh(company)
+    # The values survive...
+    assert company.lease_expiry_date == expiry
+    assert company.lease_expiry_months == months
+    assert company.current_address == "1750 Tysons Blvd, McLean, VA"
+    assert company.current_sf_occupied == 12500
+    # ...and so do the markers that keep the CoStar import off them.
+    assert company.lease_expiry_source == "lease_document"
+    assert company.current_address_source == "lease_document"
+    assert company.current_sf_occupied_source == "lease_document"
+    # Only the document itself is gone.
+    assert company.lease_file_name is None
+
+
+def test_removing_a_lease_from_a_company_that_has_none_is_a_clean_404(
+    db_session, client, leases_dir,
+):
+    company = _company(db_session, "Bare Co", "CO-BAR")
+    r = client.delete(f"/api/companies/{company.company_id}/lease")
+    assert r.status_code == 404
+    assert "No lease document is linked" in r.json()["detail"]
+
+
+def test_removing_a_lease_from_a_missing_company_is_a_clean_404(db_session, client):
+    r = client.delete("/api/companies/CO-NOPE/lease")
+    assert r.status_code == 404
+    assert r.json()["detail"] == "Company not found"
+
+
+def test_removing_one_companys_lease_leaves_another_companys_file_alone(
+    db_session, client, leases_dir,
+):
+    """Collision-safe naming means two rows point at two different files."""
+    a = _company(db_session, "Keeper Co", "CO-KPR")
+    b = _company(db_session, "Goner Co", "CO-GNR")
+    _upload(client, a, name="Lease.pdf", body=b"%PDF-keeper")
+    _upload(client, b, name="Lease.pdf", body=b"%PDF-goner")
+    db_session.refresh(a)
+    db_session.refresh(b)
+    assert a.lease_file_name == "Lease.pdf"
+    assert b.lease_file_name == "Lease (2).pdf"
+
+    client.delete(f"/api/companies/{b.company_id}/lease")
+
+    db_session.refresh(a)
+    assert a.lease_file_name == "Lease.pdf"
+    assert (leases_dir / "Lease.pdf").read_bytes() == b"%PDF-keeper"
+    assert not (leases_dir / "Lease (2).pdf").exists()
+
+
+def test_a_file_that_cannot_be_deleted_still_clears_the_link_and_warns(
+    db_session, client, leases_dir, monkeypatch,
+):
+    """A PDF open in a viewer locks the file on Windows.
+
+    Jack must not be stuck with a document he cannot clear, so the link goes
+    either way and the result says what happened to the file.
+    """
+    company = _company(db_session, "Locked Co", "CO-LCK")
+    _upload(client, company, name="Locked.pdf")
+
+    def _locked(path):
+        raise PermissionError("The process cannot access the file")
+
+    monkeypatch.setattr(os, "remove", _locked)
+    r = client.delete(f"/api/companies/{company.company_id}/lease")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["file_outcome"].startswith("error:")
+    assert "Locked.pdf" in body["warning"]
+    assert "by hand" in body["warning"]
+
+    db_session.refresh(company)
+    assert company.lease_file_name is None
+    assert company.lease_extraction_json is None
+
+
+def test_delete_lease_file_never_reaches_outside_the_leases_folder(
+    db_session, tmp_path, leases_dir,
+):
+    """The stored value is the only thing that decides what gets deleted.
+
+    resolve_lease_path() refuses anything carrying a path component, so a
+    column somehow holding one is refused rather than followed.
+    """
+    outsider = tmp_path / "not-a-lease.pdf"
+    outsider.write_bytes(b"%PDF-outside")
+
+    assert lease_storage.delete_lease_file(str(outsider)) == "refused"
+    assert lease_storage.delete_lease_file(r"..\..\not-a-lease.pdf") == "refused"
+    assert outsider.exists()
+    # And an empty value is simply nothing to do.
+    assert lease_storage.delete_lease_file(None) == "absent"
+    assert lease_storage.delete_lease_file("") == "absent"
+
+
+def test_a_removed_lease_can_be_replaced_by_a_new_upload(
+    db_session, client, leases_dir,
+):
+    """The end of the actual story: clear the draft, upload the signed one."""
+    company = _company(db_session, "Redo Co", "CO-RDO")
+    _upload(client, company, name="Draft.pdf", body=b"%PDF-draft")
+    client.delete(f"/api/companies/{company.company_id}/lease")
+
+    r = _upload(client, company, name="Signed.pdf", body=b"%PDF-signed")
+    assert r.status_code == 200, r.text
+    db_session.refresh(company)
+    assert company.lease_file_name == "Signed.pdf"
+    assert (leases_dir / "Signed.pdf").read_bytes() == b"%PDF-signed"
+    assert client.get(f"/api/leases/companies/{company.id}/file").status_code == 200
 
 
 # ══ The contract that must not break ══════════════════════════════════════════

@@ -432,18 +432,9 @@ def open_lease_file(company_pk: int, db: Session = Depends(get_db)):
     )
 
 
-@router.delete("/companies/{company_pk}", response_model=LeaseStatus)
-def unlink_lease(company_pk: int, db: Session = Depends(get_db)):
-    """Unlink the lease from the company. The file on disk is left alone.
-
-    Deliberately does not delete the document: unlinking is a bookkeeping
-    correction (wrong company, wrong lease), and a broker's signed lease is not
-    something an app should be able to destroy on a misclick.
-    """
-    company = _get_company(db, company_pk)
-    company.lease_file_name = None
-    company.lease_uploaded_at = None
-    company.lease_extraction_json = None
-    db.commit()
-    db.refresh(company)
-    return _status(company)
+# Removing a lease lives on the company router as
+# DELETE /api/companies/{company_id}/lease, next to the PATCH that sets the
+# expiry by hand. There is deliberately only ONE way to remove a lease: an
+# earlier unlink here cleared the fields but left the file on disk, and two
+# remove-shaped endpoints differing only in whether the document survives is
+# the kind of difference nobody remembers at the call site.

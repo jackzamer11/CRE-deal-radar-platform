@@ -116,3 +116,34 @@ def resolve_lease_path(file_name: Optional[str], folder: Optional[str] = None) -
 def lease_file_exists(file_name: Optional[str], folder: Optional[str] = None) -> bool:
     path = resolve_lease_path(file_name, folder=folder)
     return bool(path) and os.path.isfile(path)
+
+
+def delete_lease_file(file_name: Optional[str], folder: Optional[str] = None) -> str:
+    """Delete a stored lease from the leases folder. Never raises.
+
+    Returns what happened, for the caller to report: "deleted", "absent" (it
+    was already gone), "refused" (the stored value is not a bare filename, so
+    it is not ours to delete), or an "error: ..." string.
+
+    Nothing here can reach outside the configured folder: resolve_lease_path()
+    refuses any stored value carrying a path component, so the join can only
+    ever land inside it.
+
+    It never raises because removing the link is the operation Jack asked for;
+    a file that cannot be deleted (already gone, or open in a PDF viewer, which
+    on Windows locks it) must not leave him stuck with a document he cannot
+    clear. The database fields are cleared either way and the caller says what
+    became of the file.
+    """
+    if not file_name:
+        return "absent"
+    path = resolve_lease_path(file_name, folder=folder)
+    if not path:
+        return "refused"
+    try:
+        os.remove(path)
+        return "deleted"
+    except FileNotFoundError:
+        return "absent"
+    except OSError as exc:
+        return f"error: {exc}"
