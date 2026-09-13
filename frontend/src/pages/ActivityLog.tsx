@@ -38,6 +38,7 @@ const STAGE_ACTIVE: Record<ActivityStage, string> = {
   'In Play':        'bg-amber-500/20 text-amber-300 border-amber-500/50',
   'Not Interested': 'bg-red-500/20 text-red-300 border-red-500/50',
   'Dormant':        'bg-surface-muted text-ink-secondary border-ink-muted/40',
+  'Closed':         'bg-teal-500/20 text-teal-300 border-teal-500/50',
 }
 
 const OUTREACH_TYPE_LABELS: Record<string, string> = {

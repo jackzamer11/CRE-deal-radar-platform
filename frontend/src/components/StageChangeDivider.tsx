@@ -11,6 +11,7 @@ const STAGE_TEXT: Record<ActivityStage, string> = {
   'In Play':        'text-amber-300',
   'Not Interested': 'text-red-300',
   'Dormant':        'text-ink-secondary',
+  'Closed':         'text-teal-300',
 }
 
 /**

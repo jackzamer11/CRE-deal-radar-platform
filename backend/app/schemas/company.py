@@ -35,6 +35,15 @@ class CompanyBase(BaseModel):
     lease_expiry_months: Optional[int] = None
     lease_expiry_source: Optional[str] = None
     lease_expiry_last_verified: Optional[date] = None
+    # Which fields came off the signed lease rather than CoStar — a lease
+    # outranks CoStar, so the UI marks the difference. "lease_document" is the
+    # marker written by a confirmed extraction (api/routes/leases.py).
+    current_address_source: Optional[str] = None
+    current_sf_occupied_source: Optional[str] = None
+    # The linked lease document. lease_file_name is a bare filename; the folder
+    # is a setting joined at read time, so no path is ever stored or exposed.
+    lease_file_name: Optional[str] = None
+    lease_uploaded_at: Optional[datetime] = None
     # Derived (not stored): tenant is within the final 1-3 months of its lease.
     late_stage: bool = False
     # Derived: thin-data company with near-term expiry (3-12 months) — qualifies for outreach override.

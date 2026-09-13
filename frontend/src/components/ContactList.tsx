@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
-  Mail, Phone, Plus, Search, TriangleAlert, Users, X,
+  History, Mail, Phone, Plus, Search, TriangleAlert, Users, X,
 } from 'lucide-react'
 import { createContact, getContacts, searchContacts } from '../api/client'
 import type {
   ActivityStage, Channel, Contact, ContactListRow, ContactType,
 } from '../types'
-import { CONTACT_TYPE_LABELS, STAGES, UI_CONTACT_TYPES } from '../types'
+import { CLOSED_STAGE, CONTACT_STAGES, CONTACT_TYPE_LABELS, UI_CONTACT_TYPES } from '../types'
 
 const STAGE_PILL: Record<ActivityStage, string> = {
   'Sent':           'bg-blue-500/15 text-blue-300 border-blue-500/40',
@@ -15,6 +15,8 @@ const STAGE_PILL: Record<ActivityStage, string> = {
   'In Play':        'bg-amber-500/15 text-amber-300 border-amber-500/40',
   'Not Interested': 'bg-red-500/15 text-red-300 border-red-500/40',
   'Dormant':        'bg-surface-muted text-ink-secondary border-ink-muted/40',
+  // Placed. Reads as a result, not as a dead end.
+  'Closed':         'bg-teal-500/15 text-teal-300 border-teal-500/40',
 }
 
 const CHANNEL_ICONS: Partial<Record<Channel, React.ElementType>> = {
@@ -132,6 +134,23 @@ function ContactRow({ row, onOpen }: { row: ContactListRow; onOpen: (id: number)
               <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400/90
                                border border-amber-500/20">
                 untriaged
+              </span>
+            )}
+            {/* The marker is the point: "you placed this tenant in this
+                building" is the strongest opening line available on that call.
+                The re-entry badge is louder than the plain past-client one
+                because it is the reason a Closed contact is on this list. */}
+            {row.past_client_reentry ? (
+              <span className="text-[9px] px-1.5 py-0.5 rounded font-bold bg-teal-500/20
+                               text-teal-200 border border-teal-400/50 flex items-center gap-1">
+                <History size={9} />
+                PAST CLIENT — back in window
+                {row.lease_expiry_months !== null && ` (${row.lease_expiry_months}mo)`}
+              </span>
+            ) : row.is_past_client && (
+              <span className="text-[9px] px-1.5 py-0.5 rounded bg-teal-500/10 text-teal-300/90
+                               border border-teal-500/25 flex items-center gap-1">
+                <History size={9} /> past client
               </span>
             )}
           </div>
@@ -268,6 +287,18 @@ export default function ContactList({ onOpen }: { onOpen: (id: number) => void }
                   <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400/90
                                    border border-amber-500/20">untriaged</span>
                 )}
+                {/* Search reaches Closed contacts regardless of the filters,
+                    so the row has to say where they stand. */}
+                {c.stage === CLOSED_STAGE && (
+                  <span className={`text-[9px] px-2 py-0.5 rounded-full border font-semibold
+                                   ${STAGE_PILL[CLOSED_STAGE]}`}>Closed</span>
+                )}
+                {c.is_past_client && (
+                  <span className="text-[9px] px-1.5 py-0.5 rounded bg-teal-500/10 text-teal-300/90
+                                   border border-teal-500/25 flex items-center gap-1">
+                    <History size={9} /> past client
+                  </span>
+                )}
               </div>
               {c.email && <div className="text-[11px] text-ink-muted mt-0.5">{c.email}</div>}
             </button>
@@ -299,7 +330,7 @@ export default function ContactList({ onOpen }: { onOpen: (id: number) => void }
               </button>
             ))}
             <div className="w-px h-4 bg-surface-border mx-1" />
-            {(['All', ...STAGES] as const).map(s => (
+            {(['All', ...CONTACT_STAGES] as const).map(s => (
               <button
                 key={s}
                 onClick={() => setStageFilter(s as 'All' | ActivityStage)}
@@ -315,6 +346,13 @@ export default function ContactList({ onOpen }: { onOpen: (id: number) => void }
           <div className="flex items-center justify-between mb-3">
             <span className="text-[11px] text-ink-muted">
               {rows.length} contact{rows.length === 1 ? '' : 's'}
+              {/* Say it out loud rather than letting placed deals vanish
+                  silently. Past clients back in the window are still here. */}
+              {stageFilter === 'All' && (
+                <span className="text-ink-muted/70">
+                  {' '}· Closed hidden (filter to Closed to see them)
+                </span>
+              )}
             </span>
             <button
               onClick={() => setShowUntriaged(v => !v)}

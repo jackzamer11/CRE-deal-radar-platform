@@ -31,6 +31,20 @@ class Settings(BaseSettings):
     # TENANT_MIN_OCCUPIED_SF. Rows with missing/blank SF always pass the floor.
     TENANT_MIN_OCCUPIED_SF: int = 0
 
+    # ── Lease documents ──────────────────────────────────────────────────
+    # The ONE place the leases folder is written down. Company.lease_file_name
+    # stores a bare filename; services/lease_storage.py joins the two at read
+    # time. Moving the folder is therefore a one-setting change (or the
+    # LEASES_FOLDER env var) and never a migration over stored rows — no
+    # absolute, machine-specific or user-specific path is ever written into a
+    # data column.
+    LEASES_FOLDER: str = r"C:\Users\Jackz\OneDrive\Documents\Deal Radar\Leases"
+
+    # Model used to abstract an uploaded lease. Read at call time, so swapping
+    # it needs no service edit. Deliberately separate from the GPT-4o outreach
+    # model (locked) and from the 5-field document pipeline's own model.
+    LEASE_EXTRACTION_MODEL: str = "claude-opus-5"
+
     # Submarket reference data (avg asking $/SF for comps)
     submarket_avg_psf: dict = {
         "Arlington (Clarendon)": 310,

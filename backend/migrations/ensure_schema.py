@@ -323,7 +323,9 @@ def ensure_contacts(cur: sqlite3.Cursor) -> int:
                 contact_type     TEXT    NOT NULL DEFAULT 'tenant',
                 stage            TEXT    NOT NULL DEFAULT 'Sent',
                 stage_changed_at DATE,
+                closed_at        DATE,
                 next_touch_date  DATE,
+                is_past_client   BOOLEAN NOT NULL DEFAULT 0,
                 responded        BOOLEAN NOT NULL DEFAULT 0,
                 triaged          BOOLEAN NOT NULL DEFAULT 0,
                 auto_created     BOOLEAN NOT NULL DEFAULT 0,
@@ -345,6 +347,13 @@ def ensure_contacts(cur: sqlite3.Cursor) -> int:
             "contact_type":     "TEXT DEFAULT 'tenant'",
             "stage":            "TEXT DEFAULT 'Sent'",
             "stage_changed_at": "DATE",
+            # Closed stage bookkeeping. closed_at is set when the stage moves to
+            # Closed and cleared when it moves off; is_past_client is set with
+            # it and never cleared, so a placed tenant stays marked as one after
+            # the deal reopens. Both nullable/defaulted, so every existing row
+            # migrates without a backfill.
+            "closed_at":        "DATE",
+            "is_past_client":   "BOOLEAN DEFAULT 0",
             "next_touch_date":  "DATE",
             "responded":        "BOOLEAN DEFAULT 0",
             "triaged":          "BOOLEAN DEFAULT 0",
@@ -366,6 +375,11 @@ def ensure_contacts(cur: sqlite3.Cursor) -> int:
         "CREATE INDEX IF NOT EXISTS ix_contacts_company_id ON contacts (company_id)",
         "CREATE INDEX IF NOT EXISTS ix_contacts_next_touch_date "
         "ON contacts (next_touch_date)",
+        # The past-client re-entry sweep filters on this column, and the queue
+        # filters on stage; both stay single aggregated queries.
+        "CREATE INDEX IF NOT EXISTS ix_contacts_is_past_client "
+        "ON contacts (is_past_client)",
+        "CREATE INDEX IF NOT EXISTS ix_contacts_stage ON contacts (stage)",
     ):
         try:
             cur.execute(stmt)
@@ -841,6 +855,27 @@ def ensure_companies(cur: sqlite3.Cursor) -> int:
         # Small marker on the company record when Jack rejects a claim — the
         # disagreement is itself a lead (renewal option, sublease, phased expiry).
         ("has_data_conflict", "BOOLEAN NOT NULL DEFAULT 0"),
+    ):
+        try:
+            added += _add_column(cur, "companies", _col, _def)
+        except Exception as _exc:
+            print(f"  ! companies.{_col} add skipped: {_exc}")
+
+    # ── Lease document link ───────────────────────────────────────
+    # lease_file_name is a BARE FILENAME — the folder lives in
+    # settings.LEASES_FOLDER and is joined at read time (services/lease_storage
+    # .py), so moving the folder is a one-setting change and no absolute path is
+    # ever stored. lease_extraction_json keeps the full extraction, every field
+    # beside the clause text it came from.
+    # The *_source columns mark which company fields were read off the lease
+    # rather than imported from CoStar; lease_expiry_source already existed and
+    # carries the same marker for the expiry.
+    for _col, _def in (
+        ("lease_file_name",            "TEXT"),
+        ("lease_uploaded_at",          "DATETIME"),
+        ("lease_extraction_json",      "TEXT"),
+        ("current_address_source",     "TEXT"),
+        ("current_sf_occupied_source", "TEXT"),
     ):
         try:
             added += _add_column(cur, "companies", _col, _def)

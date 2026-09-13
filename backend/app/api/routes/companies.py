@@ -66,9 +66,16 @@ COSTAR_SUBMARKET_MAP: dict = {
     "tysons central":            "Tysons",
 }
 
-# Sources that represent user-verified data — never overwritten by automated imports.
+# Sources that represent user-verified data — never overwritten by automated
+# imports. "lease_document" is a value read off the signed lease and confirmed
+# by Jack in the extraction review panel: a lease outranks CoStar, so an import
+# must never move it. See api/routes/leases.py.
+LEASE_DOCUMENT_SOURCE = "lease_document"
 PROTECTED_LEASE_SOURCES = frozenset(
-    {"manual", "compstak", "sec_filing", "landlord_confirmed", "public_record"}
+    {
+        "manual", "compstak", "sec_filing", "landlord_confirmed", "public_record",
+        LEASE_DOCUMENT_SOURCE,
+    }
 )
 
 COSTAR_TENANT_COLS = [
@@ -562,9 +569,15 @@ async def costar_tenant_import(
             c = existing[key]
             c.industry              = payload["industry"]
             c.current_headcount     = payload["current_headcount"]
-            c.current_address       = payload["current_address"]
+            # Address and SF read off the signed lease outrank CoStar's values
+            # for the same reason the expiry does — the document is the primary
+            # record. Only a lease-sourced value is protected here; every other
+            # source keeps the previous import behaviour exactly.
+            if getattr(c, "current_address_source", None) != LEASE_DOCUMENT_SOURCE:
+                c.current_address   = payload["current_address"]
             c.current_submarket     = payload["current_submarket"]
-            c.current_sf_occupied   = payload["current_sf_occupied"]
+            if getattr(c, "current_sf_occupied_source", None) != LEASE_DOCUMENT_SOURCE:
+                c.current_sf_occupied = payload["current_sf_occupied"]
             # Guard: never overwrite user-verified lease data with CoStar's value.
             # If the existing record has a protected source AND a verified date,
             # the user has manually confirmed this data — CoStar cannot override it.
@@ -804,7 +817,10 @@ def unsnooze_company(company_id: str, db: Session = Depends(get_db)):
     return _company_out(company, db)
 
 
-VALID_LEASE_SOURCES = {"costar", "manual", "compstak", "sec_filing", "landlord_confirmed", "public_record"}
+VALID_LEASE_SOURCES = {
+    "costar", "manual", "compstak", "sec_filing", "landlord_confirmed",
+    "public_record", LEASE_DOCUMENT_SOURCE,
+}
 
 
 class LeaseExpiryUpdate(BaseModel):

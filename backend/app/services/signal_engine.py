@@ -526,6 +526,53 @@ def sig_lease_expiry_proximity(lease_expiry_months: Optional[int]) -> Optional[f
     return 0.0
 
 
+# The pre-expiry window Jack works: the same 6-9 month band
+# sig_lease_expiry_proximity() scores at 100.0 above. Defined here, next to the
+# tiers, so the queue that surfaces a tenant and the score that ranks them can
+# never drift apart — callers ask this function rather than re-testing months
+# against their own numbers.
+PEAK_WINDOW_MIN_MONTHS = 6
+PEAK_WINDOW_MAX_MONTHS = 9
+
+
+def is_in_peak_expiry_window(lease_expiry_months: Optional[int]) -> bool:
+    """True when a lease expiry sits in the 6-9 month pre-expiry window.
+
+    This is the window the whole operating thesis turns on: tenants engage
+    brokers 6-9 months out, so arriving inside it is arriving before the
+    competing brokers do. Null-safe — unknown months is never "in the window".
+
+    Used for two things: surfacing a past client whose company has come back
+    around to it, and marking the queue row when it happens.
+    """
+    if lease_expiry_months is None:
+        return False
+    return PEAK_WINDOW_MIN_MONTHS <= lease_expiry_months <= PEAK_WINDOW_MAX_MONTHS
+
+
+def peak_window_date_bounds(today: Optional[date] = None):
+    """The 6-9 month window as a half-open date range: (lo, hi), lo <= d < hi.
+
+    The SQL-side expression of is_in_peak_expiry_window(), so a query can filter
+    on lease_expiry_date directly instead of computing months per row. Exactly
+    equivalent: months_until_lease_expiry() counts whole calendar months and
+    ignores the day, so "6 to 9 months out" is "the expiry falls in one of the
+    four calendar months starting six months from now".
+
+    Both functions live here, next to the scoring tiers they share boundaries
+    with, so the queue and the score can never drift apart.
+    """
+    ref = today or date.today()
+
+    def _month_start(offset: int) -> date:
+        month_index = ref.year * 12 + (ref.month - 1) + offset
+        return date(month_index // 12, month_index % 12 + 1, 1)
+
+    # hi is the start of the month AFTER the window's last month, so the whole
+    # of that last month is included.
+    return _month_start(PEAK_WINDOW_MIN_MONTHS), _month_start(PEAK_WINDOW_MAX_MONTHS + 1)
+
+
 def compute_expiry_priority_override(
     insufficient_data: bool,
     lease_expiry_months: Optional[int],

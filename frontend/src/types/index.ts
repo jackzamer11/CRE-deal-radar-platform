@@ -18,8 +18,19 @@ export const LOGGABLE_ACTION_TYPES: ActionType[] =
 
 // Activity-log pipeline stage — current state only; can move any direction.
 // (Named ActivityStage to avoid colliding with the opportunity `Stage` above.)
-export type ActivityStage = 'Sent' | 'Replied' | 'Interested' | 'In Play' | 'Not Interested' | 'Dormant'
+export type ActivityStage =
+  | 'Sent' | 'Replied' | 'Interested' | 'In Play' | 'Not Interested' | 'Dormant'
+  | 'Closed'
+// Entry-level stages: what an ActivityLog row can be set to. Deliberately does
+// NOT include Closed — Closed belongs to the PERSON (it means Jack placed them),
+// and the entry-level stage endpoint rejects it.
 export const STAGES: ActivityStage[] = ['Sent', 'Replied', 'Interested', 'In Play', 'Not Interested', 'Dormant']
+// Contact stages: the seven a person can be in. Used by the thread's stage
+// pills and the By Contact filter bar.
+export const CONTACT_STAGES: ActivityStage[] = [...STAGES, 'Closed']
+// Closed drops a contact out of the default list and the active queue, the same
+// way untriaged does.
+export const CLOSED_STAGE: ActivityStage = 'Closed'
 // Stages that prompt for a revisit (next_touch_date) when selected.
 export const REVISIT_STAGES: ActivityStage[] = ['Not Interested', 'Dormant']
 
@@ -275,6 +286,14 @@ export interface CompanyOut extends CompanyListOut {
   sig_geo_clustering: number
   lease_expiry_source: string | null
   lease_expiry_last_verified: string | null
+  // Which fields came off the signed lease rather than CoStar. A lease
+  // outranks CoStar, so the UI marks the difference (LEASE_SOURCE).
+  current_address_source: string | null
+  current_sf_occupied_source: string | null
+  // The linked lease document — a bare filename; the folder is a backend
+  // setting, so no path ever reaches the client.
+  lease_file_name: string | null
+  lease_uploaded_at: string | null
   primary_contact_name: string | null
   primary_contact_title: string | null
   primary_contact_phone: string | null
@@ -384,8 +403,13 @@ export interface Contact {
   contact_type: ContactType
   stage: ActivityStage
   stage_changed_at: string | null
+  // Set when the stage moves to Closed, cleared when it moves off.
+  closed_at: string | null
   next_touch_date: string | null
   responded: boolean
+  // True once Jack has placed this tenant — permanent, never cleared by moving
+  // off Closed.
+  is_past_client: boolean
   triaged: boolean
   auto_created: boolean
   company_name: string | null
@@ -399,12 +423,18 @@ export interface ContactListRow {
   contact_type: ContactType
   stage: ActivityStage
   stage_changed_at: string | null
+  closed_at: string | null
   days_in_stage: number | null
   next_touch_date: string | null
   overdue: boolean
   responded: boolean
   triaged: boolean
   auto_created: boolean
+  is_past_client: boolean
+  // Their company's lease has come back into the 6-9 month window, which is why
+  // a Closed contact is on this list at all.
+  past_client_reentry: boolean
+  lease_expiry_months: number | null
   company_id: number | null
   company_name: string | null
   entry_count: number
@@ -538,10 +568,63 @@ export interface ThreadHeader {
   company_name: string | null
   company_business_id: string | null
   company_lease_expiry: string | null
+  company_lease_expiry_months: number | null
   company_sf: number | null
   company_submarket: string | null
+  company_address: string | null
+  // Which company fields came off the signed lease rather than CoStar.
+  company_lease_expiry_source: string | null
+  company_address_source: string | null
+  company_sf_source: string | null
+  company_lease_file_name: string | null
+  company_lease_uploaded_at: string | null
+  company_lease_file_missing: boolean
+  has_lease_extraction: boolean
+  past_client_reentry: boolean
   has_data_conflict: boolean
   conflicts: DataConflict[]
+}
+
+// ── Lease document ──────────────────────────────────────────────────────────
+// The marker written into a company's *_source column for a value read off the
+// signed lease. A lease outranks CoStar.
+export const LEASE_SOURCE = 'lease_document'
+
+export interface ExtractedLeaseField {
+  field: string
+  label: string
+  value: string | null
+  // The clause the value came from. A value with no source text was never
+  // extracted — it comes back found=false rather than inferred.
+  source_text: string | null
+  page: number | null
+  found: boolean
+  writes_to_company: boolean
+  accepted: boolean
+}
+
+export interface LeaseStatus {
+  company_id: number
+  company_name: string | null
+  lease_file_name: string | null
+  lease_uploaded_at: string | null
+  file_missing: boolean
+  has_extraction: boolean
+  fields: ExtractedLeaseField[]
+  // Set when extraction could not run or could not be read. The file is stored
+  // and linked either way.
+  extraction_error: string | null
+  extraction_skipped: boolean
+}
+
+export interface LeaseConfirmResult {
+  company_id: number
+  written: Record<string, string | null>
+  skipped: string[]
+  lease_expiry_date: string | null
+  lease_expiry_months: number | null
+  current_address: string | null
+  current_sf_occupied: number | null
 }
 
 export interface CallTarget {
@@ -631,6 +714,22 @@ export interface AcquisitionTarget {
   is_medical: boolean
 }
 
+// A tenant Jack placed whose lease has come back into the 6-9 month window.
+export interface PastClientReentry {
+  contact_id: number
+  contact_name: string
+  contact_stage: ActivityStage
+  closed_at: string | null
+  company_id: number | null
+  company_business_id: string | null
+  company_name: string | null
+  submarket: string | null
+  lease_expiry_date: string | null
+  lease_expiry_months: number | null
+  sf_occupied: number | null
+  lease_sourced_expiry: boolean
+}
+
 export interface ExpiredLease {
   company_id: string
   name: string
@@ -653,6 +752,7 @@ export interface DailyBriefing {
   snoozed_tenant_match_actions?: TenantMatchAction[]
   snoozed_acquisition_targets?: AcquisitionTarget[]
   expired_leases: ExpiredLease[]
+  past_client_reentries: PastClientReentry[]
   returned_from_snooze_property_ids: string[]
   signal_refresh_timestamp: string | null
 }

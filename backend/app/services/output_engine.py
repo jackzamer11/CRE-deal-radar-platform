@@ -16,14 +16,18 @@ from typing import List, Optional
 from sqlalchemy import and_
 from sqlalchemy.orm import Session
 
+from app import config
 from app.models.opportunity import Opportunity
 from app.models.property import Property
 from app.models.company import Company
+from app.models.contact import Contact, CLOSED_STAGE
 from app.models.outreach_log import OutreachLog
+from app.schemas.company import months_until_lease_expiry
 from app.services.match_scoring import compute_match, medical_mismatch_penalty, lease_expiry_chip_label
+from app.services.signal_engine import peak_window_date_bounds
 from app.schemas.dashboard import (
     DailyBriefing, DashboardStats, CallTarget, TenantMatchTarget,
-    TenantMatchAction, AcquisitionTarget, ExpiredLease,
+    TenantMatchAction, AcquisitionTarget, ExpiredLease, PastClientReentry,
 )
 
 
@@ -331,6 +335,53 @@ def _compute_expired_leases(db: Session) -> list:
     ]
 
 
+def _compute_past_client_reentries(db: Session) -> list:
+    """Past clients whose company lease has re-entered the 6-9 month window.
+
+    One query, joined to the company. The window is
+    signal_engine.peak_window_date_bounds() — the SQL form of the same 6-9 month
+    band the scoring tier uses, so this section and the score can never disagree
+    about what the window is.
+
+    The contact's stage is returned as it stands, which for a placed tenant is
+    Closed. Surfacing them is not reopening them: nothing here writes, and
+    nothing resets a stage to Sent.
+    """
+    window_lo, window_hi = peak_window_date_bounds()
+    rows = (
+        db.query(Contact, Company)
+        .join(Company, Company.id == Contact.company_id)
+        .filter(
+            Contact.is_past_client.is_(True),
+            Company.lease_expiry_date.isnot(None),
+            Company.lease_expiry_date >= window_lo,
+            Company.lease_expiry_date < window_hi,
+            # Snoozed companies stay out of the queue, exactly as elsewhere
+            # (null-safe: NULL = active).
+            (Company.snoozed_until == None),
+        )
+        .order_by(Company.lease_expiry_date.asc(), Contact.name.asc())
+        .all()
+    )
+    return [
+        PastClientReentry(
+            contact_id=contact.id,
+            contact_name=contact.name,
+            contact_stage=contact.stage or CLOSED_STAGE,
+            closed_at=contact.closed_at,
+            company_id=company.id,
+            company_business_id=company.company_id,
+            company_name=company.name,
+            submarket=company.current_submarket,
+            lease_expiry_date=company.lease_expiry_date,
+            lease_expiry_months=months_until_lease_expiry(company.lease_expiry_date),
+            sf_occupied=company.current_sf_occupied,
+            lease_sourced_expiry=(company.lease_expiry_source == "lease_document"),
+        )
+        for contact, company in rows
+    ]
+
+
 def _to_call_target(opp: Opportunity, rank: int) -> CallTarget:
     prop = opp.property
     company = opp.company
@@ -466,6 +517,7 @@ def generate_daily_briefing(db: Session) -> DailyBriefing:
     tenant_match_actions = _compute_tenant_actions(db)
     acquisition_targets  = _compute_acquisition_targets(db)
     expired_leases       = _compute_expired_leases(db)
+    past_client_reentries = _compute_past_client_reentries(db)
     # Snoozed variants power the "Snoozed" toggle bubbles (hidden by default).
     snoozed_tenant_match_actions = _compute_tenant_actions(db, snoozed=True)
     snoozed_acquisition_targets  = _compute_acquisition_targets(db, snoozed=True)
@@ -483,6 +535,7 @@ def generate_daily_briefing(db: Session) -> DailyBriefing:
         snoozed_tenant_match_actions=snoozed_tenant_match_actions,
         snoozed_acquisition_targets=snoozed_acquisition_targets,
         expired_leases=expired_leases,
+        past_client_reentries=past_client_reentries,
         returned_from_snooze_property_ids=returned_from_snooze_ids,
         signal_refresh_timestamp=str(date.today()),
     )
