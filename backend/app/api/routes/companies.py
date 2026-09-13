@@ -20,6 +20,7 @@ from app.schemas.outreach import OutreachDraft, OutreachLogCreate, OutreachLogOu
 from app.services import signal_engine as se
 from app.services.scoring_model import score_property
 from app.services.match_scoring import medical_mismatch_penalty
+from app.services.lease_storage import delete_lease_file
 from app.services.rep_classification import classify_rep
 
 router = APIRouter(prefix="/companies", tags=["companies"])
@@ -873,6 +874,85 @@ def update_lease_expiry(
     db.commit()
     db.refresh(company)
     return _company_out(company, db)
+
+
+class LeaseRemovalResult(BaseModel):
+    """What became of the link and of the file."""
+    company_id: str
+    removed_file_name: Optional[str] = None
+    # deleted | absent | refused | error: ...  — "absent" means the file was
+    # already gone from the folder, which is a clean outcome, not a failure.
+    file_outcome: str = "absent"
+    # Set when the fields were cleared but the file could not be removed, so the
+    # UI can say so instead of implying the document is gone.
+    warning: Optional[str] = None
+
+
+@router.delete("/{company_id}/lease", response_model=LeaseRemovalResult)
+def remove_lease(company_id: str, db: Session = Depends(get_db)):
+    """Remove the linked lease document: clear the link and delete the file.
+
+    Jack uploaded a draft by mistake and had no way to clear it — this is that
+    way out. It clears lease_file_name, lease_uploaded_at and
+    lease_extraction_json, and deletes the PDF from the leases folder.
+
+    Two things it deliberately does NOT do:
+
+    1. **It does not roll back a confirmed value.** lease_expiry_date,
+       current_address and current_sf_occupied stay exactly as they are, and so
+       do their lease-sourced markers. Jack read those values against their
+       clauses and accepted them; removing the document does not un-know them,
+       and silently reverting a verified expiry would move a tenant's place in
+       the queue behind his back. Keeping the markers also keeps the CoStar
+       import guard in force — a confirmed lease value still outranks CoStar
+       after the document is gone. The confirmation text says this.
+    2. **It does not fail on a missing file.** A file already gone from the
+       folder is a clean outcome: the fields still clear. Nor does a file that
+       cannot be deleted (open in a viewer, which on Windows locks it) block
+       the removal — the link clears and the result says what happened, because
+       the alternative is Jack stuck with a document he cannot clear.
+
+    Keyed by the CO-nnn business id, like every other route on this router
+    (and like PATCH /{company_id}/lease directly above).
+    """
+    company = db.query(Company).filter(Company.company_id == company_id).first()
+    if not company:
+        raise HTTPException(status_code=404, detail="Company not found")
+    if not company.lease_file_name:
+        # A clean 404 naming the situation, never a 500 and never a silent OK.
+        raise HTTPException(
+            status_code=404,
+            detail="No lease document is linked to this company.",
+        )
+
+    file_name = company.lease_file_name
+    outcome = delete_lease_file(file_name)
+
+    company.lease_file_name       = None
+    company.lease_uploaded_at     = None
+    company.lease_extraction_json = None
+    company.last_modified_by_user = datetime.utcnow()
+    db.commit()
+
+    warning = None
+    if outcome.startswith("error:"):
+        warning = (
+            f"The link was removed, but '{file_name}' could not be deleted "
+            f"({outcome[len('error: '):]}). It may be open in another program — "
+            "delete it from the leases folder by hand."
+        )
+    elif outcome == "refused":
+        warning = (
+            f"The link was removed. '{file_name}' was left alone because the "
+            "stored value is not a plain filename."
+        )
+
+    return LeaseRemovalResult(
+        company_id=company.company_id,
+        removed_file_name=file_name,
+        file_outcome=outcome,
+        warning=warning,
+    )
 
 
 VALID_BUILDING_CLASSES = {"Class A", "Class B", "Class C"}
