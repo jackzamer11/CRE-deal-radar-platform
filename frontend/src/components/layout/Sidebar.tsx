@@ -89,13 +89,6 @@ export default function Sidebar() {
         {lastRun && (
           <div className="text-[10px] text-ink-muted text-center mt-1.5">Last: {lastRun}</div>
         )}
-        <div className="text-[10px] text-ink-muted text-center mt-2 leading-relaxed">
-          Targets: 3K–30K SF · Under $7M
-          <br />
-          Reston · Tysons · Arlington
-          <br />
-          Alexandria · Falls Church
-        </div>
       </div>
     </aside>
   )

@@ -16,7 +16,7 @@ import type {
 } from '../types'
 import {
   CHANNELS, CLOSED_STAGE, CONTACT_STAGES, CONTACT_TYPE_LABELS,
-  LEASE_SOURCE, STAGE_CHANGE_ACTION, UI_CONTACT_TYPES,
+  LEASE_SOURCE, MANUAL_SOURCE, STAGE_CHANGE_ACTION, UI_CONTACT_TYPES,
 } from '../types'
 import EntryEditor from './EntryEditor'
 import LeaseCard from './LeaseCard'
@@ -774,8 +774,9 @@ function DealContext({
   )
 }
 
-// A small marker distinguishing a value read off the signed lease from a
-// CoStar-imported one. A lease outranks CoStar, so which is which matters.
+// A small marker distinguishing a value read off the signed lease from one Jack
+// typed, and both from a CoStar-imported one. Lease and manual both outrank
+// CoStar, but only one of them came off the page.
 function SourceMark({ source }: { source: string | null }) {
   if (source === LEASE_SOURCE) {
     return (
@@ -785,6 +786,17 @@ function SourceMark({ source }: { source: string | null }) {
         title="Read off the signed lease and confirmed — outranks CoStar."
       >
         lease
+      </span>
+    )
+  }
+  if (source === MANUAL_SOURCE) {
+    return (
+      <span
+        className="text-[9px] px-1 py-0.5 rounded bg-amber-500/10 text-amber-300
+                   border border-amber-500/30"
+        title="Entered by you, not read off the document — outranks CoStar."
+      >
+        manual
       </span>
     )
   }

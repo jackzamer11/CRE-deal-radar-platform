@@ -34,6 +34,7 @@ import type {
   LeaseStatus,
   LeaseConfirmResult,
   LeaseRemovalResult,
+  Submarket,
 } from '../types'
 
 const api = axios.create({
@@ -158,6 +159,22 @@ export const updateCompanyBuildingClass = (
   current_building_class: string | null,
 ): Promise<CompanyOut> =>
   api.patch(`/companies/${companyId}/building-class`, { current_building_class }).then(r => r.data)
+
+// Any name not on the submarket list joins it; "sterling" resolves to Sterling.
+export const updateCompanySubmarket = (
+  companyId: string,
+  current_submarket: string | null,
+): Promise<CompanyOut> =>
+  api.patch(`/companies/${companyId}/submarket`, { current_submarket }).then(r => r.data)
+
+// ── Submarkets (a list that grows) ───────────────────────────────────────────
+
+export const getSubmarkets = (): Promise<Submarket[]> =>
+  api.get('/submarkets/').then(r => r.data)
+
+// Returns the existing row when the name is already on the list in any casing.
+export const createSubmarket = (name: string): Promise<Submarket & { created: boolean }> =>
+  api.post('/submarkets/', { name }).then(r => r.data)
 
 export const updateCompanySfOccupied = (
   companyId: string,
@@ -855,28 +872,52 @@ export const uploadLease = (companyPk: number, file: File): Promise<LeaseStatus>
     .then(r => r.data)
 }
 
-// Re-read an already-stored lease — for after an API key is added.
-export const reextractLease = (companyPk: number): Promise<LeaseStatus> =>
-  api.post(`/leases/companies/${companyPk}/reextract`).then(r => r.data)
+// Re-read an already-stored lease — for after an API key is added. The current
+// lease unless leaseId names a prior term.
+export const reextractLease = (companyPk: number, leaseId?: number): Promise<LeaseStatus> =>
+  api
+    .post(`/leases/companies/${companyPk}/reextract`, null, {
+      params: leaseId != null ? { lease_id: leaseId } : undefined,
+    })
+    .then(r => r.data)
 
-// Writes expiry, address and SF to the company record, marked lease-sourced.
-// Only the fields left checked; everything found is checked by default.
+// Saves the checked fields to the lease and — for the current lease — writes
+// expiry, address and SF to the company record. manualValues holds what Jack
+// typed; a typed value is marked 'manual', and only writes if its row is
+// checked. leaseId confirms a prior term (which never touches the company).
 export const confirmLeaseExtraction = (
   companyPk: number,
   acceptedFields: string[],
+  manualValues?: Record<string, string>,
+  leaseId?: number,
 ): Promise<LeaseConfirmResult> =>
   api
-    .post(`/leases/companies/${companyPk}/confirm`, { accepted_fields: acceptedFields })
+    .post(`/leases/companies/${companyPk}/confirm`, {
+      accepted_fields: acceptedFields,
+      manual_values: manualValues ?? null,
+      lease_id: leaseId ?? null,
+    })
     .then(r => r.data)
 
-// Removes the link AND deletes the PDF from the leases folder. Confirmed
-// company values (expiry, address, SF) and their lease-sourced markers are
-// deliberately left as they are. Keyed by the CO-nnn business id, like every
-// other /companies/ call.
-export const removeLease = (companyBusinessId: string): Promise<LeaseRemovalResult> =>
-  api.delete(`/companies/${companyBusinessId}/lease`).then(r => r.data)
+// Removes ONE lease — its record and its PDF. Omitting leaseId removes the
+// current lease, and the next most recent is promoted. Confirmed company
+// values are never rolled back to nothing. Keyed by the CO-nnn business id,
+// like every other /companies/ call.
+export const removeLease = (
+  companyBusinessId: string,
+  leaseId?: number,
+): Promise<LeaseRemovalResult> =>
+  api
+    .delete(`/companies/${companyBusinessId}/lease`, {
+      params: leaseId != null ? { lease_id: leaseId } : undefined,
+    })
+    .then(r => r.data)
 
 // The URL the "open the lease" link points at. Not a request — the browser
 // navigates to it, and a missing file comes back as a plain 404 message.
 export const leaseFileUrl = (companyPk: number): string =>
   `/api/leases/companies/${companyPk}/file`
+
+// Any lease's own file — how a prior term opens.
+export const leaseFileUrlById = (leaseId: number): string =>
+  `/api/leases/${leaseId}/file`

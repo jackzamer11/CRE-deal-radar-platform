@@ -147,29 +147,20 @@ class Company(Base):
     contact_reported_sf_reported_at     = Column(Date, nullable=True)
     contact_reported_sf_resolution      = Column(String, nullable=True)
 
-    # ── Lease document ──────────────────────────────────────────────────────
-    # The signed lease, linked to the company record. lease_file_name holds a
-    # BARE FILENAME — never a path. The folder it lives in is one setting
-    # (settings.leases_folder in config.py) joined at read time by
-    # services/lease_storage.resolve_lease_path(), so moving the folder is a
-    # one-setting change rather than a migration over every row. Nothing
-    # machine- or user-specific is ever written into a data column.
-    #
-    # lease_extraction_json is the FULL extraction as returned by the model:
-    # every field with the clause text it came from, including the values Jack
-    # unchecked. It is the audit trail — any lease-sourced field on this record
-    # traces back to its clause through it.
-    #
-    # Lease content is private. It never enters generated outreach copy.
-    lease_file_name       = Column(String, nullable=True)
-    lease_uploaded_at     = Column(DateTime, nullable=True)
-    lease_extraction_json = Column(Text, nullable=True)
+    # ── Lease documents ─────────────────────────────────────────────────────
+    # A company's leases live in their own table (models/lease.py) — a list,
+    # never a single field, so a new lease can never overwrite the prior term.
+    # The single-lease columns that used to sit here (lease_file_name,
+    # lease_uploaded_at, lease_extraction_json) were migrated into that table by
+    # ensure_schema.migrate_company_leases_to_table and are no longer mapped:
+    # an old database still carries the empty columns, nothing reads them.
 
-    # Which fields on this record came off the lease rather than CoStar. A lease
-    # outranks CoStar, so the marker matters: it tells Jack (and the next
-    # import) that the value was read off the signed document.
+    # Which fields on this record came from a confirmed lease rather than
+    # CoStar: "lease_document" when read off the page, "manual" when Jack typed
+    # the value in the review panel. Both outrank CoStar, and the marker tells
+    # Jack (and the next import) which is which.
     # lease_expiry_source already carries this for the expiry — these two cover
-    # the other two fields a confirmed extraction writes.
+    # the other two fields a confirmed lease writes.
     current_address_source     = Column(String, nullable=True)
     current_sf_occupied_source = Column(String, nullable=True)
 
