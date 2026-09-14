@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 
 from app.database import init_db
-from app.api.routes import properties, companies, opportunities, activity, contacts, dashboard, outreach, outreach_drafts, import_routes, lease_comps, admin, observations, documents, intel, leases
+from app.api.routes import properties, companies, opportunities, activity, contacts, dashboard, outreach, outreach_drafts, import_routes, lease_comps, admin, observations, documents, intel, leases, submarkets
 from app.ingestion.scheduler import start_scheduler, stop_scheduler
 from app.config import settings, NOVA_OFFICE_BENCHMARKS, SUBMARKET_BENCHMARKS
 
@@ -49,6 +49,7 @@ def create_app() -> FastAPI:
     app.include_router(documents.router,        prefix="/api")
     app.include_router(intel.router,            prefix="/api")
     app.include_router(leases.router,           prefix="/api")
+    app.include_router(submarkets.router,       prefix="/api")
 
     @app.on_event("startup")
     def on_startup():
@@ -57,6 +58,18 @@ def create_app() -> FastAPI:
         rename_is_listed()
         ensure_schema()
         init_db()
+        # A brand-new database skips ensure_schema (no file yet), so the
+        # submarket list is seeded here too. Never fatal to startup.
+        try:
+            from app.database import SessionLocal
+            from app.services.submarket_service import ensure_seeded
+            _db = SessionLocal()
+            try:
+                ensure_seeded(_db)
+            finally:
+                _db.close()
+        except Exception as _exc:  # noqa: BLE001
+            print(f"startup: submarket seed skipped: {_exc}")
         start_scheduler()
 
     @app.on_event("shutdown")

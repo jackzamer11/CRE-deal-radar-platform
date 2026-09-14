@@ -6,6 +6,8 @@ from app.models.contact import Contact, ContactFact
 from app.models.tenant_class_feedback import TenantClassFeedback
 from app.models.observation import Observation
 from app.models.document import Document
+from app.models.lease import Lease
+from app.models.submarket import Submarket
 from app.models.intel import (
     IntelSignal, IntelOpportunity, IntelFeedback, IntelCriterion,
     IntelActivityExtraction,
@@ -14,6 +16,6 @@ from app.models.intel import (
 __all__ = [
     "Property", "Company", "Opportunity", "ActivityLog", "Contact", "ContactFact",
     "TenantClassFeedback",
-    "Observation", "Document", "IntelSignal", "IntelOpportunity",
+    "Observation", "Document", "Lease", "Submarket", "IntelSignal", "IntelOpportunity",
     "IntelFeedback", "IntelCriterion", "IntelActivityExtraction",
 ]

@@ -861,19 +861,15 @@ def ensure_companies(cur: sqlite3.Cursor) -> int:
         except Exception as _exc:
             print(f"  ! companies.{_col} add skipped: {_exc}")
 
-    # ── Lease document link ───────────────────────────────────────
-    # lease_file_name is a BARE FILENAME — the folder lives in
-    # settings.LEASES_FOLDER and is joined at read time (services/lease_storage
-    # .py), so moving the folder is a one-setting change and no absolute path is
-    # ever stored. lease_extraction_json keeps the full extraction, every field
-    # beside the clause text it came from.
-    # The *_source columns mark which company fields were read off the lease
-    # rather than imported from CoStar; lease_expiry_source already existed and
-    # carries the same marker for the expiry.
+    # ── Lease source markers ──────────────────────────────────────
+    # The *_source columns mark which company fields came from a confirmed
+    # lease — "lease_document" (read off the page) or "manual" (typed by Jack
+    # in the review panel) — rather than CoStar; lease_expiry_source already
+    # existed and carries the same marker for the expiry.
+    # The single-lease columns (lease_file_name, lease_uploaded_at,
+    # lease_extraction_json) are no longer added: leases live in their own
+    # table, and migrate_company_leases_to_table() moves any old values there.
     for _col, _def in (
-        ("lease_file_name",            "TEXT"),
-        ("lease_uploaded_at",          "DATETIME"),
-        ("lease_extraction_json",      "TEXT"),
         ("current_address_source",     "TEXT"),
         ("current_sf_occupied_source", "TEXT"),
     ):
@@ -939,6 +935,198 @@ def ensure_companies(cur: sqlite3.Cursor) -> int:
         print(f"  ! companies.current_sf_occupied add/backfill skipped: {_exc}")
 
     return added
+
+
+def _table_exists(cur: sqlite3.Cursor, table: str) -> bool:
+    cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table,))
+    return cur.fetchone() is not None
+
+
+def ensure_leases_table(cur: sqlite3.Cursor) -> int:
+    """Create the leases table — a company's leases as a list (idempotent).
+
+    Mirrors models/lease.py. file_name is a BARE FILENAME: the folder lives in
+    settings.LEASES_FOLDER and is joined at read time, so no absolute path is
+    ever stored. AUTOINCREMENT so a deleted lease's id — which sits in a file
+    URL — is never handed to a different lease.
+    """
+    if _table_exists(cur, "leases"):
+        added = 0
+        for col, col_def in (
+            ("file_name",           "TEXT"),
+            ("extraction_json",     "TEXT"),
+            ("commencement_date",   "DATE"),
+            ("expiration_date",     "DATE"),
+            ("premises_address",    "TEXT"),
+            ("suite",               "TEXT"),
+            ("rentable_sf",         "INTEGER"),
+            ("base_rent",           "TEXT"),
+            ("escalation_terms",    "TEXT"),
+            ("renewal_options",     "TEXT"),
+            ("tenant_legal_entity", "TEXT"),
+            ("is_current",          "BOOLEAN NOT NULL DEFAULT 0"),
+            ("confirmed_at",        "DATETIME"),
+        ):
+            try:
+                added += _add_column(cur, "leases", col, col_def)
+            except Exception as _exc:
+                print(f"  ! leases.{col} add skipped: {_exc}")
+        return added
+
+    cur.execute("""
+        CREATE TABLE leases (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            company_id          INTEGER NOT NULL REFERENCES companies(id),
+            file_name           TEXT,
+            uploaded_at         DATETIME NOT NULL,
+            extraction_json     TEXT,
+            commencement_date   DATE,
+            expiration_date     DATE,
+            premises_address    TEXT,
+            suite               TEXT,
+            rentable_sf         INTEGER,
+            base_rent           TEXT,
+            escalation_terms    TEXT,
+            renewal_options     TEXT,
+            tenant_legal_entity TEXT,
+            is_current          BOOLEAN NOT NULL DEFAULT 0,
+            confirmed_at        DATETIME
+        )
+    """)
+    cur.execute("CREATE INDEX IF NOT EXISTS ix_leases_id ON leases (id)")
+    cur.execute("CREATE INDEX IF NOT EXISTS ix_leases_company_id ON leases (company_id)")
+    print("  + created table leases")
+    return 1
+
+
+def migrate_company_leases_to_table(cur: sqlite3.Cursor) -> int:
+    """Move each company's single lease into the leases table (idempotent).
+
+    Before this build a company held one lease in three columns on the
+    companies row. Each company still holding one becomes a lease row — current
+    unless the company somehow already has a current lease — with the confirmed
+    values re-read from the stored extraction. The three old columns are then
+    cleared IN THE SAME TRANSACTION, which is what makes a re-run a no-op: left
+    in place, a lease Jack later deletes would be migrated back on the next
+    startup.
+
+    Zero companies holding a lease — or a database whose companies table never
+    had the columns — is the normal case and does nothing. Returns rows moved.
+    """
+    if not _table_exists(cur, "companies"):
+        return 0
+    for col in ("lease_file_name", "lease_uploaded_at", "lease_extraction_json"):
+        if not _has_column(cur, "companies", col):
+            return 0
+    ensure_leases_table(cur)
+
+    cur.execute("""
+        SELECT id, lease_file_name, lease_uploaded_at, lease_extraction_json,
+               last_modified_by_user
+        FROM companies
+        WHERE lease_file_name IS NOT NULL OR lease_extraction_json IS NOT NULL
+    """)
+    rows = cur.fetchall()
+    if not rows:
+        return 0
+
+    try:
+        from app.services.lease_records import (
+            lease_columns_from_legacy_extraction, load_extraction, was_confirmed,
+        )
+    except Exception as _exc:  # noqa: BLE001 — move the documents even if parsing is unavailable
+        print(f"  ! lease migration: confirmed values not re-read ({_exc})")
+        lease_columns_from_legacy_extraction = None
+
+    from datetime import datetime as _dt
+
+    moved = 0
+    for company_pk, file_name, uploaded_at, extraction_raw, modified_at in rows:
+        columns = {}
+        confirmed_at = None
+        if lease_columns_from_legacy_extraction is not None:
+            extraction = load_extraction(extraction_raw)
+            if was_confirmed(extraction):
+                columns = lease_columns_from_legacy_extraction(extraction)
+                confirmed_at = modified_at or uploaded_at
+        cur.execute(
+            "SELECT COUNT(*) FROM leases WHERE company_id = ? AND is_current = 1",
+            (company_pk,),
+        )
+        is_current = 0 if cur.fetchone()[0] else 1
+
+        record = {
+            "company_id": company_pk,
+            "file_name": file_name,
+            "uploaded_at": uploaded_at or _dt.utcnow().isoformat(sep=" "),
+            "extraction_json": extraction_raw,
+            "is_current": is_current,
+            "confirmed_at": confirmed_at,
+        }
+        for key, value in columns.items():
+            record[key] = value.isoformat() if hasattr(value, "isoformat") else value
+        keys = list(record)
+        cur.execute(
+            f"INSERT INTO leases ({', '.join(keys)}) VALUES ({', '.join('?' for _ in keys)})",
+            [record[k] for k in keys],
+        )
+        cur.execute(
+            "UPDATE companies SET lease_file_name = NULL, lease_uploaded_at = NULL, "
+            "lease_extraction_json = NULL WHERE id = ?",
+            (company_pk,),
+        )
+        moved += 1
+    print(f"  + moved {moved} company lease(s) into the leases table")
+    return moved
+
+
+def ensure_submarkets_table(cur: sqlite3.Cursor) -> int:
+    """Create and seed the growing submarket list (idempotent).
+
+    Seeded with every platform submarket plus every distinct value a company
+    already carries, so no existing assignment falls off the dropdown. The
+    NOCASE unique index makes "sterling" and "Sterling" the same row, and
+    INSERT OR IGNORE makes a re-run add nothing.
+    """
+    added = 0
+    if not _table_exists(cur, "submarkets"):
+        cur.execute("""
+            CREATE TABLE submarkets (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                name         TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                created_at   DATETIME NOT NULL,
+                auto_created BOOLEAN NOT NULL DEFAULT 0
+            )
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS ix_submarkets_id ON submarkets (id)")
+        print("  + created table submarkets")
+        added += 1
+
+    names = []
+    try:
+        from app.config import PLATFORM_SUBMARKETS
+        names.extend(PLATFORM_SUBMARKETS)
+    except Exception as _exc:  # noqa: BLE001
+        print(f"  ! submarkets: platform list unavailable ({_exc})")
+    if _table_exists(cur, "companies") and _has_column(cur, "companies", "current_submarket"):
+        cur.execute(
+            "SELECT DISTINCT TRIM(current_submarket) FROM companies "
+            "WHERE current_submarket IS NOT NULL AND TRIM(current_submarket) != ''"
+        )
+        names.extend(r[0] for r in cur.fetchall())
+
+    from datetime import datetime as _dt
+    now = _dt.utcnow().isoformat(sep=" ")
+    before = cur.execute("SELECT COUNT(*) FROM submarkets").fetchone()[0]
+    for name in names:
+        cur.execute(
+            "INSERT OR IGNORE INTO submarkets (name, created_at, auto_created) VALUES (?, ?, 0)",
+            (" ".join(str(name).split()), now),
+        )
+    seeded = cur.execute("SELECT COUNT(*) FROM submarkets").fetchone()[0] - before
+    if seeded:
+        print(f"  + seeded {seeded} submarket(s)")
+    return added + seeded
 
 
 def backfill_lease_expiry_dates(cur: sqlite3.Cursor) -> int:
@@ -1088,6 +1276,26 @@ def run() -> None:
     tcf_added      = ensure_tenant_class_feedback(cur)
     bf_class_added = backfill_building_class_format(cur)
 
+    # ── Leases as a list, and the growing submarket list ──────────────────────
+    # Each guarded so a failure here never aborts startup; a failed step rolls
+    # back its own partial work.
+    lease_added = 0
+    for _step in (ensure_leases_table, migrate_company_leases_to_table, ensure_submarkets_table):
+        try:
+            lease_added += _step(cur)
+            conn.commit()
+        except Exception as _exc:
+            import logging as _log
+            _log.getLogger(__name__).error(
+                "ensure_schema: %s failed (%s) — startup will continue",
+                _step.__name__, _exc,
+            )
+            try:
+                conn.rollback()
+                cur = conn.cursor()
+            except Exception:
+                pass
+
     # ── Guarantee open_positions / current_headcount actually accept NULL ──────
     # Both are nullable=True at the ORM level, but a Docker-volume DB created
     # before that was true (or before open_positions dropped its default=0)
@@ -1117,6 +1325,7 @@ def run() -> None:
     total = (
         prop_added + comp_added + olog_added + olog_fixed + act_added + contact_added
         + doc_added + obs_added + draft_added + bf_added + tcf_added + bf_class_added + nullable_fixed
+        + lease_added
     )
     if total:
         print(f"ensure_schema: applied {total} column addition(s)/backfill(s).")

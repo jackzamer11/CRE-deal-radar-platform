@@ -12,7 +12,7 @@ What this file locks, in the order the build specified it:
   4. A past client whose company expiry lands in the 6-9 month window appears
      in the queue and the briefing with stage Closed and the past-client
      marker — never reset to Sent.
-  5. lease_file_name stores a BARE FILENAME; no absolute path reaches a column.
+  5. A lease's file_name stores a BARE FILENAME; no absolute path reaches a column.
   6. Changing the configured leases folder re-points existing rows with no data
      change.
   7. A confirmed extraction writes expiry, address and SF, marked lease-sourced;
@@ -23,8 +23,8 @@ What this file locks, in the order the build specified it:
  10. A missing ANTHROPIC_API_KEY still stores and links the file, extraction
      skipped with a plain message.
  11. /api/companies/ still returns all seven contract fields.
- 12. Removing a lease clears all three lease fields and deletes the file, works
-     when the file is already gone, leaves confirmed company values and their
+ 12. Removing a lease removes its record and deletes the file, works when the
+     file is already gone, leaves confirmed company values and their
      lease-sourced markers alone, and 404s cleanly when there is no lease.
 
 In-memory SQLite, dependency-overridden get_db, a tmp_path leases folder. No
@@ -49,6 +49,7 @@ from app.database import Base, get_db
 from app.models.activity import ActivityLog
 from app.models.company import Company
 from app.models.contact import Contact, CLOSED_STAGE, CONTACT_STAGES
+from app.models.lease import Lease
 from app.main import app
 # The route module, not the service: routes/leases.py binds
 # extract_lease_from_pdf by name at import, so that is the reference a stub has
@@ -137,6 +138,26 @@ def _entry(db, **kw):
     db.commit()
     db.refresh(log)
     return log
+
+
+def _current(db, company):
+    """The company's CURRENT lease row, or None.
+
+    The lease link moved off the company record into the leases table, so
+    every storage assertion reads the lease row — the same guarantee, checked
+    where the data now lives.
+    """
+    db.expire_all()
+    return (
+        db.query(Lease)
+        .filter(Lease.company_id == company.id, Lease.is_current.is_(True))
+        .first()
+    )
+
+
+def _lease_count(db, company) -> int:
+    db.expire_all()
+    return db.query(Lease).filter(Lease.company_id == company.id).count()
 
 
 def _in_window_date() -> date:
@@ -448,8 +469,7 @@ def test_only_a_bare_filename_is_stored_never_a_path(db_session, client, leases_
     )
     assert r.status_code == 200, r.text
 
-    db_session.refresh(company)
-    stored = company.lease_file_name
+    stored = _current(db_session, company).file_name
     assert stored == "Acme Lease.pdf"
     assert lease_storage.is_bare_file_name(stored)
     assert not os.path.isabs(stored)
@@ -467,8 +487,7 @@ def test_an_uploaded_name_with_a_directory_component_is_reduced_to_a_name(
         f"/api/leases/companies/{company.id}/upload",
         files={"file": (r"..\..\Windows\System32\evil.pdf", b"%PDF-1.4", "application/pdf")},
     )
-    db_session.refresh(company)
-    assert company.lease_file_name == "evil.pdf"
+    assert _current(db_session, company).file_name == "evil.pdf"
     assert (leases_dir / "evil.pdf").is_file()
 
 
@@ -483,10 +502,8 @@ def test_a_second_upload_of_the_same_name_never_overwrites_the_first(
     client.post(f"/api/leases/companies/{b.id}/upload",
                 files={"file": ("Lease.pdf", b"%PDF-second", "application/pdf")})
 
-    db_session.refresh(a)
-    db_session.refresh(b)
-    assert a.lease_file_name == "Lease.pdf"
-    assert b.lease_file_name == "Lease (2).pdf"
+    assert _current(db_session, a).file_name == "Lease.pdf"
+    assert _current(db_session, b).file_name == "Lease (2).pdf"
     assert (leases_dir / "Lease.pdf").read_bytes() == b"%PDF-first"
     assert (leases_dir / "Lease (2).pdf").read_bytes() == b"%PDF-second"
 
@@ -502,8 +519,7 @@ def test_moving_the_leases_folder_repoints_existing_rows_with_no_data_change(
     company = _company(db_session, "Mover Co", "CO-MOV")
     client.post(f"/api/leases/companies/{company.id}/upload",
                 files={"file": ("Mover.pdf", b"%PDF-mover", "application/pdf")})
-    db_session.refresh(company)
-    stored_before = company.lease_file_name
+    stored_before = _current(db_session, company).file_name
     assert lease_storage.resolve_lease_path(stored_before).startswith(str(old_folder))
 
     # Jack moves the folder and changes the ONE setting.
@@ -512,13 +528,13 @@ def test_moving_the_leases_folder_repoints_existing_rows_with_no_data_change(
     (new_folder / "Mover.pdf").write_bytes((old_folder / "Mover.pdf").read_bytes())
     monkeypatch.setattr(settings, "LEASES_FOLDER", str(new_folder))
 
-    db_session.refresh(company)
+    lease = _current(db_session, company)
     # Not one byte of stored data changed...
-    assert company.lease_file_name == stored_before
+    assert lease.file_name == stored_before
     # ...and the same row now resolves into the new folder.
-    resolved = lease_storage.resolve_lease_path(company.lease_file_name)
+    resolved = lease_storage.resolve_lease_path(lease.file_name)
     assert resolved.startswith(str(new_folder))
-    assert lease_storage.lease_file_exists(company.lease_file_name)
+    assert lease_storage.lease_file_exists(lease.file_name)
     # And the file link serves it from there.
     assert client.get(f"/api/leases/companies/{company.id}/file").status_code == 200
 
@@ -531,8 +547,9 @@ def test_no_column_on_either_table_holds_an_absolute_path(db_session, client, le
                 files={"file": ("Audit.pdf", b"%PDF-audit", "application/pdf")})
 
     db_session.refresh(company)
+    lease = _current(db_session, company)
     inspector = inspect(db_session.get_bind())
-    for table, row in (("companies", company), ("contacts", contact)):
+    for table, row in (("companies", company), ("contacts", contact), ("leases", lease)):
         for col in inspector.get_columns(table):
             value = getattr(row, col["name"], None)
             if isinstance(value, str) and value:
@@ -546,8 +563,7 @@ def test_a_missing_file_says_so_plainly_rather_than_failing_silently(
     company = _company(db_session, "Gone Co", "CO-GON")
     client.post(f"/api/leases/companies/{company.id}/upload",
                 files={"file": ("Gone.pdf", b"%PDF-gone", "application/pdf")})
-    db_session.refresh(company)
-    os.remove(leases_dir / company.lease_file_name)
+    os.remove(leases_dir / _current(db_session, company).file_name)
 
     r = client.get(f"/api/leases/companies/{company.id}/file")
     assert r.status_code == 404
@@ -737,8 +753,7 @@ def test_the_full_extraction_is_stored_so_every_field_traces_to_its_clause(
     client.post(f"/api/leases/companies/{company.id}/confirm",
                 json={"accepted_fields": ["lease_expiration_date"]})
 
-    db_session.refresh(company)
-    stored = json.loads(company.lease_extraction_json)
+    stored = json.loads(_current(db_session, company).extraction_json)
     # Every field, including the ones Jack unchecked, with its clause.
     assert set(stored) == set(LEASE_FIELDS)
     assert "expires June 30, 2027" in stored["lease_expiration_date"]["source_text"]
@@ -780,8 +795,7 @@ def test_extraction_failure_still_stores_and_links_the_file(
     assert body["has_extraction"] is False
     assert "no readable text" in body["extraction_error"]
 
-    db_session.refresh(company)
-    assert company.lease_file_name == "Scan.pdf"
+    assert _current(db_session, company).file_name == "Scan.pdf"
     assert (leases_dir / "Scan.pdf").read_bytes() == b"%PDF-scan"
     assert client.get(f"/api/leases/companies/{company.id}/file").status_code == 200
 
@@ -801,8 +815,7 @@ def test_an_unexpected_reader_error_still_stores_and_links_the_file(
     assert r.status_code == 200, r.text
     assert r.json()["lease_file_name"] == "Boom.pdf"
     assert "could not be read" in r.json()["extraction_error"]
-    db_session.refresh(company)
-    assert company.lease_file_name == "Boom.pdf"
+    assert _current(db_session, company).file_name == "Boom.pdf"
 
 
 def test_a_missing_api_key_still_stores_and_links_the_file(
@@ -827,8 +840,7 @@ def test_a_missing_api_key_still_stores_and_links_the_file(
     assert "ANTHROPIC_API_KEY" in body["extraction_error"]
     assert body["has_extraction"] is False
 
-    db_session.refresh(company)
-    assert company.lease_file_name == "NoKey.pdf"
+    assert _current(db_session, company).file_name == "NoKey.pdf"
     assert (leases_dir / "NoKey.pdf").is_file()
     assert client.get(f"/api/leases/companies/{company.id}/file").status_code == 200
 
@@ -848,8 +860,7 @@ def test_an_empty_upload_is_refused_before_anything_is_stored(
     r = client.post(f"/api/leases/companies/{company.id}/upload",
                     files={"file": ("Empty.pdf", b"", "application/pdf")})
     assert r.status_code == 400
-    db_session.refresh(company)
-    assert company.lease_file_name is None
+    assert _lease_count(db_session, company) == 0
     assert list(leases_dir.iterdir()) == []
 
 
@@ -943,8 +954,7 @@ def test_removing_a_lease_clears_all_three_fields_and_deletes_the_file(
     """The way out of the mistake: Jack uploaded a draft and could not clear it."""
     company = _company(db_session, "Remove Co", "CO-RMV")
     _upload(client, company)
-    db_session.refresh(company)
-    assert company.lease_file_name == "Draft.pdf"
+    assert _current(db_session, company).file_name == "Draft.pdf"
     assert (leases_dir / "Draft.pdf").is_file()
 
     r = client.delete(f"/api/companies/{company.company_id}/lease")
@@ -954,10 +964,10 @@ def test_removing_a_lease_clears_all_three_fields_and_deletes_the_file(
     assert body["file_outcome"] == "deleted"
     assert body["warning"] is None
 
-    db_session.refresh(company)
-    assert company.lease_file_name is None
-    assert company.lease_uploaded_at is None
-    assert company.lease_extraction_json is None
+    # The lease record itself is gone — file name, upload time and extraction
+    # with it.
+    assert _current(db_session, company) is None
+    assert _lease_count(db_session, company) == 0
     # And the file really is gone from the folder.
     assert not (leases_dir / "Draft.pdf").exists()
 
@@ -974,12 +984,10 @@ def test_removing_a_lease_clears_a_stored_extraction_too(
     )
     company = _company(db_session, "Extract Co", "CO-RMX")
     _upload(client, company)
-    db_session.refresh(company)
-    assert company.lease_extraction_json is not None
+    assert _current(db_session, company).extraction_json is not None
 
     client.delete(f"/api/companies/{company.company_id}/lease")
-    db_session.refresh(company)
-    assert company.lease_extraction_json is None
+    assert _lease_count(db_session, company) == 0
     # The card reads as having no lease at all again.
     status = client.get(f"/api/leases/companies/{company.id}").json()
     assert status["lease_file_name"] is None
@@ -1006,10 +1014,8 @@ def test_removing_works_when_the_file_is_already_gone_from_disk(
     assert r.json()["file_outcome"] == "absent"
     assert r.json()["warning"] is None
 
-    db_session.refresh(company)
-    assert company.lease_file_name is None
-    assert company.lease_uploaded_at is None
-    assert company.lease_extraction_json is None
+    assert _current(db_session, company) is None
+    assert _lease_count(db_session, company) == 0
 
 
 def test_removing_leaves_confirmed_company_values_and_their_markers_intact(
@@ -1053,7 +1059,7 @@ def test_removing_leaves_confirmed_company_values_and_their_markers_intact(
     assert company.current_address_source == "lease_document"
     assert company.current_sf_occupied_source == "lease_document"
     # Only the document itself is gone.
-    assert company.lease_file_name is None
+    assert _current(db_session, company) is None
 
 
 def test_removing_a_lease_from_a_company_that_has_none_is_a_clean_404(
@@ -1079,15 +1085,12 @@ def test_removing_one_companys_lease_leaves_another_companys_file_alone(
     b = _company(db_session, "Goner Co", "CO-GNR")
     _upload(client, a, name="Lease.pdf", body=b"%PDF-keeper")
     _upload(client, b, name="Lease.pdf", body=b"%PDF-goner")
-    db_session.refresh(a)
-    db_session.refresh(b)
-    assert a.lease_file_name == "Lease.pdf"
-    assert b.lease_file_name == "Lease (2).pdf"
+    assert _current(db_session, a).file_name == "Lease.pdf"
+    assert _current(db_session, b).file_name == "Lease (2).pdf"
 
     client.delete(f"/api/companies/{b.company_id}/lease")
 
-    db_session.refresh(a)
-    assert a.lease_file_name == "Lease.pdf"
+    assert _current(db_session, a).file_name == "Lease.pdf"
     assert (leases_dir / "Lease.pdf").read_bytes() == b"%PDF-keeper"
     assert not (leases_dir / "Lease (2).pdf").exists()
 
@@ -1114,9 +1117,8 @@ def test_a_file_that_cannot_be_deleted_still_clears_the_link_and_warns(
     assert "Locked.pdf" in body["warning"]
     assert "by hand" in body["warning"]
 
-    db_session.refresh(company)
-    assert company.lease_file_name is None
-    assert company.lease_extraction_json is None
+    assert _current(db_session, company) is None
+    assert _lease_count(db_session, company) == 0
 
 
 def test_delete_lease_file_never_reaches_outside_the_leases_folder(
@@ -1148,8 +1150,7 @@ def test_a_removed_lease_can_be_replaced_by_a_new_upload(
 
     r = _upload(client, company, name="Signed.pdf", body=b"%PDF-signed")
     assert r.status_code == 200, r.text
-    db_session.refresh(company)
-    assert company.lease_file_name == "Signed.pdf"
+    assert _current(db_session, company).file_name == "Signed.pdf"
     assert (leases_dir / "Signed.pdf").read_bytes() == b"%PDF-signed"
     assert client.get(f"/api/leases/companies/{company.id}/file").status_code == 200
 
@@ -1197,3 +1198,585 @@ def test_lease_content_never_reaches_generated_tenant_copy(db_session, client, l
     source = _inspect.getsource(outreach_service)
     for column in ("lease_file_name", "lease_extraction_json", "lease_uploaded_at"):
         assert column not in source, f"{column} reached the outreach generator"
+    # Nor any part of the leases table that replaced those columns.
+    for name in ("extraction_json", "app.models.lease", "lease_records",
+                 "escalation_terms", "renewal_options", "tenant_legal_entity"):
+        assert name not in source, f"{name} reached the outreach generator"
+
+
+# ══ 13. Editable values in the review panel ═══════════════════════════════════
+#
+# Collaborative AV, exactly: the lease correctly did not state rentable SF, and
+# without an input the company kept a stale CoStar figure. Every row is now
+# editable. A typed value is marked "manual" so Jack can always tell what came
+# off the page from what he supplied.
+
+def _stub_route(monkeypatch, raw):
+    monkeypatch.setattr(
+        leases_route, "extract_lease_from_pdf",
+        lambda pdf_bytes, extractor=None: extract_lease(["p"], _stub_extractor(raw)),
+    )
+
+
+_NOT_FOUND = {"value": None, "source_text": None, "page": None}
+
+
+def test_a_typed_value_in_a_not_found_row_is_stored_as_manual_not_lease_document(
+    db_session, client, leases_dir, monkeypatch,
+):
+    _stub_route(monkeypatch, _full_extraction(rentable_square_footage=_NOT_FOUND))
+    company = _company(db_session, "Collaborative AV", "CO-CAV",
+                       current_sf_occupied=4000)
+    body = _upload(client, company, name="CAV.pdf").json()
+    sf_row = next(f for f in body["fields"] if f["field"] == "rentable_square_footage")
+    assert sf_row["found"] is False          # the page really did not state it
+
+    r = client.post(
+        f"/api/leases/companies/{company.id}/confirm",
+        json={
+            "accepted_fields": list(LEASE_FIELDS),
+            "manual_values": {"rentable_square_footage": "9,850"},
+        },
+    )
+    assert r.status_code == 200, r.text
+    result = r.json()
+    assert result["written"]["rentable_square_footage"] == "9850"
+    assert result["sources"]["rentable_square_footage"] == "manual"
+    assert result["sources"]["lease_expiration_date"] == "lease_document"
+
+    db_session.refresh(company)
+    assert company.current_sf_occupied == 9850
+    assert company.current_sf_occupied_source == "manual"
+    assert company.current_sf_occupied_source != "lease_document"
+    # Values that did come off the page keep saying so.
+    assert company.current_address_source == "lease_document"
+    assert company.lease_expiry_source == "lease_document"
+
+    lease = _current(db_session, company)
+    assert lease.rentable_sf == 9850
+    stored = json.loads(lease.extraction_json)["rentable_square_footage"]
+    assert stored["source"] == "manual"
+    assert stored["manual_value"] == "9,850"
+    assert stored["found"] is False and stored["value"] is None
+
+    # And the panel reopens showing which is which.
+    row = next(
+        f for f in client.get(f"/api/leases/companies/{company.id}").json()["fields"]
+        if f["field"] == "rentable_square_footage"
+    )
+    assert row["source"] == "manual"
+    assert row["manual_value"] == "9,850"
+
+
+def test_editing_an_extracted_row_keeps_the_original_value_and_clause(
+    db_session, client, leases_dir, monkeypatch,
+):
+    """Replaced on the record, never lost from the audit trail."""
+    _stub_route(monkeypatch, _full_extraction())
+    company = _company(db_session, "Edit Co", "CO-EDT")
+    _upload(client, company, name="Edit.pdf")
+
+    typed = "1760 Tysons Blvd, McLean, VA 22102"
+    r = client.post(
+        f"/api/leases/companies/{company.id}/confirm",
+        json={"accepted_fields": list(LEASE_FIELDS),
+              "manual_values": {"premises_address": typed}},
+    )
+    assert r.status_code == 200, r.text
+
+    db_session.refresh(company)
+    assert company.current_address == typed
+    assert company.current_address_source == "manual"
+
+    lease = _current(db_session, company)
+    assert lease.premises_address == typed
+    entry = json.loads(lease.extraction_json)["premises_address"]
+    # The page's reading and its clause, untouched...
+    assert entry["value"] == "1750 Tysons Blvd, McLean, VA"
+    assert entry["source_text"] == "the Premises at 1750 Tysons Blvd, McLean, VA"
+    assert entry["found"] is True
+    # ...beside what Jack typed.
+    assert entry["manual_value"] == typed
+    assert entry["source"] == "manual"
+
+
+def test_an_edited_but_unchecked_row_does_not_write(
+    db_session, client, leases_dir, monkeypatch,
+):
+    _stub_route(monkeypatch, _full_extraction(rentable_square_footage=_NOT_FOUND))
+    company = _company(db_session, "Unchecked Edit Co", "CO-UEC",
+                       current_sf_occupied=4000)
+    _upload(client, company, name="UE.pdf")
+
+    accepted = [f for f in LEASE_FIELDS if f != "rentable_square_footage"]
+    r = client.post(
+        f"/api/leases/companies/{company.id}/confirm",
+        json={"accepted_fields": accepted,
+              "manual_values": {"rentable_square_footage": "9,850"}},
+    )
+    assert r.status_code == 200, r.text
+    assert "rentable_square_footage" not in r.json()["written"]
+    assert "rentable_square_footage" in r.json()["skipped"]
+
+    db_session.refresh(company)
+    assert company.current_sf_occupied == 4000
+    assert company.current_sf_occupied_source is None
+    lease = _current(db_session, company)
+    assert lease.rentable_sf is None
+    entry = json.loads(lease.extraction_json)["rentable_square_footage"]
+    assert entry["accepted"] is False
+    assert "manual_value" not in entry
+    assert "source" not in entry
+
+
+def test_an_edited_extracted_row_that_is_unchecked_does_not_write_either(
+    db_session, client, leases_dir, monkeypatch,
+):
+    _stub_route(monkeypatch, _full_extraction())
+    company = _company(db_session, "Unchecked Found Co", "CO-UFC",
+                       current_address="Keep me")
+    _upload(client, company, name="UF.pdf")
+    accepted = [f for f in LEASE_FIELDS if f != "premises_address"]
+    client.post(
+        f"/api/leases/companies/{company.id}/confirm",
+        json={"accepted_fields": accepted,
+              "manual_values": {"premises_address": "Somewhere else, Reston, VA"}},
+    )
+    db_session.refresh(company)
+    assert company.current_address == "Keep me"
+    assert company.current_address_source is None
+    entry = json.loads(_current(db_session, company).extraction_json)["premises_address"]
+    assert entry["value"] == "1750 Tysons Blvd, McLean, VA"   # original survives
+    assert "manual_value" not in entry
+
+
+def test_retyping_exactly_what_the_page_says_is_not_an_edit(
+    db_session, client, leases_dir, monkeypatch,
+):
+    _stub_route(monkeypatch, _full_extraction())
+    company = _company(db_session, "Same Co", "CO-SAM")
+    _upload(client, company, name="Same.pdf")
+    client.post(
+        f"/api/leases/companies/{company.id}/confirm",
+        json={"accepted_fields": list(LEASE_FIELDS),
+              "manual_values": {"premises_address": " 1750 Tysons Blvd, McLean, VA "}},
+    )
+    db_session.refresh(company)
+    assert company.current_address_source == "lease_document"
+
+
+def test_a_typed_value_with_no_clause_is_still_never_invented(
+    db_session, client, leases_dir, monkeypatch,
+):
+    """Accepting a not-found row with nothing typed writes nothing, as before."""
+    _stub_route(monkeypatch, _full_extraction(rentable_square_footage=_NOT_FOUND))
+    company = _company(db_session, "Blank Co", "CO-BLK", current_sf_occupied=4000)
+    _upload(client, company, name="Blank.pdf")
+    r = client.post(
+        f"/api/leases/companies/{company.id}/confirm",
+        json={"accepted_fields": list(LEASE_FIELDS),
+              "manual_values": {"rentable_square_footage": "   "}},
+    )
+    assert "rentable_square_footage" in r.json()["skipped"]
+    db_session.refresh(company)
+    assert company.current_sf_occupied == 4000
+
+
+def _costar_csv(rows):
+    import io as _io
+    import pandas as pd
+    from app.api.routes.companies import COSTAR_TENANT_COLS
+
+    df = pd.DataFrame(rows, columns=COSTAR_TENANT_COLS)
+    buf = _io.StringIO()
+    df.to_csv(buf, index=False)
+    return buf.getvalue().encode("utf-8")
+
+
+def test_a_manual_value_survives_a_costar_import_that_would_overwrite_it(
+    db_session, client, leases_dir, monkeypatch,
+):
+    """Enforced where the import actually writes, not just in a constant."""
+    from app.api.routes.companies import COSTAR_TENANT_COLS, PROTECTED_LEASE_SOURCES
+    assert "manual" in PROTECTED_LEASE_SOURCES
+
+    address = "11911 Freedom Dr, Reston, VA 20190"
+    _stub_route(monkeypatch, _full_extraction(
+        premises_address=_field(address, f"the Premises at {address}"),
+        rentable_square_footage=_NOT_FOUND,
+    ))
+    company = _company(db_session, "Manual Guard Co", "CO-MGC",
+                       current_address=address, current_sf_occupied=4000)
+    _upload(client, company, name="MG.pdf")
+    client.post(
+        f"/api/leases/companies/{company.id}/confirm",
+        json={"accepted_fields": list(LEASE_FIELDS),
+              "manual_values": {
+                  "rentable_square_footage": "9850",
+                  "lease_expiration_date": "2031-03-31",
+              }},
+    )
+    db_session.refresh(company)
+    assert company.current_sf_occupied_source == "manual"
+    assert company.lease_expiry_source == "manual"
+
+    # A CoStar row for the same tenant at the same address, carrying its own SF
+    # and a different break date — exactly what would overwrite an unprotected
+    # record.
+    row = {col: "" for col in COSTAR_TENANT_COLS}
+    row.update({
+        "Tenant Name": "Manual Guard Co", "Address": address, "State": "VA",
+        "Submarket": "Reston", "SF Occupied": "2500", "Industry": "Technology",
+        "Employees": "20", "Next Break Date": "2026-12-31",
+    })
+    r = client.post(
+        "/api/companies/costar-import",
+        files={"file": ("tenants.csv", _costar_csv([row]), "text/csv")},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["updated"] == 1          # it really did match this company
+
+    db_session.refresh(company)
+    assert company.current_sf_occupied == 9850
+    assert company.current_sf_occupied_source == "manual"
+    assert company.current_address == address
+    assert company.lease_expiry_date == date(2031, 3, 31)
+    assert company.lease_expiry_source == "manual"
+
+
+# ══ 14. Leases are a list ═════════════════════════════════════════════════════
+
+_OLDER = dict(
+    lease_commencement_date=_field("March 1, 2017", "Term commences March 1, 2017."),
+    lease_expiration_date=_field("June 30, 2027", "and expires June 30, 2027."),
+    rentable_square_footage=_field("12,500 rentable square feet", "containing 12,500 RSF"),
+)
+_NEWER = dict(
+    lease_commencement_date=_field("July 1, 2027", "Term commences July 1, 2027."),
+    lease_expiration_date=_field("June 30, 2034", "and expires June 30, 2034."),
+    rentable_square_footage=_field("15,000 rentable square feet", "containing 15,000 RSF"),
+    base_rent=_field("$540,000 per year", "Base Rent of $540,000 per annum"),
+)
+
+
+def _upload_and_confirm(client, monkeypatch, company, name, body, **overrides):
+    _stub_route(monkeypatch, _full_extraction(**overrides))
+    r = _upload(client, company, name=name, body=body)
+    assert r.status_code == 200, r.text
+    c = client.post(f"/api/leases/companies/{company.id}/confirm",
+                    json={"accepted_fields": list(LEASE_FIELDS)})
+    assert c.status_code == 200, c.text
+    return c.json()
+
+
+def test_a_second_upload_creates_a_new_record_and_leaves_the_first_intact(
+    db_session, client, leases_dir, monkeypatch,
+):
+    """The prior term's rent, escalations and options are what a renewal runs on."""
+    company = _company(db_session, "Renewal Co", "CO-RNW")
+    _upload_and_confirm(client, monkeypatch, company, "Original.pdf",
+                        b"%PDF-original", **_OLDER)
+    first = _current(db_session, company)
+    first_id = first.id
+    first_extraction = first.extraction_json
+
+    _stub_route(monkeypatch, _full_extraction(**_NEWER))
+    body = _upload(client, company, name="Renewal.pdf", body=b"%PDF-renewal").json()
+
+    assert _lease_count(db_session, company) == 2
+    first = db_session.get(Lease, first_id)
+    second = _current(db_session, company)
+    assert second.id != first_id
+    assert second.file_name == "Renewal.pdf"
+    # Demoted — and nothing about it overwritten.
+    assert first.is_current is False
+    assert first.file_name == "Original.pdf"
+    assert first.expiration_date == date(2027, 6, 30)
+    assert first.commencement_date == date(2017, 3, 1)
+    assert first.rentable_sf == 12500
+    assert first.base_rent == "$412,500 per year"
+    assert first.escalation_terms == "3% annually"
+    assert "nine (9) months notice" in json.loads(first.extraction_json)["renewal_options"]["source_text"]
+    assert first.extraction_json == first_extraction
+    assert first.confirmed_at is not None
+    assert (leases_dir / "Original.pdf").read_bytes() == b"%PDF-original"
+
+    # The Deal card: the new lease on top, the first readable as a prior term.
+    assert body["lease_file_name"] == "Renewal.pdf"
+    prior = [p for p in body["prior_leases"] if p["lease_id"] == first_id]
+    assert len(prior) == 1
+    assert prior[0]["lease_file_name"] == "Original.pdf"
+    assert prior[0]["is_current"] is False
+    assert prior[0]["has_extraction"] is True
+    assert {f["field"] for f in prior[0]["fields"]} == set(LEASE_FIELDS)
+    # Its own file opens.
+    opened = client.get(f"/api/leases/{first_id}/file")
+    assert opened.status_code == 200
+    assert opened.content == b"%PDF-original"
+
+
+def test_exactly_one_lease_is_current(db_session, client, leases_dir, monkeypatch):
+    company = _company(db_session, "Three Co", "CO-3LS")
+    for i in range(3):
+        _stub_route(monkeypatch, _full_extraction())
+        _upload(client, company, name=f"L{i}.pdf", body=b"%PDF")
+    db_session.expire_all()
+    flags = [l.is_current for l in db_session.query(Lease).filter_by(company_id=company.id)]
+    assert sorted(flags) == [False, False, True]
+
+
+def test_the_company_takes_its_values_from_the_latest_commencement_date(
+    db_session, client, leases_dir, monkeypatch,
+):
+    """Upload order does not decide it — the commencement date does.
+
+    The renewal is confirmed FIRST, then the original lease is linked for the
+    record. Confirming the original re-ranks it behind the renewal, and it does
+    not touch the company.
+    """
+    company = _company(db_session, "Ranked Co", "CO-RNK")
+    _upload_and_confirm(client, monkeypatch, company, "Renewal.pdf", b"%PDF-new", **_NEWER)
+    db_session.refresh(company)
+    assert company.lease_expiry_date == date(2034, 6, 30)
+
+    result = _upload_and_confirm(client, monkeypatch, company, "Original.pdf",
+                                 b"%PDF-old", **_OLDER)
+    assert result["is_current"] is False
+    assert result["written"] == {}
+
+    current = _current(db_session, company)
+    assert current.file_name == "Renewal.pdf"
+    assert current.commencement_date == date(2027, 7, 1)
+    db_session.refresh(company)
+    assert company.lease_expiry_date == date(2034, 6, 30)
+    assert company.current_sf_occupied == 15000
+    # The original is a complete prior term all the same.
+    prior = next(l for l in db_session.query(Lease).filter_by(company_id=company.id)
+                 if not l.is_current)
+    assert prior.expiration_date == date(2027, 6, 30)
+    assert prior.rentable_sf == 12500
+
+
+def test_deleting_the_current_lease_promotes_the_next_most_recent(
+    db_session, client, leases_dir, monkeypatch,
+):
+    company = _company(db_session, "Promote Co", "CO-PRM")
+    _upload_and_confirm(client, monkeypatch, company, "Original.pdf", b"%PDF-old", **_OLDER)
+    original_id = _current(db_session, company).id
+    _upload_and_confirm(client, monkeypatch, company, "Renewal.pdf", b"%PDF-new", **_NEWER)
+    renewal = _current(db_session, company)
+    assert renewal.file_name == "Renewal.pdf"
+    db_session.refresh(company)
+    assert company.lease_expiry_date == date(2034, 6, 30)
+
+    r = client.delete(f"/api/companies/{company.company_id}/lease",
+                      params={"lease_id": renewal.id})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["removed_file_name"] == "Renewal.pdf"
+    assert body["promoted_lease_id"] == original_id
+    assert body["promoted_file_name"] == "Original.pdf"
+
+    promoted = _current(db_session, company)
+    assert promoted.id == original_id
+    assert _lease_count(db_session, company) == 1
+    # The company now reads the promoted lease, marked as it was confirmed.
+    db_session.refresh(company)
+    assert company.lease_expiry_date == date(2027, 6, 30)
+    assert company.current_sf_occupied == 12500
+    assert company.lease_expiry_source == "lease_document"
+    assert company.current_sf_occupied_source == "lease_document"
+    # Only the removed lease's file went.
+    assert not (leases_dir / "Renewal.pdf").exists()
+    assert (leases_dir / "Original.pdf").read_bytes() == b"%PDF-old"
+    assert client.get(f"/api/leases/companies/{company.id}/file").content == b"%PDF-old"
+
+
+def test_deleting_without_an_id_removes_the_current_lease_and_promotes(
+    db_session, client, leases_dir, monkeypatch,
+):
+    """The existing call — DELETE /companies/{id}/lease with no id — keeps working."""
+    company = _company(db_session, "Default Delete Co", "CO-DDL")
+    _upload_and_confirm(client, monkeypatch, company, "Old.pdf", b"%PDF-old", **_OLDER)
+    _upload_and_confirm(client, monkeypatch, company, "New.pdf", b"%PDF-new", **_NEWER)
+    r = client.delete(f"/api/companies/{company.company_id}/lease")
+    assert r.status_code == 200, r.text
+    assert r.json()["removed_file_name"] == "New.pdf"
+    assert _current(db_session, company).file_name == "Old.pdf"
+
+
+def test_deleting_a_prior_term_leaves_the_current_lease_and_company_alone(
+    db_session, client, leases_dir, monkeypatch,
+):
+    company = _company(db_session, "Prior Delete Co", "CO-PDL")
+    _upload_and_confirm(client, monkeypatch, company, "Old.pdf", b"%PDF-old", **_OLDER)
+    old_id = _current(db_session, company).id
+    _upload_and_confirm(client, monkeypatch, company, "New.pdf", b"%PDF-new", **_NEWER)
+
+    r = client.delete(f"/api/companies/{company.company_id}/lease",
+                      params={"lease_id": old_id})
+    assert r.status_code == 200, r.text
+    assert r.json()["promoted_lease_id"] is None
+    assert _current(db_session, company).file_name == "New.pdf"
+    db_session.refresh(company)
+    assert company.lease_expiry_date == date(2034, 6, 30)
+    assert not (leases_dir / "Old.pdf").exists()
+    assert (leases_dir / "New.pdf").exists()
+
+
+def test_deleting_another_companys_lease_by_id_is_a_clean_404(
+    db_session, client, leases_dir,
+):
+    a = _company(db_session, "Owner Co", "CO-OWN")
+    b = _company(db_session, "Other Co", "CO-OTH")
+    _upload(client, a, name="Mine.pdf")
+    _upload(client, b, name="Theirs.pdf")
+    theirs = _current(db_session, b).id
+    r = client.delete(f"/api/companies/{a.company_id}/lease", params={"lease_id": theirs})
+    assert r.status_code == 404
+    assert (leases_dir / "Theirs.pdf").exists()
+
+
+def test_a_prior_term_can_be_confirmed_by_id_without_touching_the_company(
+    db_session, client, leases_dir, monkeypatch,
+):
+    company = _company(db_session, "Late Confirm Co", "CO-LCF")
+    _stub_route(monkeypatch, _full_extraction(**_OLDER))
+    _upload(client, company, name="Old.pdf")
+    old_id = _current(db_session, company).id
+    _upload_and_confirm(client, monkeypatch, company, "New.pdf", b"%PDF-new", **_NEWER)
+
+    r = client.post(f"/api/leases/companies/{company.id}/confirm",
+                    json={"lease_id": old_id, "accepted_fields": list(LEASE_FIELDS)})
+    assert r.status_code == 200, r.text
+    assert r.json()["is_current"] is False
+    assert db_session.get(Lease, old_id).expiration_date == date(2027, 6, 30)
+    db_session.refresh(company)
+    assert company.lease_expiry_date == date(2034, 6, 30)
+
+
+def test_the_deal_card_does_not_query_once_per_lease(
+    db_session, client, leases_dir, monkeypatch,
+):
+    """A company with many leases renders in the same number of queries as one."""
+    from sqlalchemy import event
+
+    def _queries_for(company):
+        seen = []
+
+        def _count(conn, cursor, statement, *args):
+            seen.append(statement)
+
+        engine = db_session.get_bind()
+        # Same starting state for both measurements: nothing cached in the
+        # session, so neither call gets a free ride on the other's loads.
+        client.get(f"/api/leases/companies/{company.id}")
+        db_session.expire_all()
+        event.listen(engine, "before_cursor_execute", _count)
+        try:
+            assert client.get(f"/api/leases/companies/{company.id}").status_code == 200
+        finally:
+            event.remove(engine, "before_cursor_execute", _count)
+        return len(seen)
+
+    one = _company(db_session, "One Lease Co", "CO-1LS")
+    many = _company(db_session, "Many Lease Co", "CO-MLS")
+    _stub_route(monkeypatch, _full_extraction())
+    _upload(client, one, name="Only.pdf")
+    for i in range(8):
+        _upload(client, many, name=f"Term {i}.pdf")
+
+    assert _queries_for(many) == _queries_for(one)
+
+
+def _legacy_companies_db():
+    """An in-memory database shaped like one from before leases were a list."""
+    import sqlite3
+    conn = sqlite3.connect(":memory:")
+    conn.execute("""
+        CREATE TABLE companies (
+            id INTEGER PRIMARY KEY, name TEXT, current_submarket TEXT,
+            last_modified_by_user DATETIME,
+            lease_file_name TEXT, lease_uploaded_at DATETIME,
+            lease_extraction_json TEXT
+        )
+    """)
+    return conn
+
+
+def test_the_single_lease_migration_handles_zero_leases_cleanly():
+    """Collaborative AV's draft is being removed — the migration may find nothing."""
+    from migrations.ensure_schema import migrate_company_leases_to_table
+
+    conn = _legacy_companies_db()
+    conn.execute("INSERT INTO companies (id, name) VALUES (1, 'No Lease Co')")
+    cur = conn.cursor()
+    assert migrate_company_leases_to_table(cur) == 0
+    assert migrate_company_leases_to_table(cur) == 0          # and again
+    assert cur.execute("SELECT COUNT(*) FROM leases").fetchone()[0] == 0
+
+    # A database with no companies rows at all, and one with no legacy columns.
+    empty = _legacy_companies_db()
+    assert migrate_company_leases_to_table(empty.cursor()) == 0
+    import sqlite3
+    modern = sqlite3.connect(":memory:")
+    modern.execute("CREATE TABLE companies (id INTEGER PRIMARY KEY, name TEXT)")
+    assert migrate_company_leases_to_table(modern.cursor()) == 0
+
+
+def test_the_single_lease_migration_moves_a_lease_and_clears_the_old_columns():
+    from migrations.ensure_schema import migrate_company_leases_to_table
+
+    extraction = extract_lease(["p"], extractor=_stub_extractor(_full_extraction()))
+    for field, entry in extraction.items():
+        entry["accepted"] = field != "premises_address"     # Jack unchecked one
+    conn = _legacy_companies_db()
+    conn.execute(
+        "INSERT INTO companies (id, name, lease_file_name, lease_uploaded_at, "
+        "lease_extraction_json) VALUES (7, 'Legacy Co', 'Legacy.pdf', "
+        "'2026-09-01 10:00:00', ?)",
+        (json.dumps(extraction),),
+    )
+    cur = conn.cursor()
+    assert migrate_company_leases_to_table(cur) == 1
+
+    row = cur.execute(
+        "SELECT company_id, file_name, is_current, expiration_date, rentable_sf, "
+        "premises_address, confirmed_at, extraction_json FROM leases"
+    ).fetchone()
+    assert row[0] == 7 and row[1] == "Legacy.pdf" and row[2] == 1
+    assert row[3] == "2027-06-30"
+    assert row[4] == 12500
+    assert row[5] is None                    # unchecked stays unwritten
+    assert row[6] is not None
+    assert json.loads(row[7]) == extraction  # the audit trail, byte for byte
+
+    legacy = cur.execute(
+        "SELECT lease_file_name, lease_uploaded_at, lease_extraction_json "
+        "FROM companies WHERE id = 7"
+    ).fetchone()
+    assert legacy == (None, None, None)
+    # Re-running moves nothing more.
+    assert migrate_company_leases_to_table(cur) == 0
+    assert cur.execute("SELECT COUNT(*) FROM leases").fetchone()[0] == 1
+
+
+def test_companies_list_still_returns_all_seven_contract_fields_with_leases(
+    db_session, client, leases_dir, monkeypatch,
+):
+    """The contract holds for a company carrying current and prior leases."""
+    company = _company(
+        db_session, name="Contract Lease Co", business_id="CO-701",
+        current_headcount=30, headcount_growth_pct=5.0, current_submarket="Reston",
+        opportunity_score=55.0, priority="WORKABLE",
+    )
+    _upload_and_confirm(client, monkeypatch, company, "A.pdf", b"%PDF-a", **_OLDER)
+    _upload_and_confirm(client, monkeypatch, company, "B.pdf", b"%PDF-b", **_NEWER)
+
+    row = next(r for r in client.get("/api/companies/").json()
+               if r["company_id"] == "CO-701")
+    for key in ("priority", "current_headcount", "headcount_growth_pct",
+                "lease_expiry_months", "current_submarket", "opportunity_score",
+                "company_id"):
+        assert key in row, key
+    assert row["lease_expiry_months"] is not None

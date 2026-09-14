@@ -1,21 +1,10 @@
 import { useState } from 'react'
 import { X, Users, ChevronRight } from 'lucide-react'
-import { createCompany, updateCompanyMedical, updateCompanySfOccupied, updateCompanyBuildingClass, updateCompanyLease, updateCompanyRents } from '../api/client'
+import { createCompany, updateCompanyMedical, updateCompanySfOccupied, updateCompanyBuildingClass, updateCompanyLease, updateCompanyRents, updateCompanySubmarket } from '../api/client'
 import type { CompanyOut } from '../types'
-
-const SUBMARKETS = [
-  'Arlington (Clarendon)',
-  'Arlington (Rosslyn)',
-  'Arlington (Ballston)',
-  'Arlington (Columbia Pike)',
-  'Alexandria (Old Town)',
-  'Tysons',
-  'Reston',
-  'Falls Church',
-  'McLean',
-  'Vienna',
-  'Fairfax City',
-]
+// The submarket list is a table that grows (Add new at the bottom), not a
+// fixed array in this file.
+import SubmarketSelect from './SubmarketSelect'
 
 interface Props {
   onClose: () => void
@@ -153,6 +142,8 @@ export default function AddCompanyModal({ onClose, onSaved, editCompanyId, initi
         const sfVal = form.current_sf_occupied ? parseInt(form.current_sf_occupied) : null
         await updateCompanySfOccupied(editCompanyId!, sfVal)
         await updateCompanyBuildingClass(editCompanyId!, form.current_building_class || null)
+        // Saved in edit mode too — a changed submarket used to be dropped here.
+        await updateCompanySubmarket(editCompanyId!, form.current_submarket || null)
         await updateCompanyRents(editCompanyId!, {
           effective_rent_psf:       form.effective_rent_psf ? parseFloat(form.effective_rent_psf) : null,
           starting_rent_psf:        form.starting_rent_psf ? parseFloat(form.starting_rent_psf) : null,
@@ -345,10 +336,11 @@ export default function AddCompanyModal({ onClose, onSaved, editCompanyId, initi
               </Field>
               <div className="grid grid-cols-2 gap-4">
                 <Field label="Current Submarket" hint="drives geo matching">
-                  <select className={selectCls} value={form.current_submarket} onChange={set('current_submarket')}>
-                    <option value="">Select submarket...</option>
-                    {SUBMARKETS.map(s => <option key={s} value={s}>{s}</option>)}
-                  </select>
+                  <SubmarketSelect
+                    className={selectCls}
+                    value={form.current_submarket}
+                    onChange={name => setForm(f => ({ ...f, current_submarket: name }))}
+                  />
                 </Field>
                 <Field label="SF Occupied (CoStar)" hint="real occupied SF — never estimated; leave blank if unknown">
                   <input className={inputCls} type="number" placeholder="e.g. 5500"

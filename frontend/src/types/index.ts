@@ -589,6 +589,9 @@ export interface ThreadHeader {
 // The marker written into a company's *_source column for a value read off the
 // signed lease. A lease outranks CoStar.
 export const LEASE_SOURCE = 'lease_document'
+// The marker for a value Jack typed in the lease review panel (or by hand).
+// Also outranks CoStar — but it is his, not the page's, and the UI says so.
+export const MANUAL_SOURCE = 'manual'
 
 export interface ExtractedLeaseField {
   field: string
@@ -601,16 +604,43 @@ export interface ExtractedLeaseField {
   found: boolean
   writes_to_company: boolean
   accepted: boolean
+  // What Jack typed over the page (or into a not-found row). `value` above
+  // always stays what the document said.
+  manual_value: string | null
+  // 'lease_document' | 'manual' once confirmed; null before.
+  source: string | null
 }
 
-export interface LeaseStatus {
-  company_id: number
-  company_name: string | null
+// One lease — current or a prior term — with its own file and extraction.
+export interface LeaseTerm {
+  lease_id: number
   lease_file_name: string | null
   lease_uploaded_at: string | null
+  is_current: boolean
+  confirmed_at: string | null
+  commencement_date: string | null
+  expiration_date: string | null
   file_missing: boolean
   has_extraction: boolean
   fields: ExtractedLeaseField[]
+}
+
+// The top-level lease fields describe the CURRENT lease; prior_leases holds
+// the rest, newest first.
+export interface LeaseStatus {
+  company_id: number
+  company_name: string | null
+  lease_id: number | null
+  lease_file_name: string | null
+  lease_uploaded_at: string | null
+  is_current: boolean
+  confirmed_at: string | null
+  commencement_date: string | null
+  expiration_date: string | null
+  file_missing: boolean
+  has_extraction: boolean
+  fields: ExtractedLeaseField[]
+  prior_leases: LeaseTerm[]
   // Set when extraction could not run or could not be read. The file is stored
   // and linked either way.
   extraction_error: string | null
@@ -620,7 +650,11 @@ export interface LeaseStatus {
 // What became of the link and the file when a lease is removed.
 export interface LeaseRemovalResult {
   company_id: string
+  removed_lease_id: number | null
   removed_file_name: string | null
+  // The lease promoted to current when the current one was removed.
+  promoted_lease_id: number | null
+  promoted_file_name: string | null
   // deleted | absent | refused | error: ... — "absent" means the file was
   // already gone from the folder, which is a clean outcome, not a failure.
   file_outcome: string
@@ -631,12 +665,29 @@ export interface LeaseRemovalResult {
 
 export interface LeaseConfirmResult {
   company_id: number
+  lease_id: number | null
+  // Only the current lease writes to the company; a prior term fills in its
+  // own record.
+  is_current: boolean
+  // Written to the COMPANY record.
   written: Record<string, string | null>
+  sources: Record<string, string>
+  saved_to_lease: string[]
   skipped: string[]
   lease_expiry_date: string | null
   lease_expiry_months: number | null
   current_address: string | null
   current_sf_occupied: number | null
+  current_submarket: string | null
+  submarket_created: boolean
+}
+
+// The growing submarket list the dropdowns read from.
+export interface Submarket {
+  id: number
+  name: string
+  auto_created: boolean
+  created_at: string
 }
 
 export interface CallTarget {

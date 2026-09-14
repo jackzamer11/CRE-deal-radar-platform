@@ -21,6 +21,11 @@ from app.services import signal_engine as se
 from app.services.scoring_model import score_property
 from app.services.match_scoring import medical_mismatch_penalty
 from app.services.lease_storage import delete_lease_file
+from app.services.lease_records import (
+    CONFIRMED_LEASE_SOURCES, LEASE_DOCUMENT_SOURCE, MANUAL_SOURCE, choose_current,
+    company_leases, current_lease, sync_company_from_lease,
+)
+from app.services.submarket_service import get_or_create_submarket
 from app.services.rep_classification import classify_rep
 
 router = APIRouter(prefix="/companies", tags=["companies"])
@@ -70,8 +75,10 @@ COSTAR_SUBMARKET_MAP: dict = {
 # Sources that represent user-verified data — never overwritten by automated
 # imports. "lease_document" is a value read off the signed lease and confirmed
 # by Jack in the extraction review panel: a lease outranks CoStar, so an import
-# must never move it. See api/routes/leases.py.
-LEASE_DOCUMENT_SOURCE = "lease_document"
+# must never move it. "manual" is a value Jack typed — in that same panel, or by
+# hand — and outranks CoStar for the same reason. See api/routes/leases.py.
+# LEASE_DOCUMENT_SOURCE and MANUAL_SOURCE are defined in services/lease_records
+# and re-exported here, where the import guard reads them.
 PROTECTED_LEASE_SOURCES = frozenset(
     {
         "manual", "compstak", "sec_filing", "landlord_confirmed", "public_record",
@@ -570,14 +577,16 @@ async def costar_tenant_import(
             c = existing[key]
             c.industry              = payload["industry"]
             c.current_headcount     = payload["current_headcount"]
-            # Address and SF read off the signed lease outrank CoStar's values
-            # for the same reason the expiry does — the document is the primary
-            # record. Only a lease-sourced value is protected here; every other
-            # source keeps the previous import behaviour exactly.
-            if getattr(c, "current_address_source", None) != LEASE_DOCUMENT_SOURCE:
+            # Address and SF confirmed from a lease outrank CoStar's values for
+            # the same reason the expiry does — the document is the primary
+            # record. That covers a value read off the page ("lease_document")
+            # AND one Jack typed in the review panel ("manual"). No other
+            # source is set on these two columns, so every other record keeps
+            # the previous import behaviour exactly.
+            if getattr(c, "current_address_source", None) not in CONFIRMED_LEASE_SOURCES:
                 c.current_address   = payload["current_address"]
             c.current_submarket     = payload["current_submarket"]
-            if getattr(c, "current_sf_occupied_source", None) != LEASE_DOCUMENT_SOURCE:
+            if getattr(c, "current_sf_occupied_source", None) not in CONFIRMED_LEASE_SOURCES:
                 c.current_sf_occupied = payload["current_sf_occupied"]
             # Guard: never overwrite user-verified lease data with CoStar's value.
             # If the existing record has a protected source AND a verified date,
@@ -744,6 +753,11 @@ def _company_out(company: Company, db: Session):
     from app.schemas.company import CompanyOut as CompanyOutSchema
     out = CompanyOutSchema.model_validate(company)
     out.matched_properties = _compute_matched_properties(company, db)
+    # The linked document is the CURRENT lease — a row in the leases table,
+    # not a column on the company.
+    lease = current_lease(db, company.id)
+    out.lease_file_name = lease.file_name if lease else None
+    out.lease_uploaded_at = lease.uploaded_at if lease else None
     return out
 
 
@@ -877,40 +891,53 @@ def update_lease_expiry(
 
 
 class LeaseRemovalResult(BaseModel):
-    """What became of the link and of the file."""
+    """What became of the lease, its file, and which lease is current now."""
     company_id: str
+    removed_lease_id: Optional[int] = None
     removed_file_name: Optional[str] = None
     # deleted | absent | refused | error: ...  — "absent" means the file was
     # already gone from the folder, which is a clean outcome, not a failure.
     file_outcome: str = "absent"
-    # Set when the fields were cleared but the file could not be removed, so the
-    # UI can say so instead of implying the document is gone.
+    # The lease promoted to current because the current one was removed. None
+    # when a prior term was removed, or when no lease is left.
+    promoted_lease_id: Optional[int] = None
+    promoted_file_name: Optional[str] = None
+    # Set when the lease was removed but the file could not be, so the UI can
+    # say so instead of implying the document is gone.
     warning: Optional[str] = None
 
 
 @router.delete("/{company_id}/lease", response_model=LeaseRemovalResult)
-def remove_lease(company_id: str, db: Session = Depends(get_db)):
-    """Remove the linked lease document: clear the link and delete the file.
+def remove_lease(
+    company_id: str,
+    lease_id: Optional[int] = Query(None),
+    db: Session = Depends(get_db),
+):
+    """Remove ONE lease: its record and its file. Other leases are untouched.
+
+    lease_id names the lease; omitted, it is the current one. When the current
+    lease is removed, the next most recent (latest commencement date) is
+    promoted to current and its confirmed expiry, address and SF are written to
+    the company, each with the source it was confirmed under.
 
     Jack uploaded a draft by mistake and had no way to clear it — this is that
-    way out. It clears lease_file_name, lease_uploaded_at and
-    lease_extraction_json, and deletes the PDF from the leases folder.
+    way out.
 
     Two things it deliberately does NOT do:
 
-    1. **It does not roll back a confirmed value.** lease_expiry_date,
-       current_address and current_sf_occupied stay exactly as they are, and so
-       do their lease-sourced markers. Jack read those values against their
-       clauses and accepted them; removing the document does not un-know them,
-       and silently reverting a verified expiry would move a tenant's place in
-       the queue behind his back. Keeping the markers also keeps the CoStar
-       import guard in force — a confirmed lease value still outranks CoStar
-       after the document is gone. The confirmation text says this.
+    1. **It does not roll back a confirmed value.** With no lease left to
+       promote — or a promoted lease that does not hold a field — the company's
+       lease_expiry_date, current_address and current_sf_occupied stay exactly
+       as they are, and so do their source markers. Jack read those values and
+       accepted them; removing the document does not un-know them, and silently
+       reverting a verified expiry would move a tenant's place in the queue
+       behind his back. Keeping the markers also keeps the CoStar import guard
+       in force.
     2. **It does not fail on a missing file.** A file already gone from the
-       folder is a clean outcome: the fields still clear. Nor does a file that
+       folder is a clean outcome: the lease still goes. Nor does a file that
        cannot be deleted (open in a viewer, which on Windows locks it) block
-       the removal — the link clears and the result says what happened, because
-       the alternative is Jack stuck with a document he cannot clear.
+       the removal — the result says what happened, because the alternative is
+       Jack stuck with a document he cannot clear.
 
     Keyed by the CO-nnn business id, like every other route on this router
     (and like PATCH /{company_id}/lease directly above).
@@ -918,41 +945,107 @@ def remove_lease(company_id: str, db: Session = Depends(get_db)):
     company = db.query(Company).filter(Company.company_id == company_id).first()
     if not company:
         raise HTTPException(status_code=404, detail="Company not found")
-    if not company.lease_file_name:
+
+    leases = company_leases(db, company.id)
+    if not leases:
         # A clean 404 naming the situation, never a 500 and never a silent OK.
         raise HTTPException(
             status_code=404,
             detail="No lease document is linked to this company.",
         )
+    if lease_id is None:
+        target = next((l for l in leases if l.is_current), leases[0])
+    else:
+        target = next((l for l in leases if l.id == lease_id), None)
+        if target is None:
+            raise HTTPException(
+                status_code=404,
+                detail="That lease is not linked to this company.",
+            )
 
-    file_name = company.lease_file_name
-    outcome = delete_lease_file(file_name)
+    remaining = [l for l in leases if l is not target]
+    file_name = target.file_name
+    # Collision-safe naming means no two leases share a file, but a file another
+    # lease still points at is never deleted out from under it.
+    if file_name and any(l.file_name == file_name for l in remaining):
+        outcome = "absent"
+    else:
+        outcome = delete_lease_file(file_name)
 
-    company.lease_file_name       = None
-    company.lease_uploaded_at     = None
-    company.lease_extraction_json = None
+    was_current = bool(target.is_current)
+    removed_id = target.id
+    db.delete(target)
+
+    promoted = None
+    if remaining and (was_current or not any(l.is_current for l in remaining)):
+        promoted = choose_current(remaining)
+        sync_company_from_lease(company, promoted)
+        _run_signals(company)
+    promoted_id = promoted.id if promoted else None
+    promoted_name = promoted.file_name if promoted else None
+
     company.last_modified_by_user = datetime.utcnow()
     db.commit()
 
     warning = None
     if outcome.startswith("error:"):
         warning = (
-            f"The link was removed, but '{file_name}' could not be deleted "
+            f"The lease was removed, but '{file_name}' could not be deleted "
             f"({outcome[len('error: '):]}). It may be open in another program — "
             "delete it from the leases folder by hand."
         )
     elif outcome == "refused":
         warning = (
-            f"The link was removed. '{file_name}' was left alone because the "
+            f"The lease was removed. '{file_name}' was left alone because the "
             "stored value is not a plain filename."
         )
 
     return LeaseRemovalResult(
         company_id=company.company_id,
+        removed_lease_id=removed_id,
         removed_file_name=file_name,
         file_outcome=outcome,
+        promoted_lease_id=promoted_id,
+        promoted_file_name=promoted_name,
         warning=warning,
     )
+
+
+class SubmarketUpdate(BaseModel):
+    # Null or blank clears the submarket back to unknown.
+    current_submarket: Optional[str] = None
+
+
+@router.patch("/{company_id}/submarket", response_model=CompanyOut)
+def update_submarket(
+    company_id: str,
+    payload: SubmarketUpdate,
+    db: Session = Depends(get_db),
+):
+    """Set a company's submarket. Any name not on the list joins it.
+
+    Matched case-insensitively against the list first, so the company is given
+    the canonical spelling ("sterling" -> "Sterling") and no duplicate is made.
+    """
+    company = db.query(Company).filter(Company.company_id == company_id).first()
+    if not company:
+        raise HTTPException(status_code=404, detail="Company not found")
+
+    raw = (payload.current_submarket or "").strip()
+    if raw:
+        try:
+            row, _created = get_or_create_submarket(db, raw, auto_created=False)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+        company.current_submarket = row.name
+    else:
+        company.current_submarket = None
+
+    company.last_modified_by_user = datetime.utcnow()
+    _run_signals(company)
+    db.commit()
+    db.refresh(company)
+    return _company_out(company, db)
 
 
 VALID_BUILDING_CLASSES = {"Class A", "Class B", "Class C"}

@@ -8,14 +8,14 @@ import { getCompanies, getCompany, updateCompanyLease, updateCompanyBuildingClas
 import LeaseCard from '../components/LeaseCard'
 import type { SubmarketBenchmark } from '../api/client'
 import type { CompanyListOut, CompanyOut, RepClass } from '../types'
-import { LEASE_SOURCE } from '../types'
+import { LEASE_SOURCE, MANUAL_SOURCE } from '../types'
 import { PriorityBadge, MedicalBadge } from '../components/PriorityBadge'
 import ScoreBadge from '../components/ScoreBadge'
 import AddCompanyModal from '../components/AddCompanyModal'
 import CoStarTenantImportModal from '../components/CoStarTenantImportModal'
 import OutreachDraftModal from '../components/OutreachDraftModal'
 import CompanySnoozeModal from '../components/CompanySnoozeModal'
-import { SUBMARKETS } from '../constants'
+import SubmarketSelect from '../components/SubmarketSelect'
 
 const LEASE_SOURCES = [
   { value: 'manual',              label: 'Manual entry' },
@@ -333,14 +333,13 @@ export default function Companies() {
       {/* Filters */}
       <div className="flex items-center gap-3 mb-4 flex-wrap">
         <Filter size={13} className="text-ink-muted" />
-        <select
+        <SubmarketSelect
           value={submarket}
-          onChange={e => setSubmarket(e.target.value)}
+          onChange={setSubmarket}
+          emptyLabel="All Submarkets"
+          allowAdd={false}
           className="bg-surface-card border border-surface-border text-ink-secondary text-xs rounded-lg px-3 py-1.5"
-        >
-          <option value="">All Submarkets</option>
-          {SUBMARKETS.map(s => <option key={s} value={s}>{s}</option>)}
-        </select>
+        />
         <select
           value={priority}
           onChange={e => setPriority(e.target.value)}
@@ -722,6 +721,15 @@ export default function Companies() {
                             lease
                           </span>
                         )}
+                        {selected.lease_expiry_source === MANUAL_SOURCE && (
+                          <span
+                            className="text-[9px] px-1 py-0.5 rounded bg-amber-500/10 text-amber-300
+                                       border border-amber-500/30"
+                            title="Entered by you, not read off the document — outranks CoStar."
+                          >
+                            manual
+                          </span>
+                        )}
                         <button onClick={openLeaseEdit} title="Enter lease expiry" className="text-ink-muted hover:text-accent-blue transition-colors">
                           <Pencil size={11} />
                         </button>
@@ -734,7 +742,9 @@ export default function Companies() {
                     label={
                       selected.current_sf_occupied_source === LEASE_SOURCE
                         ? 'Rentable SF (lease)'
-                        : 'SF Occupied (CoStar)'
+                        : selected.current_sf_occupied_source === MANUAL_SOURCE
+                          ? 'Rentable SF (manual)'
+                          : 'SF Occupied (CoStar)'
                     }
                     value={selected.current_sf_occupied != null ? `${selected.current_sf_occupied.toLocaleString()} SF` : 'Unknown'}
                   />
@@ -744,7 +754,9 @@ export default function Companies() {
                       label={
                         selected.current_address_source === LEASE_SOURCE
                           ? 'Premises address (lease)'
-                          : 'Address'
+                          : selected.current_address_source === MANUAL_SOURCE
+                            ? 'Premises address (manual)'
+                            : 'Address'
                       }
                       value={selected.current_address}
                     />
@@ -774,6 +786,7 @@ export default function Companies() {
                       record on confirm, since the expiry drives the queue. */}
                   <LeaseCard
                     companyPk={selected.id}
+                    companyBusinessId={selected.company_id}
                     onConfirmed={() => void reloadSelected()}
                   />
 

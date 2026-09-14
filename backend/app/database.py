@@ -24,5 +24,5 @@ def get_db():
 
 
 def init_db():
-    from app.models import property, company, opportunity, activity, contact, outreach_log, observation, document  # noqa: F401
+    from app.models import property, company, opportunity, activity, contact, outreach_log, observation, document, lease, submarket  # noqa: F401
     Base.metadata.create_all(bind=engine)

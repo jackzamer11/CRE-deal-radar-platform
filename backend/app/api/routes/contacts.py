@@ -26,6 +26,7 @@ from app.services.contact_service import (
     create_fact, mark_engaged, normalize_email, record_stage_change,
     resolve_contact_by_email,
 )
+from app.services.lease_records import current_lease
 from app.services.lease_storage import lease_file_exists
 from app.services.signal_engine import (
     is_in_peak_expiry_window, peak_window_date_bounds,
@@ -215,7 +216,7 @@ class ThreadHeader(BaseModel):
     company_lease_expiry_source: Optional[str] = None
     company_address_source: Optional[str] = None
     company_sf_source: Optional[str] = None
-    # The linked lease document. lease_file_name is a bare filename; the link
+    # The company's CURRENT lease. lease_file_name is a bare filename; the link
     # the card renders goes through the backend, which resolves it against the
     # configured folder and says so plainly when the file is not there.
     company_lease_file_name: Optional[str] = None
@@ -927,7 +928,9 @@ def get_contact(contact_id: int, db: Session = Depends(get_db)):
 
     conflicts = pending_conflicts(db, company)
 
-    lease_file_name = company.lease_file_name if company else None
+    # The linked document is the company's CURRENT lease (models/lease.py).
+    lease = current_lease(db, company.id) if company else None
+    lease_file_name = lease.file_name if lease else None
     months = _company_expiry_months(company)
 
     return ThreadHeader(
@@ -955,13 +958,13 @@ def get_contact(contact_id: int, db: Session = Depends(get_db)):
             getattr(company, "current_sf_occupied_source", None) if company else None
         ),
         company_lease_file_name=lease_file_name,
-        company_lease_uploaded_at=company.lease_uploaded_at if company else None,
+        company_lease_uploaded_at=lease.uploaded_at if lease else None,
         # Checked here so the card can say "the file is missing" instead of
         # handing Jack a link that does nothing.
         company_lease_file_missing=bool(
             lease_file_name and not lease_file_exists(lease_file_name)
         ),
-        has_lease_extraction=bool(company and company.lease_extraction_json),
+        has_lease_extraction=bool(lease and lease.extraction_json),
         past_client_reentry=_is_past_client_reentry(contact, months),
         has_data_conflict=bool(company.has_data_conflict) if company else False,
         conflicts=conflicts,
