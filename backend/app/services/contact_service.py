@@ -347,55 +347,105 @@ def resolve_company_for_email(
          hand-entered "Corcoran McEnearney"
       4. create, flagged auto_created + untriaged, with no company_type
     """
-    domain = email_domain_of(email)
-    if not domain or is_free_mail(domain):
-        return None, False
-
-    existing = db.query(Company).filter(Company.email_domain == domain).first()
-    if existing:
-        return existing, False
-
-    # The domain may already be on record as the company's website.
-    by_site = (
-        db.query(Company)
-        .filter(Company.website.isnot(None), Company.website.ilike(f"%{domain}%"))
-        .first()
+    return resolve_companies_for_emails(db, [email]).get(
+        normalize_email(email), (None, False),
     )
-    if by_site:
-        # Claim the domain so the next lookup is a direct hit.
-        by_site.email_domain = domain
-        return by_site, False
 
-    # Derive a display name from the domain: "mm-realestate.com" → "Mm Realestate".
-    stem = domain.rsplit(".", 1)[0].split(".")[-1]
-    derived = stem.replace("-", " ").replace("_", " ").strip()
-    derived_title = " ".join(w.capitalize() for w in derived.split()) or domain
 
-    # Loose name match against what Jack already typed by hand, both directions
-    # (a short derived name can be contained in a longer real one).
-    target = _normalize_company_name(derived_title)
-    if target:
-        for cand in db.query(Company).filter(Company.name.isnot(None)).all():
-            cand_norm = _normalize_company_name(cand.name)
-            if not cand_norm:
+def resolve_companies_for_emails(
+    db: Session, emails: List[Optional[str]],
+) -> Dict[str, Tuple[Optional[Company], bool]]:
+    """resolve_company_for_email() for several addresses, in ONE pass.
+
+    Returns {normalized email: (company or None, created)} for every address
+    given. The company table is read a fixed number of times however many
+    addresses are asked about — a roundup naming ten tenant contacts must not
+    cost ten resolution passes. The rules and their order are exactly those of
+    the single-address resolver, which delegates here so there is one of them.
+
+    A domain resolved (or created) for an earlier address is reused by a later
+    one, and a company created here is a name-match candidate for the rest.
+    """
+    out: Dict[str, Tuple[Optional[Company], bool]] = {}
+    pending = []   # (normalized email, domain) needing a lookup
+    for email in emails:
+        e = normalize_email(email)
+        if not e or e in out:
+            continue
+        domain = email_domain_of(e)
+        if not domain or is_free_mail(domain):
+            out[e] = (None, False)
+        else:
+            pending.append((e, domain))
+    if not pending:
+        return out
+
+    domains = list(dict.fromkeys(d for _, d in pending))
+    by_domain: Dict[str, Tuple[Company, bool]] = {}
+    for c in db.query(Company).filter(Company.email_domain.in_(domains)).all():
+        # First match wins, as .first() did in the single-address resolver.
+        by_domain.setdefault(c.email_domain, (c, False))
+
+    unresolved = [d for d in domains if d not in by_domain]
+    if unresolved:
+        # Read once each, and only when some domain is still unknown.
+        with_site = (
+            db.query(Company).filter(Company.website.isnot(None)).all()
+        )
+        named = [
+            (cand, _normalize_company_name(cand.name))
+            for cand in db.query(Company).filter(Company.name.isnot(None)).all()
+        ]
+        for domain in unresolved:
+            # The domain may already be on record as the company's website.
+            by_site = next(
+                (c for c in with_site if domain in (c.website or "").lower()), None,
+            )
+            if by_site is not None:
+                # Claim the domain so the next lookup is a direct hit.
+                by_site.email_domain = domain
+                by_domain[domain] = (by_site, False)
                 continue
-            if cand_norm == target or target in cand_norm or cand_norm in target:
-                if not cand.email_domain:
-                    cand.email_domain = domain
-                return cand, False
 
-    company = Company(
-        company_id=_next_company_id(db),
-        name=derived_title,
-        industry="Unknown",
-        email_domain=domain,
-        auto_created=True,
-        triaged=False,
-        company_type=None,   # no guess — Jack sets it
-    )
-    db.add(company)
-    db.flush()
-    return company, True
+            # Derive a display name from the domain: "mm-realestate.com" → "Mm Realestate".
+            stem = domain.rsplit(".", 1)[0].split(".")[-1]
+            derived = stem.replace("-", " ").replace("_", " ").strip()
+            derived_title = " ".join(w.capitalize() for w in derived.split()) or domain
+
+            # Loose name match against what Jack already typed by hand, both
+            # directions (a short derived name can be contained in a longer one).
+            target = _normalize_company_name(derived_title)
+            match = None
+            if target:
+                for cand, cand_norm in named:
+                    if not cand_norm:
+                        continue
+                    if cand_norm == target or target in cand_norm or cand_norm in target:
+                        match = cand
+                        break
+            if match is not None:
+                if not match.email_domain:
+                    match.email_domain = domain
+                by_domain[domain] = (match, False)
+                continue
+
+            company = Company(
+                company_id=_next_company_id(db),
+                name=derived_title,
+                industry="Unknown",
+                email_domain=domain,
+                auto_created=True,
+                triaged=False,
+                company_type=None,   # no guess — Jack sets it
+            )
+            db.add(company)
+            db.flush()
+            named.append((company, _normalize_company_name(company.name)))
+            by_domain[domain] = (company, True)
+
+    for e, domain in pending:
+        out[e] = by_domain[domain]
+    return out
 
 
 def resolve_company_by_name(
@@ -506,7 +556,19 @@ def resolve_or_create_contact(
         if existing.company_id is None and company is not None:
             existing.company_id = company.id
         return existing, False
+    return create_contact(db, e, display_name, company=company), True
 
+
+def create_contact(
+    db: Session,
+    email: Optional[str],
+    display_name: Optional[str],
+    *,
+    company: Optional[Company] = None,
+) -> Contact:
+    """Create an untriaged contact. The caller has already established that no
+    contact holds this address — a batch resolver looks them all up at once."""
+    e = normalize_email(email)
     name = (display_name or "").strip()
     if not name:
         # Fall back to the local part: "joe.smith@acme.com" → "Joe Smith".
@@ -530,7 +592,7 @@ def resolve_or_create_contact(
     )
     db.add(contact)
     db.flush()
-    return contact, True
+    return contact
 
 
 def apply_inbound_stage_rules(contact: Contact, direction: Optional[str]) -> bool:

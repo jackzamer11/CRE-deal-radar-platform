@@ -563,7 +563,8 @@ def test_company_override_ids_are_fetched_in_one_query(db_session, client):
     seen = _company_queries_for(client, db_session, _roundup(
         [{"company_override_id": i, "action_taken": "note"} for i in ids],
     ))
-    by_id = [s for s in seen if " IN (" in s and "companies.id" in s]
+    # Precisely the id fetch — the sender's domain lookup also uses IN (...).
+    by_id = [s for s in seen if "WHERE companies.id IN (" in s]
     assert len(by_id) == 1
 
 
@@ -654,3 +655,410 @@ def test_ensure_schema_adds_source_note_idempotently():
     cur.execute("SELECT source_note FROM activity_logs WHERE id = 1")
     assert cur.fetchone() == (None,)
     conn.close()
+
+
+# ══ 9. A deal names its own contact ═══════════════════════════════════════════
+#
+# Ann's weekly notes cover seven deals. Without a per-deal contact every fact
+# lands on Ann, and her Relationship panel — the two lines Jack reads before
+# calling her — fills with facts about other people's tenants.
+
+from app.models.email_ingest import ContactAddressOverride  # noqa: E402
+
+
+def _existing_contact(db, name, email, company=None, **kw):
+    contact = Contact(
+        name=name, email=email,
+        company_id=company.id if company is not None else None,
+        contact_type="tenant", stage=kw.pop("stage", "Sent"),
+        triaged=kw.pop("triaged", True), responded=kw.pop("responded", False),
+        **kw,
+    )
+    db.add(contact)
+    db.commit()
+    db.refresh(contact)
+    return contact
+
+
+def _facts_of(db, contact):
+    return [
+        f.fact_text for f in
+        db.query(ContactFact).filter(ContactFact.contact_id == contact.id)
+        .order_by(ContactFact.id)
+    ]
+
+
+def test_a_deal_contact_gets_the_entry_and_the_facts_not_the_sender(db_session, client):
+    scott_co = _company(db_session, "Scott Management", "CO-901", email_domain="scottmgmt.com")
+    bill = _existing_contact(db_session, "Bill Scott", "bill@scottmgmt.com", scott_co)
+
+    body = _post(client, _roundup([{
+        "company_override": "Scott Management",
+        "contact_email": "Bill@ScottMgmt.com",
+        "action_taken": "Scott Management renewing 4,200 SF.",
+        "disc_current_sf": 4200,
+        "facts": ["Bill signs every renewal himself"],
+    }]))
+
+    entry = db_session.query(ActivityLog).filter(
+        ActivityLog.source_message_id == ROUNDUP_ID
+    ).one()
+    assert entry.contact_id == bill.id
+    assert entry.company_stamp_id == scott_co.id
+    assert entry.disc_current_sf == 4200
+    assert entry.participation is False
+    assert entry.source_note == NOTE
+
+    assert _facts_of(db_session, bill) == ["Bill signs every renewal himself"]
+    ann = _sender(db_session)
+    assert _facts_of(db_session, ann) == []
+    # Ann has no row for a deal that is about Bill.
+    assert db_session.query(ActivityLog).filter(ActivityLog.contact_id == ann.id).count() == 0
+
+    assert body["entries"][0]["contact_id"] == bill.id
+    assert body["entries"][0]["contact_name"] == "Bill Scott"
+    assert body["entries"][0]["facts_written"] == 1
+    assert body["entries"][0]["contact_email_ignored"] is None
+    # Ann's relationship panel stays about Ann.
+    header = client.get(f"/api/contacts/{ann.id}").json()
+    assert header["relationship_lines"] == []
+
+
+def test_a_deal_without_contact_email_still_goes_to_the_sender(db_session, client):
+    _company(db_session, "Scott Management", "CO-902", email_domain="scottmgmt.com")
+    bill = _existing_contact(
+        db_session, "Bill Scott", "bill@scottmgmt.com",
+        db_session.query(Company).filter(Company.company_id == "CO-902").one(),
+    )
+    body = _post(client, _roundup([
+        {"company_override": "Scott Management", "contact_email": "bill@scottmgmt.com",
+         "action_taken": "Scott renewal.", "facts": ["About Bill"]},
+        {"company_override": "Harbor Dental", "action_taken": "Harbor LOI.",
+         "facts": ["Ann tracks Harbor closely"]},
+    ]))
+
+    ann = _sender(db_session)
+    rows = db_session.query(ActivityLog).order_by(ActivityLog.id).all()
+    assert [(r.contact_id, r.source_message_id) for r in rows] == [
+        (bill.id, ROUNDUP_ID),
+        (ann.id, f"{ROUNDUP_ID}#d2"),
+    ]
+    # The deal without a contact is exactly today's entry: on Ann, from Ann.
+    assert rows[1].sender_email == "ann.waller@crgnova.com"
+    assert _facts_of(db_session, ann) == ["Ann tracks Harbor closely"]
+    assert _facts_of(db_session, bill) == ["About Bill"]
+    assert [e["contact_id"] for e in body["entries"]] == [bill.id, ann.id]
+
+
+def test_three_deals_with_three_contacts_each_keep_their_own_facts(db_session, client):
+    deals = _three_deals()
+    people = [
+        ("bill@scottmgmt.com", "Bill Scott", "Bill signs renewals"),
+        ("hana@harbordental.com", "Hana Lee", "Hana owns the practice"),
+        ("pete@pinecrestadv.com", "Pete Ruiz", "Pete wants ground floor"),
+    ]
+    for deal, (email, name, fact) in zip(deals, people):
+        deal.update(contact_email=email, contact_name=name, facts=[fact])
+
+    _post(client, _roundup(deals))
+
+    entries = (
+        db_session.query(ActivityLog)
+        .filter(ActivityLog.source_message_id.like(f"{ROUNDUP_ID}%"))
+        .order_by(ActivityLog.id).all()
+    )
+    assert len(entries) == 3
+    contacts = [
+        db_session.query(Contact).filter(Contact.email == email).one()
+        for email, _, _ in people
+    ]
+    assert len({c.id for c in contacts}) == 3
+    assert [e.contact_id for e in entries] == [c.id for c in contacts]
+    for contact, (_, name, fact), entry in zip(contacts, people, entries):
+        assert contact.name == name
+        facts = db_session.query(ContactFact).filter(ContactFact.contact_id == contact.id).all()
+        assert [(f.fact_text, f.source_entry_id) for f in facts] == [(fact, entry.id)]
+    assert _facts_of(db_session, _sender(db_session)) == []
+
+
+def test_an_unknown_deal_contact_is_created_untriaged_under_their_own_domain(db_session, client):
+    _post(client, _roundup([{
+        "company_override": "Harbor Dental",
+        "contact_email": "hana.lee@harbordental.com",
+        "action_taken": "Harbor LOI.",
+    }]))
+
+    hana = db_session.query(Contact).filter(Contact.email == "hana.lee@harbordental.com").one()
+    assert hana.auto_created is True
+    assert hana.triaged is False
+    assert hana.responded is False
+    assert hana.stage == "Sent"
+    # No name given → derived from the address, as for any email contact.
+    assert hana.name == "Hana Lee"
+    own = db_session.query(Company).filter(Company.id == hana.company_id).one()
+    assert own.email_domain == "harbordental.com"
+
+
+def test_a_deal_contact_keeps_their_company_while_the_entry_stamps_the_deals(db_session, client):
+    """The edge case, decided: a broker at Avison Young named on a Scott
+    Management deal belongs to Avison Young; the entry is about Scott
+    Management. Neither is reconciled to the other."""
+    scott_co = _company(db_session, "Scott Management", "CO-903")
+    _post(client, _roundup([{
+        "company_override": "Scott Management",
+        "contact_email": "ray@avisonyoung.com",
+        "contact_name": "Ray Ortiz",
+        "action_taken": "Ray is repping Scott Management.",
+    }]))
+
+    ray = db_session.query(Contact).filter(Contact.email == "ray@avisonyoung.com").one()
+    ray_company = db_session.query(Company).filter(Company.id == ray.company_id).one()
+    assert ray_company.email_domain == "avisonyoung.com"
+    assert ray_company.id != scott_co.id
+
+    entry = db_session.query(ActivityLog).filter(ActivityLog.contact_id == ray.id).one()
+    assert entry.company_stamp_id == scott_co.id
+    assert entry.company_id == scott_co.id
+
+
+@pytest.mark.parametrize("own", [
+    "jzamer@z-reg.com", "JZamer@SimpsonDev.com", "jackzamer1@gmail.com",
+])
+def test_a_deal_contact_at_jacks_own_address_falls_back_to_the_sender(db_session, client, own):
+    contacts_before = db_session.query(Contact).count()
+    body = _post(client, _roundup([{
+        "company_override": "Scott Management",
+        "contact_email": own,
+        "contact_name": "Jack Zamer",
+        "action_taken": "Scott renewal.",
+        "facts": ["Renewal is on track"],
+    }]))
+
+    ann = _sender(db_session)
+    # Only Ann was created — never a contact at Jack's address.
+    assert db_session.query(Contact).count() == contacts_before + 1
+    assert db_session.query(Contact).filter(Contact.email == own.lower()).count() == 0
+    entry = db_session.query(ActivityLog).one()
+    assert entry.contact_id == ann.id
+    assert entry.sender_email == "ann.waller@crgnova.com"
+    assert _facts_of(db_session, ann) == ["Renewal is on track"]
+    assert body["entries"][0]["contact_email_ignored"] == own.lower()
+
+
+def test_the_sender_recipients_and_participation_are_unaffected_by_deal_contacts(
+    db_session, client,
+):
+    def run(with_contacts, message_id):
+        deals = _three_deals()
+        if with_contacts:
+            deals[0].update(contact_email="bill@scottmgmt.com")
+            deals[2].update(contact_email="pete@pinecrestadv.com")
+        return _post(client, _roundup(
+            deals,
+            source_message_id=message_id,
+            to_recipients=[{"email": "jzamer@z-reg.com"},
+                           {"email": "mike@crgnova.com", "name": "Mike Zamer"}],
+            cc_recipients=[{"email": "ray@avisonyoung.com", "name": "Ray Ortiz"}],
+        ))
+
+    run(True, "<with-contacts@mail>")
+
+    ann = _sender(db_session)
+    mike = db_session.query(Contact).filter(Contact.email == "mike@crgnova.com").one()
+    ray = db_session.query(Contact).filter(Contact.email == "ray@avisonyoung.com").one()
+    bill = db_session.query(Contact).filter(Contact.email == "bill@scottmgmt.com").one()
+
+    # The sender's own contact: an inbound reply, exactly as before.
+    assert ann.responded is True
+    assert ann.stage == "Replied"
+    # A deal contact did not write the email — no reply recorded against them.
+    assert bill.responded is False
+    assert bill.stage == "Sent"
+
+    def rows(contact, prefix):
+        return db_session.query(ActivityLog).filter(
+            ActivityLog.contact_id == contact.id,
+            ActivityLog.source_message_id.like(f"{prefix}%"),
+        ).all()
+
+    # Recipients still get one row per deal, participation preserved.
+    assert len(rows(mike, "<with-contacts@mail>")) == 3
+    assert all(r.participation is False for r in rows(mike, "<with-contacts@mail>"))
+    assert len(rows(ray, "<with-contacts@mail>")) == 3
+    assert all(r.participation is True for r in rows(ray, "<with-contacts@mail>"))
+    # Ann keeps only the deal that named no contact.
+    assert [r.source_message_id for r in rows(ann, "<with-contacts@mail>")] == [
+        "<with-contacts@mail>#d2",
+    ]
+
+    # And the same email without deal contacts still produces today's shape.
+    run(False, "<without-contacts@mail>")
+    assert len(rows(ann, "<without-contacts@mail>")) == 3
+    assert len(rows(mike, "<without-contacts@mail>")) == 3
+    assert len(rows(ray, "<without-contacts@mail>")) == 3
+
+    ids = [r.source_message_id for r in db_session.query(ActivityLog)]
+    assert len(ids) == len(set(ids))
+
+
+def test_a_deal_contact_who_is_also_copied_gets_one_row_for_that_deal(db_session, client):
+    _post(client, _roundup(
+        [{"company_override": "Scott Management", "contact_email": "ray@avisonyoung.com",
+          "action_taken": "Ray on Scott."}],
+        cc_recipients=[{"email": "ray@avisonyoung.com"}],
+    ))
+    ray = db_session.query(Contact).filter(Contact.email == "ray@avisonyoung.com").one()
+    ray_rows = db_session.query(ActivityLog).filter(ActivityLog.contact_id == ray.id).all()
+    assert len(ray_rows) == 1
+    assert ray_rows[0].participation is False
+    assert ray_rows[0].source_message_id == ROUNDUP_ID
+
+
+def test_a_taught_address_resolves_a_deal_contact_to_the_corrected_person(db_session, client):
+    right = _existing_contact(db_session, "Bill Scott", "william@scottmgmt.com")
+    db_session.add(ContactAddressOverride(email="bill@scottmgmt.com", contact_id=right.id))
+    db_session.commit()
+
+    _post(client, _roundup([{
+        "company_override": "Scott Management", "contact_email": "bill@scottmgmt.com",
+        "action_taken": "Scott renewal.",
+    }]))
+    assert db_session.query(ActivityLog).one().contact_id == right.id
+    assert db_session.query(Contact).filter(Contact.email == "bill@scottmgmt.com").count() == 0
+
+
+def test_correcting_a_deal_contact_entry_never_teaches_the_senders_address(db_session, client):
+    """A reassignment maps the entry's sender_email to the corrected contact.
+    On a deal entry that address must be the deal contact's — mapping Ann's
+    would file every future email from Ann under a Scott Management person."""
+    _post(client, _roundup([{
+        "company_override": "Scott Management", "contact_email": "bill@scottmgmt.com",
+        "action_taken": "Scott renewal.",
+    }]))
+    entry = db_session.query(ActivityLog).one()
+    right = _existing_contact(db_session, "William Scott", "william@scottmgmt.com")
+
+    resp = client.patch(f"/api/activity/{entry.id}/assign", json={"contact_id": right.id})
+    assert resp.status_code == 200, resp.text
+
+    taught = {o.email: o.contact_id for o in db_session.query(ContactAddressOverride)}
+    assert taught == {"bill@scottmgmt.com": right.id}
+
+
+def test_reposting_an_email_with_deal_contacts_is_a_clean_409(db_session, client):
+    deals = _three_deals()
+    for deal, email in zip(deals, ["a@scottmgmt.com", "b@harbordental.com", "c@pinecrestadv.com"]):
+        deal["contact_email"] = email
+    payload = _roundup(deals)
+    _post(client, payload)
+    before = _counts(db_session)
+
+    assert client.post("/api/activity/from-email", json=payload).status_code == 409
+    assert _counts(db_session) == before
+    assert client.get("/api/activity/message-ids").json().count(ROUNDUP_ID) == 1
+
+
+def test_a_failure_on_the_third_deal_with_contacts_writes_none_of_the_three(db_session, client):
+    before = _counts(db_session)
+    deals = _three_deals()
+    for deal, email in zip(deals, ["a@scottmgmt.com", "b@harbordental.com", "c@pinecrestadv.com"]):
+        deal["contact_email"] = email
+        deal["facts"] = [f"fact about {email}"]
+    deals[2]["proposed_company_updates"] = [{"field": "sf", "value": "lots"}]   # fails here
+
+    resp = client.post("/api/activity/from-email", json=_roundup(deals))
+    assert resp.status_code == 400
+    assert _counts(db_session) == before
+    assert ROUNDUP_ID not in client.get("/api/activity/message-ids").json()
+
+
+def _table_queries_for(client, db, payload, tables):
+    """SELECTs reading any of `tables` during one POST."""
+    engine = db.get_bind()
+    seen = []
+
+    def _capture(conn, cursor, statement, params, context, executemany):
+        if statement.lstrip().upper().startswith("SELECT") and any(
+            f"FROM {t}" in statement for t in tables
+        ):
+            seen.append(statement)
+
+    event.listen(engine, "before_cursor_execute", _capture)
+    try:
+        _post(client, payload)
+    finally:
+        event.remove(engine, "before_cursor_execute", _capture)
+    return seen
+
+
+def _deals_with_contacts(names_and_emails):
+    return [
+        {"company_override": company, "contact_email": email, "action_taken": f"{company} note."}
+        for company, email in names_and_emails
+    ]
+
+
+def test_ten_deals_with_ten_contacts_resolve_in_one_pass(db_session, client):
+    crg = _company(db_session, "CRG NoVA", "CO-950", email_domain="crgnova.com")
+    _existing_contact(db_session, "Ann Waller", "ann.waller@crgnova.com", crg)
+    pairs = []
+    for i in range(10):
+        co = _company(db_session, f"Tenant {chr(65 + i)} Holdings", f"CO-96{i}",
+                      email_domain=f"tenant{i}.com")
+        email = f"lead@tenant{i}.com"
+        _existing_contact(db_session, f"Lead {i}", email, co)
+        pairs.append((co.name, email))
+
+    tables = ("contacts", "contact_address_overrides", "companies")
+    two = _table_queries_for(client, db_session, _roundup(
+        _deals_with_contacts(pairs[:2]), source_message_id="<two@mail>",
+    ), tables)
+    ten = _table_queries_for(client, db_session, _roundup(
+        _deals_with_contacts(pairs), source_message_id="<ten@mail>",
+    ), tables)
+    assert len(ten) == len(two)
+
+    stamped = db_session.query(ActivityLog).filter(
+        ActivityLog.source_message_id.like("<ten@mail>%")
+    ).all()
+    assert len({r.contact_id for r in stamped}) == 10
+
+
+def test_ten_unknown_deal_contacts_are_looked_up_in_one_pass(db_session, client):
+    """Creation needs a new row each; LOOKING UP who they are must not."""
+    crg = _company(db_session, "CRG NoVA", "CO-970", email_domain="crgnova.com")
+    _existing_contact(db_session, "Ann Waller", "ann.waller@crgnova.com", crg)
+
+    tables = ("contacts", "contact_address_overrides")
+    two = _table_queries_for(client, db_session, _roundup(
+        _deals_with_contacts([(f"New Co {i}", f"p@newtwo{i}.com") for i in range(2)]),
+        source_message_id="<two-new@mail>",
+    ), tables)
+    ten = _table_queries_for(client, db_session, _roundup(
+        _deals_with_contacts([(f"New Co {i}", f"p@newten{i}.com") for i in range(10)]),
+        source_message_id="<ten-new@mail>",
+    ), tables)
+    assert len(ten) == len(two)
+    assert db_session.query(Contact).filter(Contact.email.like("p@newten%")).count() == 10
+
+
+def test_companies_contract_holds_after_deals_with_contacts(db_session, client):
+    _company(
+        db_session, "Contract Co", "CO-915",
+        current_headcount=42, headcount_growth_pct=12.5,
+        current_submarket="Tysons", opportunity_score=77.0, priority="HIGH",
+        lease_expiry_date=date.today() + timedelta(days=200),
+    )
+    _post(client, _roundup([{
+        "company_override": "Contract Co", "contact_email": "cfo@contractco.com",
+        "action_taken": "x", "facts": ["CFO decides"],
+    }]))
+    row = next(
+        r for r in client.get("/api/companies/").json() if r["company_id"] == "CO-915"
+    )
+    assert row["priority"] == "HIGH"
+    assert row["current_headcount"] == 42
+    assert row["headcount_growth_pct"] == 12.5
+    assert row["lease_expiry_months"] is not None
+    assert row["current_submarket"] == "Tysons"
+    assert row["opportunity_score"] == 77.0
