@@ -81,6 +81,23 @@ class ActivityLog(Base):
         Boolean, nullable=False, default=False, server_default=text("0"),
     )
 
+    # True on every row written from a `deals` element of a multi-deal email —
+    # a weekly roundup, not correspondence about that deal. Two rules read it:
+    #
+    #   * Reassigning such an entry corrects PLACEMENT, never identity, so it
+    #     teaches the resolver nothing. Otherwise moving one of Ann's roundup
+    #     entries to a Scott Management contact would file every future email
+    #     from Ann under that person.
+    #   * A fact written from a deal does not triage its contact: someone Ann
+    #     merely mentioned is not someone Jack is working.
+    #
+    # Nothing else distinguishes a deal entry left on the sender from an
+    # ordinary email — the first deal carries the bare message id and
+    # source_note is optional — hence a column rather than an inference.
+    deal_sourced = Column(
+        Boolean, nullable=False, default=False, server_default=text("0"),
+    )
+
     # What happened
     action_type = Column(String, nullable=False)  # CALL / EMAIL / MEETING / SIGNAL_UPDATE / RESEARCH / NOTE
     action_taken = Column(Text, nullable=False)

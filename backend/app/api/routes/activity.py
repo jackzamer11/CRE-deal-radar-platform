@@ -942,6 +942,8 @@ def create_activity_from_email(
         primary_contact = people[0][2] if people else None
         log_date = payload.sent_at or date.today()
         sender_email = normalize_email(payload.from_email)
+        # Every row a `deals` payload writes is marked, including recipients'.
+        deal_sourced = bool(payload.deals)
 
         # ── The contact each deal is about — all of them in one pass ──────────
         # The email still belongs to the sender: nothing above changes. This
@@ -1008,6 +1010,7 @@ def create_activity_from_email(
                     source_message_id = deal_message_id,
                     sender_email   = spec.contact_email,
                     participation  = False,
+                    deal_sourced   = deal_sourced,
                     contact_method = "email",
                     created_by     = "email-automation",
                     source_note    = spec.source_note,
@@ -1044,6 +1047,7 @@ def create_activity_from_email(
                     ),
                     sender_email   = sender_email,
                     participation  = person.participation,
+                    deal_sourced   = deal_sourced,
                     contact_method = "email",
                     created_by     = "email-automation",
                     source_note    = spec.source_note,
@@ -1079,6 +1083,7 @@ def create_activity_from_email(
                     channel        = "email",
                     source_message_id = deal_message_id,
                     sender_email   = sender_email,
+                    deal_sourced   = deal_sourced,
                     contact_method = "email",
                     created_by     = "email-automation",
                     source_note    = spec.source_note,
@@ -1099,6 +1104,9 @@ def create_activity_from_email(
                         db, fact_contact, text,
                         source_entry_id=primary_log.id,
                         learned_date=fact.learned_date or primary_log.log_date,
+                        # A roundup mentioning someone is not Jack engaging
+                        # them. A plain email's facts triage exactly as before.
+                        triage=not deal_sourced,
                     )
                     deal_facts += 1
 
@@ -1578,6 +1586,28 @@ def restamp_activity(
     return _to_out(log)
 
 
+def _reassignment_corrects_identity(db: Session, log: ActivityLog) -> bool:
+    """True when moving this entry means its sender's address was filed under
+    the wrong person — the only kind of move that should teach the resolver.
+
+    That is the case only when the entry sits on the contact its sender_email
+    currently resolves to (a correction Jack already made, then the address
+    itself; nothing is created). Everything else corrects placement:
+
+      * a deal entry — redirected to a per-deal contact, or left on the sender
+        as a fallback. Ann's roundup covers seven deals; moving the Scott
+        Management one says where that deal belongs, not who Ann is.
+      * a To-recipient or Cc-participation row — it sits on someone other than
+        the sender, and carries the sender's address only as provenance.
+    """
+    if log.deal_sourced or log.participation or log.contact_id is None:
+        return False
+    if not log.sender_email:
+        return False
+    resolved, _ = resolve_contact_for_address(db, log.sender_email, create=False)
+    return resolved is not None and resolved.id == log.contact_id
+
+
 @router.patch("/{entry_id}/assign", response_model=ActivityOut)
 def assign_activity(
     entry_id: int, payload: ActivityAssign, db: Session = Depends(get_db),
@@ -1601,6 +1631,10 @@ def assign_activity(
         if not contact:
             raise HTTPException(status_code=404, detail="Contact not found")
 
+    # Decided BEFORE the entry moves: is this a correction of who the sender's
+    # address belongs to, or only of where this entry sits?
+    teaches = _reassignment_corrects_identity(db, log)
+
     log.contact_id = payload.contact_id
     if log.company_stamp_id is None:
         log.company_stamp_id = (
@@ -1618,7 +1652,12 @@ def assign_activity(
         # An address Jack owns is never mapped: that would teach the resolver to
         # file his own mail under a contact, which is the exact thing the guard
         # in email_ingest_service exists to prevent.
-        record_address_override(db, log.sender_email, contact, source_entry_id=log.id)
+        #
+        # And only a correction of IDENTITY teaches — see
+        # _reassignment_corrects_identity. Moving a roundup deal or a copied
+        # row corrects placement, and must never remap the sender.
+        if teaches:
+            record_address_override(db, log.sender_email, contact, source_entry_id=log.id)
     db.commit()
     db.refresh(log)
     return _to_out(log)

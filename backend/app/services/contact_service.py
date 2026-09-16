@@ -258,6 +258,7 @@ def create_fact(
     source_entry_id: Optional[int] = None,
     learned_date: Optional[date] = None,
     supersedes_id: Optional[int] = None,
+    triage: bool = True,
 ) -> ContactFact:
     """Record a durable thing learned about a person.
 
@@ -268,6 +269,12 @@ def create_fact(
     When `supersedes_id` is given the older fact is marked superseded rather
     than deleted — newest active fact wins, and what was believed when stays
     retrievable.
+
+    `triage=False` records the fact without marking the contact engaged. Used
+    for facts from a multi-deal roundup: Ann's weekly notes name seven people
+    Jack has never contacted, and triaging them would fill the main list with
+    people he is not working. They graduate the normal way — the moment Jack
+    logs a touch, changes a stage, sets a next-touch date or edits them.
     """
     fact = ContactFact(
         contact_id=contact.id,
@@ -288,7 +295,8 @@ def create_fact(
             old.is_active = False
             old.superseded_by_id = fact.id
 
-    mark_engaged(db, contact)
+    if triage:
+        mark_engaged(db, contact)
     return fact
 
 

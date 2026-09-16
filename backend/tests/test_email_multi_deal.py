@@ -928,9 +928,10 @@ def test_a_taught_address_resolves_a_deal_contact_to_the_corrected_person(db_ses
 
 
 def test_correcting_a_deal_contact_entry_never_teaches_the_senders_address(db_session, client):
-    """A reassignment maps the entry's sender_email to the corrected contact.
-    On a deal entry that address must be the deal contact's — mapping Ann's
-    would file every future email from Ann under a Scott Management person."""
+    """Mapping Ann's address would file every future email from Ann under a
+    Scott Management person. And since moving a redirected deal entry corrects
+    placement rather than identity, it teaches nothing at all — not even the
+    deal contact's address."""
     _post(client, _roundup([{
         "company_override": "Scott Management", "contact_email": "bill@scottmgmt.com",
         "action_taken": "Scott renewal.",
@@ -942,7 +943,8 @@ def test_correcting_a_deal_contact_entry_never_teaches_the_senders_address(db_se
     assert resp.status_code == 200, resp.text
 
     taught = {o.email: o.contact_id for o in db_session.query(ContactAddressOverride)}
-    assert taught == {"bill@scottmgmt.com": right.id}
+    assert "ann.waller@crgnova.com" not in taught
+    assert taught == {}
 
 
 def test_reposting_an_email_with_deal_contacts_is_a_clean_409(db_session, client):
@@ -1062,3 +1064,255 @@ def test_companies_contract_holds_after_deals_with_contacts(db_session, client):
     assert row["lease_expiry_months"] is not None
     assert row["current_submarket"] == "Tysons"
     assert row["opportunity_score"] == 77.0
+
+
+# ══ 10. Correcting placement never rewrites identity ══════════════════════════
+#
+# A reassignment teaches the resolver that the entry's sender_email belongs to
+# the new contact. That is right only when the entry sits on the sender's own
+# thread and was filed under the wrong person. Moving one of Ann's roundup
+# deals, or a copied row, says where an entry belongs — not who Ann is. Taught
+# wrongly, one correction files Ann's whole next roundup under a stranger.
+
+def _taught(db):
+    return {o.email: o.contact_id for o in db.query(ContactAddressOverride)}
+
+
+def test_reassigning_a_fallback_deal_entry_teaches_nothing(db_session, client):
+    _post(client, _roundup(_three_deals()))
+    ann = _sender(db_session)
+    scott_entry = _primary_entries(db_session)[0]
+    assert scott_entry.contact_id == ann.id           # the fallback: on Ann
+    right = _existing_contact(db_session, "Bill Scott", "bill@scottmgmt.com")
+
+    resp = client.patch(f"/api/activity/{scott_entry.id}/assign", json={"contact_id": right.id})
+    assert resp.status_code == 200, resp.text
+    db_session.refresh(scott_entry)
+    assert scott_entry.contact_id == right.id         # the move itself happened
+
+    assert _taught(db_session) == {}
+
+    # Ann's next roundup still files under Ann.
+    body = _post(client, _roundup(_three_deals(), source_message_id="<leasing-notes-0922@mail>"))
+    assert {e["contact_id"] for e in body["entries"]} == {ann.id}
+
+
+def test_reassigning_a_redirected_deal_entry_teaches_nothing(db_session, client):
+    _post(client, _roundup([{
+        "company_override": "Harbor Dental", "contact_email": "hana@harbordental.com",
+        "action_taken": "Harbor LOI.",
+    }]))
+    entry = db_session.query(ActivityLog).one()
+    other = _existing_contact(db_session, "Dr. Park", "park@harbordental.com")
+
+    assert client.patch(
+        f"/api/activity/{entry.id}/assign", json={"contact_id": other.id},
+    ).status_code == 200
+    assert _taught(db_session) == {}
+
+
+def test_reassigning_a_cc_participation_row_teaches_nothing(db_session, client):
+    body = _post(client, {
+        "from_email": "dana@collaborative-av.com",
+        "direction": "inbound",
+        "source_message_id": "<cc-row@mail>",
+        "action_taken": "Dana wrote in.",
+        "cc_recipients": [{"email": "ray@avisonyoung.com"}],
+    })
+    cc_row = db_session.query(ActivityLog).filter(
+        ActivityLog.id == body["participation_entry_ids"][0]
+    ).one()
+    assert cc_row.participation is True
+    other = _existing_contact(db_session, "Raymond Ortiz", "raymond@avisonyoung.com")
+
+    assert client.patch(
+        f"/api/activity/{cc_row.id}/assign", json={"contact_id": other.id},
+    ).status_code == 200
+    assert _taught(db_session) == {}
+
+    # Dana's next email is still Dana's.
+    dana = db_session.query(Contact).filter(Contact.email == "dana@collaborative-av.com").one()
+    again = _post(client, {
+        "from_email": "dana@collaborative-av.com", "direction": "inbound",
+        "source_message_id": "<cc-row-2@mail>", "action_taken": "Dana again.",
+    })
+    assert again["contact_id"] == dana.id
+
+
+def test_reassigning_a_to_recipient_row_teaches_nothing(db_session, client):
+    body = _post(client, {
+        "from_email": "dana@collaborative-av.com",
+        "direction": "inbound",
+        "source_message_id": "<to-row@mail>",
+        "action_taken": "Dana wrote to Mike and Jack.",
+        "to_recipients": [{"email": "jzamer@z-reg.com"}, {"email": "mike@crgnova.com"}],
+    })
+    to_row = db_session.query(ActivityLog).filter(
+        ActivityLog.id == body["participant_entry_ids"][0]
+    ).one()
+    assert to_row.participation is False
+    other = _existing_contact(db_session, "Michael Zamer", "michael@crgnova.com")
+
+    assert client.patch(
+        f"/api/activity/{to_row.id}/assign", json={"contact_id": other.id},
+    ).status_code == 200
+    assert _taught(db_session) == {}
+
+
+def test_reassigning_an_ordinary_email_still_teaches(db_session, client):
+    body = _post(client, {
+        "from_email": "info@shared-inbox-co.com",
+        "from_name": "Shared Inbox",
+        "direction": "inbound",
+        "source_message_id": "<ordinary@mail>",
+        "action_taken": "Someone from the shared inbox wrote in.",
+    })
+    real = _existing_contact(db_session, "Nadia Farr", "nadia@shared-inbox-co.com")
+
+    assert client.patch(
+        f"/api/activity/{body['id']}/assign", json={"contact_id": real.id},
+    ).status_code == 200
+    assert _taught(db_session) == {"info@shared-inbox-co.com": real.id}
+
+    again = _post(client, {
+        "from_email": "info@shared-inbox-co.com", "direction": "inbound",
+        "source_message_id": "<ordinary-2@mail>", "action_taken": "Again.",
+    })
+    assert again["contact_id"] == real.id
+
+
+def test_every_row_a_deals_payload_writes_is_marked_and_no_other(db_session, client):
+    _post(client, _roundup(
+        [dict(_three_deals()[0], contact_email="bill@scottmgmt.com"), _three_deals()[1]],
+        to_recipients=[{"email": "mike@crgnova.com"}],
+        cc_recipients=[{"email": "ray@avisonyoung.com"}],
+    ))
+    _post(client, {
+        "from_email": "dana@collaborative-av.com", "direction": "inbound",
+        "source_message_id": "<plain-mark@mail>", "action_taken": "Dana.",
+        "cc_recipients": [{"email": "ray@avisonyoung.com"}],
+    })
+    rows = db_session.query(ActivityLog).all()
+    for row in rows:
+        from_deals = row.source_message_id.startswith(ROUNDUP_ID)
+        assert row.deal_sourced is from_deals, row.source_message_id
+    # Deal 1 → Bill, Mike, Ray; deal 2 → Ann, Mike, Ray.
+    assert sum(1 for r in rows if r.deal_sourced) == 6
+
+
+# ══ 11. A roundup mention is not engagement ═══════════════════════════════════
+
+def test_a_deal_fact_leaves_its_contact_and_company_untriaged(db_session, client):
+    body = _post(client, _roundup([{
+        "company_override": "Harbor Dental",
+        "contact_email": "hana@harbordental.com",
+        "contact_name": "Hana Lee",
+        "action_taken": "Harbor LOI.",
+        "facts": ["Hana owns the practice"],
+    }, {
+        "company_override": "Pinecrest Advisors",
+        "action_taken": "Pinecrest expanding.",
+        "facts": ["Ann is tracking Pinecrest"],        # the fallback, onto Ann
+    }]))
+    assert body["facts_written"] == 2
+
+    hana = db_session.query(Contact).filter(Contact.email == "hana@harbordental.com").one()
+    assert _facts_of(db_session, hana) == ["Hana owns the practice"]
+    assert hana.triaged is False
+    own_company = db_session.query(Company).filter(Company.id == hana.company_id).one()
+    assert own_company.triaged is False
+
+    ann = _sender(db_session)
+    assert _facts_of(db_session, ann) == ["Ann is tracking Pinecrest"]
+    assert ann.triaged is False
+
+    # Still exists and still searchable.
+    found = client.get("/api/contacts/search", params={"q": "Hana"}).json()
+    assert [c["id"] for c in found] == [hana.id]
+    # But not in the main list (triaged=true), which holds people Jack is working.
+    listed = client.get("/api/contacts/?triaged=true").json()
+    assert hana.id not in [c["id"] for c in listed]
+    assert hana.id in [c["id"] for c in client.get("/api/contacts/?triaged=false").json()]
+
+
+def test_a_deal_contact_triages_on_the_next_real_engagement(db_session, client):
+    _post(client, _roundup([{
+        "company_override": "Harbor Dental", "contact_email": "hana@harbordental.com",
+        "action_taken": "Harbor LOI.", "facts": ["Hana owns the practice"],
+    }]))
+    hana = db_session.query(Contact).filter(Contact.email == "hana@harbordental.com").one()
+    assert hana.triaged is False
+
+    resp = client.post("/api/activity/", json={
+        "action_type": "CALL", "action_taken": "Called Hana about the LOI",
+        "contact_id": hana.id, "direction": "outbound",
+    })
+    assert resp.status_code == 200, resp.text
+    db_session.refresh(hana)
+    assert hana.triaged is True
+    assert hana.id in [c["id"] for c in client.get("/api/contacts/?triaged=true").json()]
+
+
+def test_a_deal_contact_triages_on_a_stage_change(db_session, client):
+    _post(client, _roundup([{
+        "company_override": "Harbor Dental", "contact_email": "hana@harbordental.com",
+        "action_taken": "Harbor LOI.", "facts": ["Hana owns the practice"],
+    }]))
+    hana = db_session.query(Contact).filter(Contact.email == "hana@harbordental.com").one()
+    assert client.patch(f"/api/contacts/{hana.id}", json={"stage": "Interested"}).status_code == 200
+    db_session.refresh(hana)
+    assert hana.triaged is True
+
+
+def test_a_fact_on_an_ordinary_email_still_triages(db_session, client):
+    _post(client, {
+        "from_email": "dana@collaborative-av.com", "from_name": "Dana Reyes",
+        "direction": "inbound", "source_message_id": "<plain-fact@mail>",
+        "action_taken": "Dana walked through needs.",
+        "facts": ["Signs the lease herself"],
+    })
+    dana = db_session.query(Contact).filter(Contact.email == "dana@collaborative-av.com").one()
+    assert _facts_of(db_session, dana) == ["Signs the lease herself"]
+    assert dana.triaged is True
+    company = db_session.query(Company).filter(Company.id == dana.company_id).one()
+    assert company.triaged is True
+
+
+def test_companies_contract_holds_after_corrections_and_deal_facts(db_session, client):
+    _company(
+        db_session, "Contract Co", "CO-916",
+        current_headcount=42, headcount_growth_pct=12.5,
+        current_submarket="Tysons", opportunity_score=77.0, priority="HIGH",
+        lease_expiry_date=date.today() + timedelta(days=200),
+    )
+    _post(client, _roundup([{
+        "company_override": "Contract Co", "action_taken": "x", "facts": ["noted"],
+    }]))
+    entry = _primary_entries(db_session)[0]
+    other = _existing_contact(db_session, "CFO", "cfo@contractco.com")
+    client.patch(f"/api/activity/{entry.id}/assign", json={"contact_id": other.id})
+
+    row = next(
+        r for r in client.get("/api/companies/").json() if r["company_id"] == "CO-916"
+    )
+    assert row["company_id"] == "CO-916"
+    assert row["priority"] == "HIGH"
+    assert row["current_headcount"] == 42
+    assert row["headcount_growth_pct"] == 12.5
+    assert row["lease_expiry_months"] is not None
+    assert row["current_submarket"] == "Tysons"
+    assert row["opportunity_score"] == 77.0
+
+
+def test_ensure_schema_adds_deal_sourced_idempotently():
+    conn = sqlite3.connect(":memory:")
+    cur = conn.cursor()
+    cur.execute("CREATE TABLE activity_logs (id INTEGER PRIMARY KEY, log_date DATE)")
+    cur.execute("INSERT INTO activity_logs (id) VALUES (1)")
+    ensure_schema.ensure_activity_logs(cur)
+    assert ensure_schema._has_column(cur, "activity_logs", "deal_sourced")
+    assert ensure_schema.ensure_activity_logs(cur) == 0
+    # Existing rows backfill to "not from a deal".
+    cur.execute("SELECT deal_sourced FROM activity_logs WHERE id = 1")
+    assert cur.fetchone() == (0,)
+    conn.close()

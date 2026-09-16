@@ -288,6 +288,11 @@ def ensure_activity_logs(cur: sqlite3.Cursor) -> int:
     # correspondence or a hand entry, so NULL is the correct backfill.
     added += _add_activity_column(cur, "source_note", "TEXT")
 
+    # deal_sourced — written from a `deals` element. Defaults to 0, which
+    # backfills correctly: no row written before this column existed can be
+    # told apart as a deal entry, and the multi-deal build shipped days earlier.
+    added += _add_activity_column(cur, "deal_sourced", "BOOLEAN NOT NULL DEFAULT 0")
+
     # Indexes: the contact timeline filters on contact_id, the company timeline
     # on company_stamp_id, and the email automation's dedup on
     # source_message_id — none of which may degrade as entries accumulate.
