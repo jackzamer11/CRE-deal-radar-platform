@@ -12,10 +12,14 @@ from app.models.intel import (
     IntelSignal, IntelOpportunity, IntelFeedback, IntelCriterion,
     IntelActivityExtraction,
 )
+from app.models.email_ingest import (
+    ActivityAttachment, ContactAddressOverride, PendingCompanyUpdate,
+)
 
 __all__ = [
     "Property", "Company", "Opportunity", "ActivityLog", "Contact", "ContactFact",
     "TenantClassFeedback",
     "Observation", "Document", "Lease", "Submarket", "IntelSignal", "IntelOpportunity",
     "IntelFeedback", "IntelCriterion", "IntelActivityExtraction",
+    "ActivityAttachment", "ContactAddressOverride", "PendingCompanyUpdate",
 ]

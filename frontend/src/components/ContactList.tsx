@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
-  History, Mail, Phone, Plus, Search, TriangleAlert, Users, X,
+  Copy, History, Mail, Phone, Plus, Search, TriangleAlert, Users, X,
 } from 'lucide-react'
 import { createContact, getContacts, searchContacts } from '../api/client'
 import type {
@@ -161,6 +161,23 @@ function ContactRow({ row, onOpen }: { row: ContactListRow; onOpen: (id: number)
               {row.latest_entry_date ? `Last ${fmtDate(row.latest_entry_date)}` : 'No activity'}
             </span>
             <span>{row.entry_count} {row.entry_count === 1 ? 'entry' : 'entries'}</span>
+            {/* Copies are not correspondence. A person who has only ever been
+                on the Cc line reads as exactly that, never as active. */}
+            {row.copied_only ? (
+              <span
+                className="flex items-center gap-1 text-ink-muted/80"
+                title={
+                  `On the Cc line of ${row.copied_count} ` +
+                  `email${row.copied_count === 1 ? '' : 's'} — never written to directly.`
+                }
+              >
+                <Copy size={10} /> copied only
+              </span>
+            ) : row.copied_count > 0 && (
+              <span className="flex items-center gap-1">
+                <Copy size={10} /> {row.copied_count} copied
+              </span>
+            )}
             <span className="uppercase tracking-wider">{row.contact_type}</span>
           </div>
 

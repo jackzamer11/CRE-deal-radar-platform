@@ -1,5 +1,5 @@
 from datetime import datetime, date
-from sqlalchemy import Column, Integer, String, Float, Text, Date, DateTime, ForeignKey, text
+from sqlalchemy import Boolean, Column, Integer, String, Float, Text, Date, DateTime, ForeignKey, text
 from sqlalchemy.orm import relationship
 
 from app.database import Base
@@ -46,7 +46,36 @@ class ActivityLog(Base):
     # dedup. Indexed and unique — it lives here rather than in `notes` precisely
     # because `notes` is user-editable and editing one used to destroy the
     # marker, relogging the email on the next run.
+    #
+    # One email produces one row per participant (see `participation` below), so
+    # only the FIRST of them carries the bare provider id; the rest carry it
+    # suffixed with their contact id ("<id>#p12"). The unique index then still
+    # holds, and a re-POST of the same email is caught by the bare id before any
+    # row is written.
     source_message_id = Column(String, nullable=True, unique=True, index=True)
+
+    # The address this entry came from, as the mailbox reported it. Recorded so
+    # a correction can teach the resolver: when Jack moves an entry to a
+    # different contact, this is the address that gets mapped to that person
+    # (see models/email_ingest.ContactAddressOverride). Null on anything not
+    # ingested from email.
+    sender_email = Column(String, nullable=True, index=True)
+
+    # True when this person was only COPIED on the email rather than written to.
+    #
+    # Someone cc'd on ten emails has no relationship with Jack. A participation
+    # entry appears on their timeline as history and is visually distinct there,
+    # but it does not count toward last touch, days of silence, entry count or
+    # stage, and it never sets responded — their header must read "copied, never
+    # directly contacted", not "active". When they later reply, THAT entry is
+    # direct and everything updates from there, with the ten copies still
+    # visible behind it.
+    #
+    # Every read that means "real correspondence" filters this out with
+    # .isnot(True), which is null-safe for rows that pre-date the column.
+    participation = Column(
+        Boolean, nullable=False, default=False, server_default=text("0"),
+    )
 
     # What happened
     action_type = Column(String, nullable=False)  # CALL / EMAIL / MEETING / SIGNAL_UPDATE / RESEARCH / NOTE

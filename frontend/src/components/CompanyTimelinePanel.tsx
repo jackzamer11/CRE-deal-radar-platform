@@ -1,9 +1,13 @@
 import { useEffect, useState } from 'react'
 import {
-  ArrowDownLeft, ArrowUpRight, Building2, Mail, Phone, TriangleAlert, Users, X,
+  ArrowDownLeft, ArrowUpRight, Building2, Check, Mail, Phone, TriangleAlert,
+  Users, X,
 } from 'lucide-react'
-import { getCompanyTimeline } from '../api/client'
-import type { Channel, CompanyTimelinePage } from '../types'
+import {
+  acceptPendingUpdate, getCompanyTimeline, getPendingUpdates,
+  rejectPendingUpdate,
+} from '../api/client'
+import type { Channel, CompanyTimelinePage, PendingUpdate } from '../types'
 
 const CHANNEL_ICONS: Partial<Record<Channel, React.ElementType>> = {
   email: Mail, call: Phone, meeting: Users,
@@ -29,6 +33,7 @@ export default function CompanyTimelinePanel({
   const [page, setPage] = useState<CompanyTimelinePage | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [pending, setPending] = useState<PendingUpdate[]>([])
 
   const PAGE = 100
 
@@ -48,6 +53,28 @@ export default function CompanyTimelinePanel({
       limit: PAGE, offset: page.entries.length,
     })
     setPage({ ...next, entries: [...page.entries, ...next.entries] })
+  }
+
+  // Values an email stated about this company, waiting on Jack. Surfaced here
+  // as well as on the thread: the claim was made in one conversation, but it is
+  // the COMPANY record it would change, so it has to be answerable from both.
+  const loadPending = async (pk: number) => {
+    try {
+      setPending((await getPendingUpdates(pk)).updates)
+    } catch {
+      setPending([])   // never block the timeline on the confirmation panel
+    }
+  }
+
+  useEffect(() => {
+    if (page?.company_id) void loadPending(page.company_id)
+  }, [page?.company_id])
+
+  const resolve = async (upd: PendingUpdate, accept: boolean) => {
+    await (accept ? acceptPendingUpdate(upd.id) : rejectPendingUpdate(upd.id))
+    const fresh = await getCompanyTimeline(companyId, { limit: PAGE, offset: 0 })
+    setPage(fresh)
+    await loadPending(fresh.company_id)
   }
 
   return (
@@ -80,6 +107,45 @@ export default function CompanyTimelinePanel({
             <X size={16} />
           </button>
         </div>
+
+        {/* Stated in an email, not yet on the record. Both values side by side
+            with the sentence they came from — the same one-tap decision the
+            thread shows, because it is the same decision. */}
+        {pending.map(upd => (
+          <div
+            key={upd.id}
+            className="mb-3 bg-sky-500/5 border border-sky-500/30 rounded-lg p-3"
+          >
+            <p className="text-xs text-ink-primary">
+              <span className="font-bold">{upd.label}:</span>{' '}
+              record says <span className="font-semibold">{upd.current_value ?? 'unknown'}</span>,
+              their email said <span className="font-semibold text-sky-300">{upd.proposed_value}</span>
+              {upd.source_entry_date ? ` on ${fmtDate(upd.source_entry_date)}` : ''}.
+            </p>
+            {upd.source_sentence && (
+              <p className="text-[11px] text-ink-secondary italic mt-1.5 pl-2
+                            border-l-2 border-sky-500/30">
+                “{upd.source_sentence}”
+              </p>
+            )}
+            <div className="flex items-center gap-2 mt-2">
+              <button
+                onClick={() => resolve(upd, true)}
+                className="text-[10px] px-2.5 py-1 rounded bg-emerald-600 hover:bg-emerald-700
+                           text-white font-semibold flex items-center gap-1"
+              >
+                <Check size={10} /> Use theirs
+              </button>
+              <button
+                onClick={() => resolve(upd, false)}
+                className="text-[10px] px-2.5 py-1 rounded bg-surface-muted hover:bg-surface-border
+                           text-ink-secondary font-semibold flex items-center gap-1"
+              >
+                <X size={10} /> Keep record
+              </button>
+            </div>
+          </div>
+        ))}
 
         {loading ? (
           <div className="text-center py-12 text-ink-muted text-sm">Loading…</div>

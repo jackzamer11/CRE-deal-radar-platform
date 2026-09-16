@@ -45,6 +45,36 @@ class Settings(BaseSettings):
     # model (locked) and from the 5-field document pipeline's own model.
     LEASE_EXTRACTION_MODEL: str = "claude-opus-5"
 
+    # ── Email attachments ────────────────────────────────────────────────
+    # The ONE place the attachments folder is written down, exactly as
+    # LEASES_FOLDER above. ActivityAttachment stores a bare filename plus the
+    # year it was filed under; services/attachment_storage.py joins
+    # folder/<year>/<filename> at read time. Moving the folder is a one-setting
+    # change (or the DOCUMENTS_FOLDER env var), never a migration over stored
+    # rows — no absolute, machine-specific or user-specific path is ever
+    # written into a data column.
+    #
+    # Deliberately NOT the leases folder: a lease reaches Deal Radar only when
+    # Jack uploads the executed copy himself. An emailed attachment is draft
+    # eleven as often as it is the signed document, and the ingestion task
+    # cannot tell them apart — see services/attachment_storage.py.
+    DOCUMENTS_FOLDER: str = r"C:\Users\Jackz\OneDrive\Documents\Deal Radar\Attachments"
+
+    # ── Addresses Jack owns ──────────────────────────────────────────────
+    # An email ingested from Jack's own mailbox always has Jack on one side of
+    # it. He is not a contact in his own CRM, so these never resolve to one and
+    # never create a company: an entry whose only counterpart is Jack is left
+    # unattached rather than filed under a contact called "Jack Zamer".
+    #
+    # Comma-separated so both are overridable by env var without a code change.
+    # Two lists because they are not the same test: a domain Jack owns covers
+    # every address at it, while a free-mail address has to be matched exactly —
+    # blocklisting gmail.com would swallow every real contact who uses it.
+    OWN_EMAIL_DOMAINS: str = "z-reg.com,simpsondev.com"
+    OWN_EMAIL_ADDRESSES: str = (
+        "jzamer@z-reg.com,jzamer@simpsondev.com,jackzamer1@gmail.com"
+    )
+
     # Submarket reference data (avg asking $/SF for comps)
     submarket_avg_psf: dict = {
         "Arlington (Clarendon)": 310,

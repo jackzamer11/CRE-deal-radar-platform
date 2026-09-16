@@ -20,7 +20,11 @@ from app.models.company import Company
 from app.models.contact import (
     Contact, ContactFact, CLOSED_STAGE, CONTACT_STAGES, CONTACT_TYPES,
 )
+from app.models.email_ingest import ActivityAttachment
+from app.services.attachment_storage import attachment_file_exists
+from app.api.routes.pending_updates import pending_updates_for_company
 from app.schemas.company import months_until_lease_expiry
+from app.schemas.pending_update import PendingUpdateOut
 from app.services.contact_service import (
     STAGE_CHANGE_ACTION, active_facts, apply_closed_stage_bookkeeping,
     create_fact, mark_engaged, normalize_email, record_stage_change,
@@ -114,7 +118,12 @@ class ContactListRow(BaseModel):
     lease_expiry_months: Optional[int] = None
     company_id: Optional[int] = None
     company_name: Optional[str] = None
+    # Real correspondence only. A copied recipient counts toward copied_count
+    # instead, and copied_only says the two add up to "on the Cc line, never
+    # written to" — which is what their row has to read as.
     entry_count: int = 0
+    copied_count: int = 0
+    copied_only: bool = False
     latest_entry_date: Optional[date] = None
     latest_entry_summary: Optional[str] = None
     latest_entry_channel: Optional[str] = None
@@ -128,6 +137,25 @@ class FactOut(BaseModel):
     learned_date: date
     superseded_by_id: Optional[int] = None
     is_active: bool = True
+
+    class Config:
+        from_attributes = True
+
+
+class TimelineAttachment(BaseModel):
+    """One file that arrived on an ingested email.
+
+    file_name plus the year is all the database holds; the absolute path is
+    resolved from settings.DOCUMENTS_FOLDER at read time. `missing` says the
+    file is not where it should be, so the UI can say so plainly instead of
+    offering a link that does nothing.
+    """
+    id: int
+    file_name: str
+    stored_year: int
+    description: Optional[str] = None
+    saved_date: Optional[date] = None
+    missing: bool = False
 
     class Config:
         from_attributes = True
@@ -149,6 +177,12 @@ class TimelineEntry(BaseModel):
     channel: Optional[str] = "other"
     outreach_type: Optional[str] = None
     subject: Optional[str] = None
+    # True when this person was only copied. Rendered distinctly — it is
+    # history on their thread, not correspondence with them.
+    participation: Optional[bool] = False
+    # Files that arrived on the email. Filename and description only; the path
+    # is resolved from settings at read time, never stored.
+    attachments: List["TimelineAttachment"] = []
     # Set only on a STAGE_CHANGE row — the transition the divider renders.
     stage_from: Optional[str] = None
     stage_to: Optional[str] = None
@@ -200,6 +234,12 @@ class ThreadHeader(BaseModel):
     days_of_silence: Optional[int] = None
     open_loop: Optional[str] = None
     entry_count: int = 0
+    # Emails this person was only copied on. They are on the timeline as
+    # history and count toward nothing; copied_only means every entry on the
+    # thread is one of these, which the header renders as "copied, never
+    # directly contacted".
+    copied_count: int = 0
+    copied_only: bool = False
     # Slot 2 — two lines of prose, each with the entry it came from
     relationship_lines: List[dict] = []
     facts: List[FactOut] = []
@@ -227,6 +267,10 @@ class ThreadHeader(BaseModel):
     past_client_reentry: bool = False
     has_data_conflict: bool = False
     conflicts: List[ConflictOut] = []
+    # Values an email stated about this company, awaiting Jack's call. Same
+    # shape and the same panel as `conflicts` above — both values side by side
+    # with where the claim came from — because they are the same decision.
+    pending_updates: List[PendingUpdateOut] = []
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -668,6 +712,12 @@ def list_contacts(
     # Stage-change dividers are excluded throughout: entry count means real
     # touches, and a row reading "Stage: Sent -> Replied" is not the last thing
     # that happened with this person.
+    #
+    # Participation entries are excluded for the same reason: someone copied on
+    # ten emails has no relationship with Jack, and a row that counted them
+    # would put "last touch: yesterday" on a person he has never written to.
+    # The count of them is selected separately so the row can still say
+    # "copied, never directly contacted" rather than showing an empty thread.
     counts = (
         db.query(
             ActivityLog.contact_id.label("cid"),
@@ -677,6 +727,22 @@ def list_contacts(
         .filter(
             ActivityLog.contact_id.isnot(None),
             ActivityLog.action_type != STAGE_CHANGE_ACTION,
+            # .isnot(True) rather than .is_(False): null-safe for rows written
+            # before the column existed.
+            ActivityLog.participation.isnot(True),
+        )
+        .group_by(ActivityLog.contact_id)
+        .subquery()
+    )
+
+    copied = (
+        db.query(
+            ActivityLog.contact_id.label("cid"),
+            func.count(ActivityLog.id).label("copied_count"),
+        )
+        .filter(
+            ActivityLog.contact_id.isnot(None),
+            ActivityLog.participation.is_(True),
         )
         .group_by(ActivityLog.contact_id)
         .subquery()
@@ -693,9 +759,11 @@ def list_contacts(
             Company.lease_expiry_months.label("company_lease_expiry_months"),
             func.coalesce(counts.c.entry_count, 0).label("entry_count"),
             counts.c.latest_date.label("latest_date"),
+            func.coalesce(copied.c.copied_count, 0).label("copied_count"),
         )
         .outerjoin(Company, Company.id == Contact.company_id)
         .outerjoin(counts, counts.c.cid == Contact.id)
+        .outerjoin(copied, copied.c.cid == Contact.id)
     )
 
     if contact_type:
@@ -755,6 +823,7 @@ def list_contacts(
             .filter(
                 ActivityLog.contact_id.in_(contact_ids),
                 ActivityLog.action_type != STAGE_CHANGE_ACTION,
+                ActivityLog.participation.isnot(True),
             )
             .order_by(ActivityLog.log_date.desc(), ActivityLog.id.desc())
             .all()
@@ -764,6 +833,7 @@ def list_contacts(
     out: List[ContactListRow] = []
     for (
         contact, company_name, expiry_date, expiry_months, entry_count, latest_date,
+        copied_count,
     ) in rows:
         latest = latest_text.get(contact.id)
         ntd = contact.next_touch_date
@@ -792,6 +862,8 @@ def list_contacts(
             company_id=contact.company_id,
             company_name=company_name,
             entry_count=int(entry_count or 0),
+            copied_count=int(copied_count or 0),
+            copied_only=bool(copied_count) and not int(entry_count or 0),
             latest_entry_date=latest_date,
             latest_entry_summary=(latest.action_taken if latest else None),
             latest_entry_channel=(latest.channel if latest else None),
@@ -884,16 +956,32 @@ def get_contact(contact_id: int, db: Session = Depends(get_db)):
     # Real touches only. A stage change has no direction and no channel, so
     # letting one in here produced "Awaiting their reply" off the back of a
     # pill click and counted six clicks as six entries.
+    #
+    # Participation entries are excluded here too. Someone copied on ten emails
+    # has no relationship with Jack: counting those would give them a last
+    # touch, a silence clock and an open loop off correspondence that was never
+    # addressed to them. Their header has to read "copied, never directly
+    # contacted", which is what copied_only below says. The copies are still on
+    # their timeline as history — see /timeline, which includes them.
     entries = (
         db.query(ActivityLog)
         .filter(
             ActivityLog.contact_id == contact_id,
             ActivityLog.action_type != STAGE_CHANGE_ACTION,
+            ActivityLog.participation.isnot(True),
         )
         .order_by(ActivityLog.log_date.desc(), ActivityLog.id.desc())
         .all()
     )
     latest = entries[0] if entries else None
+    copied_count = (
+        db.query(func.count(ActivityLog.id))
+        .filter(
+            ActivityLog.contact_id == contact_id,
+            ActivityLog.participation.is_(True),
+        )
+        .scalar()
+    ) or 0
 
     # The open loop: what Jack owes them, or what they owe Jack — derived from
     # the NEWEST real entry and nothing else.
@@ -941,6 +1029,8 @@ def get_contact(contact_id: int, db: Session = Depends(get_db)):
         days_of_silence=_days_between(latest.log_date) if latest else None,
         open_loop=open_loop,
         entry_count=len(entries),
+        copied_count=int(copied_count),
+        copied_only=bool(copied_count) and not entries,
         relationship_lines=relationship_lines,
         facts=[FactOut.model_validate(f) for f in facts],
         company_name=company.name if company else None,
@@ -968,6 +1058,9 @@ def get_contact(contact_id: int, db: Session = Depends(get_db)):
         past_client_reentry=_is_past_client_reentry(contact, months),
         has_data_conflict=bool(company.has_data_conflict) if company else False,
         conflicts=conflicts,
+        pending_updates=pending_updates_for_company(
+            db, company.id if company else None,
+        ),
     )
 
 
@@ -1204,11 +1297,28 @@ def contact_timeline(
         .limit(max(1, limit))
         .all()
     )
+    # Attachments for the whole page in ONE query, never one per entry — a
+    # thread with fifty attachments must cost the same as a thread with one.
+    attachments_by_entry: dict = {}
+    page_ids = [log.id for log in rows]
+    if page_ids:
+        for att in (
+            db.query(ActivityAttachment)
+            .filter(ActivityAttachment.activity_log_id.in_(page_ids))
+            .order_by(ActivityAttachment.id.asc())
+            .all()
+        ):
+            item = TimelineAttachment.model_validate(att)
+            item.missing = not attachment_file_exists(att.file_name, att.stored_year)
+            attachments_by_entry.setdefault(att.activity_log_id, []).append(item)
+
     entries = []
     for log in rows:
         item = TimelineEntry.model_validate(log)
+        item.participation = bool(log.participation)
         if log.stamped_company is not None:
             item.company_stamp_name = log.stamped_company.name
+        item.attachments = attachments_by_entry.get(log.id, [])
         entries.append(item)
     return TimelinePage(
         total=total, limit=limit, offset=offset, entries=entries,
