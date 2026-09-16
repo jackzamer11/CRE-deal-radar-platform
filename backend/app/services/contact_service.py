@@ -12,7 +12,7 @@ Design rules enforced here rather than in the routes:
     writer, and it collapses a burst of clicks into the net move.
 """
 from datetime import date, datetime, timedelta
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from sqlalchemy import null
 from sqlalchemy.orm import Session
@@ -412,27 +412,65 @@ def resolve_company_by_name(
     raw = (name or "").strip()
     if not raw:
         return None, False
+    return resolve_companies_by_names(db, [raw])[raw]
 
-    target = _normalize_company_name(raw)
-    if target:
-        for cand in db.query(Company).filter(Company.name.isnot(None)).all():
-            cand_norm = _normalize_company_name(cand.name)
-            if not cand_norm:
-                continue
-            if cand_norm == target or target in cand_norm or cand_norm in target:
-                return cand, False
 
-    company = Company(
-        company_id=_next_company_id(db),
-        name=raw,
-        industry="Unknown",
-        auto_created=True,
-        triaged=False,
-        company_type=None,   # no guess — Jack sets it
-    )
-    db.add(company)
-    db.flush()
-    return company, True
+def resolve_companies_by_names(
+    db: Session, names: List[str],
+) -> Dict[str, Tuple[Company, bool]]:
+    """Resolve (or create) several companies by name in ONE pass.
+
+    Returns {stripped name: (company, created)}; blank names are omitted. The
+    company table is read once however many names are asked for — a weekly
+    roundup naming ten tenants must not cost ten full scans.
+
+    Names are resolved in order, and a company created for an earlier name is
+    a candidate for a later one, so "Scott Management" and "Scott Management
+    LLC" in the same email land on one record rather than two.
+    """
+    wanted = []
+    for name in names:
+        raw = (name or "").strip()
+        if raw and raw not in wanted:
+            wanted.append(raw)
+    if not wanted:
+        return {}
+
+    candidates = [
+        (cand, _normalize_company_name(cand.name))
+        for cand in db.query(Company).filter(Company.name.isnot(None)).all()
+    ]
+
+    resolved: Dict[str, Tuple[Company, bool]] = {}
+    created_ids = set()
+    for raw in wanted:
+        target = _normalize_company_name(raw)
+        match = None
+        if target:
+            for cand, cand_norm in candidates:
+                if not cand_norm:
+                    continue
+                if cand_norm == target or target in cand_norm or cand_norm in target:
+                    match = cand
+                    break
+        if match is not None:
+            resolved[raw] = (match, id(match) in created_ids)
+            continue
+
+        company = Company(
+            company_id=_next_company_id(db),
+            name=raw,
+            industry="Unknown",
+            auto_created=True,
+            triaged=False,
+            company_type=None,   # no guess — Jack sets it
+        )
+        db.add(company)
+        db.flush()
+        created_ids.add(id(company))
+        candidates.append((company, _normalize_company_name(raw)))
+        resolved[raw] = (company, True)
+    return resolved
 
 
 def _next_company_id(db: Session) -> str:

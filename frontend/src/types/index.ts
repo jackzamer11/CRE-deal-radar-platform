@@ -364,6 +364,9 @@ export interface ActivityLog {
   direction: Direction | null
   channel: Channel | null
   source_message_id: string | null
+  // Where a split entry came from — a multi-deal email such as a weekly
+  // leasing roundup. Null on direct correspondence and hand entries.
+  source_note?: string | null
   // Discovery capture — displayed only; nothing consumes these.
   disc_current_rent_psf: number | null
   disc_current_sf: number | null
@@ -485,6 +488,8 @@ export interface TimelineEntry {
   // True when this person was only copied on the email. Rendered distinctly —
   // it is history on their thread, not correspondence with them.
   participation: boolean
+  // Set when the entry was split out of a multi-deal email.
+  source_note?: string | null
   attachments: TimelineAttachment[]
 }
 
@@ -540,6 +545,7 @@ export interface CompanyTimelineEntry {
   channel: Channel | null
   outreach_type: string | null
   subject: string | null
+  source_note?: string | null
 }
 
 export interface CompanyTimelinePage {

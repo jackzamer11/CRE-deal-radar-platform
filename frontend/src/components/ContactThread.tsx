@@ -1019,6 +1019,11 @@ function ThreadEntry({
       ) : (
         <>
           <p className="text-xs text-ink-secondary">{entry.action_taken}</p>
+          {entry.source_note && (
+            /* Subordinate to the summary: it says where the entry came from
+               (a weekly roundup), not what happened. */
+            <p className="text-[10px] text-ink-muted mt-0.5 italic">{entry.source_note}</p>
+          )}
           {entry.outcome && <p className="text-xs text-ink-muted mt-1">→ {entry.outcome}</p>}
           {entry.follow_up_action && (
             <p className="text-xs text-amber-400 mt-1">↻ {entry.follow_up_action}</p>

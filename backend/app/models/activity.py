@@ -47,6 +47,10 @@ class ActivityLog(Base):
     # because `notes` is user-editable and editing one used to destroy the
     # marker, relogging the email on the next run.
     #
+    # One email carrying several deals (a weekly leasing roundup) produces one
+    # entry per deal. The first deal keeps the bare id; the rest carry "<id>#d2",
+    # "<id>#d3"... and their participant rows suffix that again ("<id>#d2#p12").
+    #
     # One email produces one row per participant (see `participation` below), so
     # only the FIRST of them carries the bare provider id; the rest carry it
     # suffixed with their contact id ("<id>#p12"). The unique index then still
@@ -125,6 +129,13 @@ class ActivityLog(Base):
     disc_decision_timeline  = Column(Text,    nullable=True)
     disc_buildout_needs     = Column(Text,    nullable=True)
     disc_decision_maker     = Column(Text,    nullable=True)
+
+    # Where a split entry came from, when one email carried several deals —
+    # "From Ann Waller's leasing notes, September 15, 2026." A Scott Management
+    # entry on Scott Management's timeline must read as arriving in a weekly
+    # roundup, not in direct correspondence about that deal. Null on everything
+    # else. Display text only: nothing scores off it, no prompt reads it.
+    source_note = Column(Text, nullable=True)
 
     # Meta
     created_by = Column(String, default="system")

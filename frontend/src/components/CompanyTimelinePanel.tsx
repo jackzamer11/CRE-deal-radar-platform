@@ -192,6 +192,10 @@ export default function CompanyTimelinePanel({
                     )}
                   </div>
                   <p className="text-xs text-ink-secondary">{e.action_taken}</p>
+                  {e.source_note && (
+                    /* Arrived in a roundup, not direct correspondence about this deal. */
+                    <p className="text-[10px] text-ink-muted mt-0.5 italic">{e.source_note}</p>
+                  )}
                   {e.outcome && <p className="text-xs text-ink-muted mt-1">→ {e.outcome}</p>}
                   {e.notes && <p className="text-[11px] text-ink-muted mt-1 italic">{e.notes}</p>}
                 </div>

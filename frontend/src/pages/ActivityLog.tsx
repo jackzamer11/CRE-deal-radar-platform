@@ -411,6 +411,9 @@ const LogRow = memo(function LogRow({
         ) : (
         <>
         <p className="text-xs text-ink-secondary mt-0.5">{log.action_taken}</p>
+        {log.source_note && (
+          <p className="text-[10px] text-ink-muted mt-0.5 italic">{log.source_note}</p>
+        )}
         {log.outreach_type && (
           <div className="mt-1">
             <OutreachTypeBadge outreachType={log.outreach_type} />

@@ -283,6 +283,11 @@ def ensure_activity_logs(cur: sqlite3.Cursor) -> int:
     added += _add_activity_column(cur, "disc_buildout_needs",    "TEXT")
     added += _add_activity_column(cur, "disc_decision_maker",    "TEXT")
 
+    # source_note — where a split entry came from when one email carried
+    # several deals. Nullable, no default: every existing row came from direct
+    # correspondence or a hand entry, so NULL is the correct backfill.
+    added += _add_activity_column(cur, "source_note", "TEXT")
+
     # Indexes: the contact timeline filters on contact_id, the company timeline
     # on company_stamp_id, and the email automation's dedup on
     # source_message_id — none of which may degrade as entries accumulate.
