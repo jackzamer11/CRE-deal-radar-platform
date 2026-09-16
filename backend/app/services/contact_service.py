@@ -398,6 +398,43 @@ def resolve_company_for_email(
     return company, True
 
 
+def resolve_company_by_name(
+    db: Session, name: Optional[str],
+) -> Tuple[Optional[Company], bool]:
+    """Resolve (or create) a company by the name an email named it by.
+
+    Returns (company, created). Used when an email is clearly ABOUT a company
+    that is not the sender's employer — a broker writing about their client.
+    Matching is the same loose comparison resolve_company_for_email() uses, so
+    "Collaborative AV, LLC" finds the hand-entered "Collaborative AV" instead of
+    creating a rival record.
+    """
+    raw = (name or "").strip()
+    if not raw:
+        return None, False
+
+    target = _normalize_company_name(raw)
+    if target:
+        for cand in db.query(Company).filter(Company.name.isnot(None)).all():
+            cand_norm = _normalize_company_name(cand.name)
+            if not cand_norm:
+                continue
+            if cand_norm == target or target in cand_norm or cand_norm in target:
+                return cand, False
+
+    company = Company(
+        company_id=_next_company_id(db),
+        name=raw,
+        industry="Unknown",
+        auto_created=True,
+        triaged=False,
+        company_type=None,   # no guess — Jack sets it
+    )
+    db.add(company)
+    db.flush()
+    return company, True
+
+
 def _next_company_id(db: Session) -> str:
     """Next CO-nnn business key. Companies are keyed by this string externally."""
     from sqlalchemy import func

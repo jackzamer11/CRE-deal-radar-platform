@@ -164,6 +164,15 @@ class Company(Base):
     current_address_source     = Column(String, nullable=True)
     current_sf_occupied_source = Column(String, nullable=True)
 
+    # Where the headcount and growth figures came from. Null on every existing
+    # record, which is what keeps the CoStar import behaving exactly as it did:
+    # the guard only fires on a value marked "conversation" (something someone
+    # said in an email, accepted by Jack) or "manual". A number Jack accepted
+    # off a conversation must survive the next import — he already made the
+    # call on it.
+    current_headcount_source     = Column(String, nullable=True)
+    headcount_growth_pct_source  = Column(String, nullable=True)
+
     # Set when Jack rejects a claim. A tenant who believes their lease ends a
     # year later than the record is itself a lead — a renewal option, a
     # sublease, a phased expiry — so the disagreement is surfaced, not discarded.

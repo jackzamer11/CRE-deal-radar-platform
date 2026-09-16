@@ -457,6 +457,7 @@ function AllActivityFeed() {
   const [loading, setLoading] = useState(true)
   const [showForm, setShowForm] = useState(false)
   const [stageFilter, setStageFilter] = useState<'All' | ActivityStage>('All')
+  const [query, setQuery] = useState('')
   const [highlightId, setHighlightId] = useState<number | null>(null)
   const [editingId, setEditingId] = useState<number | null>(null)
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE)
@@ -467,17 +468,27 @@ function AllActivityFeed() {
   const logsRef = useRef<ActivityLog[]>([])
   useEffect(() => { logsRef.current = logs }, [logs])
 
+  // Search runs on the SERVER, not over the loaded page. It has to reach the
+  // linked contact and company names, which are not in the rows' prose:
+  // summaries are written cleanly now, with the person and the company as
+  // structured links, so a client-side filter over action_taken would return
+  // nothing for "Corcoran" while nine entries sat linked to them.
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const data = await getActivity({ limit: 1000 })
+      const term = query.trim()
+      const data = await getActivity({ limit: 1000, ...(term ? { q: term } : {}) })
       setLogs(data)
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [query])
 
-  useEffect(() => { load() }, [load])
+  // Debounced so typing does not fire a request per keystroke.
+  useEffect(() => {
+    const t = setTimeout(() => { void load() }, query.trim() ? 250 : 0)
+    return () => clearTimeout(t)
+  }, [load, query])
 
   // Deep link: /activity?focus=<id> scrolls to and highlights that entry.
   useEffect(() => {
@@ -620,6 +631,30 @@ function AllActivityFeed() {
         </button>
       </div>
 
+      {/* Search. Matches the entry's own prose AND the names of the contact and
+          company linked to it — entries no longer repeat those in the summary,
+          so prose-only search would miss most of them. */}
+      <div className="relative mb-3">
+        <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-ink-muted" />
+        <input
+          value={query}
+          onChange={e => { setQuery(e.target.value); setVisibleCount(PAGE_SIZE) }}
+          placeholder="Search entries, contacts and companies…"
+          className="w-full bg-surface-card border border-surface-border rounded-lg
+                     pl-9 pr-8 py-2 text-xs text-ink-primary placeholder:text-ink-muted
+                     focus:outline-none focus:border-accent-blue/50"
+        />
+        {query && (
+          <button
+            onClick={() => { setQuery(''); setVisibleCount(PAGE_SIZE) }}
+            className="absolute right-3 top-1/2 -translate-y-1/2 text-ink-muted hover:text-red-400"
+            title="Clear search"
+          >
+            <X size={13} />
+          </button>
+        )}
+      </div>
+
       {/* Stage filter bar */}
       <div className="flex items-center gap-1.5 mb-5 flex-wrap">
         {(['All', ...STAGES] as const).map(opt => {
@@ -651,8 +686,14 @@ function AllActivityFeed() {
       ) : displayedLogs.length === 0 ? (
         <div className="text-center py-12 text-ink-muted">
           <ClipboardList size={32} className="mx-auto mb-3 opacity-30" />
-          <p className="text-sm">{stageFilter === 'All' ? 'No activity logged yet.' : `No entries in "${stageFilter}".`}</p>
-          {stageFilter === 'All' && (
+          <p className="text-sm">
+            {query.trim()
+              ? `Nothing matches "${query.trim()}".`
+              : stageFilter === 'All'
+                ? 'No activity logged yet.'
+                : `No entries in "${stageFilter}".`}
+          </p>
+          {stageFilter === 'All' && !query.trim() && (
             <p className="text-xs mt-1 text-ink-muted">Log calls, emails, and meetings to track your deal progress.</p>
           )}
         </div>

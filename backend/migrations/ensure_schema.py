@@ -266,6 +266,15 @@ def ensure_activity_logs(cur: sqlite3.Cursor) -> int:
     except sqlite3.OperationalError as exc:
         print(f"  ! activity_logs stage_from/stage_to add skipped: {exc}")
 
+    # ── Email ingestion ───────────────────────────────────────────────────────
+    # participation — this person was only COPIED on the email. Defaults to 0,
+    # which backfills every existing row correctly: nothing written before this
+    # column existed was a cc.
+    # sender_email — the address the entry came from, so a reassignment can
+    # teach the resolver which contact that address belongs to.
+    added += _add_activity_column(cur, "participation", "BOOLEAN NOT NULL DEFAULT 0")
+    added += _add_activity_column(cur, "sender_email", "TEXT")
+
     # Discovery capture — inert this build, nothing reads them.
     added += _add_activity_column(cur, "disc_current_rent_psf",  "REAL")
     added += _add_activity_column(cur, "disc_current_sf",        "INTEGER")
@@ -291,6 +300,14 @@ def ensure_activity_logs(cur: sqlite3.Cursor) -> int:
         # read, so the filter is indexed rather than scanned.
         "CREATE INDEX IF NOT EXISTS ix_activity_logs_action_type "
         "ON activity_logs (action_type)",
+        # Every "real correspondence" read (contact list counts, thread header,
+        # last touch) filters participation out, so the filter is indexed
+        # rather than scanned as copied entries accumulate.
+        "CREATE INDEX IF NOT EXISTS ix_activity_logs_participation "
+        "ON activity_logs (participation)",
+        # The resolver looks a sender address up on every ingested email.
+        "CREATE INDEX IF NOT EXISTS ix_activity_logs_sender_email "
+        "ON activity_logs (sender_email)",
     ):
         try:
             cur.execute(stmt)
@@ -869,9 +886,16 @@ def ensure_companies(cur: sqlite3.Cursor) -> int:
     # The single-lease columns (lease_file_name, lease_uploaded_at,
     # lease_extraction_json) are no longer added: leases live in their own
     # table, and migrate_company_leases_to_table() moves any old values there.
+    #
+    # The headcount and growth markers join them for the conversation source:
+    # a number Jack ACCEPTED off something someone said in an email must
+    # survive the next CoStar import. NULL on every existing row, which is
+    # exactly what keeps the import behaving as it always has.
     for _col, _def in (
-        ("current_address_source",     "TEXT"),
-        ("current_sf_occupied_source", "TEXT"),
+        ("current_address_source",       "TEXT"),
+        ("current_sf_occupied_source",   "TEXT"),
+        ("current_headcount_source",     "TEXT"),
+        ("headcount_growth_pct_source",  "TEXT"),
     ):
         try:
             added += _add_column(cur, "companies", _col, _def)
@@ -933,6 +957,135 @@ def ensure_companies(cur: sqlite3.Cursor) -> int:
                 )
     except Exception as _exc:
         print(f"  ! companies.current_sf_occupied add/backfill skipped: {_exc}")
+
+    return added
+
+
+def ensure_email_ingest_tables(cur: sqlite3.Cursor) -> int:
+    """Create the three tables the email ingestion path writes (idempotent).
+
+    Mirrors models/email_ingest.py:
+
+      pending_company_updates   — a value an email STATED about a company,
+                                  queued for Jack rather than written.
+      activity_attachments      — file_name + the YEAR it was filed under. Never
+                                  a path: settings.DOCUMENTS_FOLDER is joined at
+                                  read time, exactly as leases work, so nothing
+                                  machine- or user-specific reaches a column.
+      contact_address_overrides — an address Jack has taught the resolver to
+                                  file under a particular contact.
+
+    Foreign keys are declared inline on CREATE (allowed) but never added by
+    ALTER (forbidden in SQLite) — the same rule the activity_logs columns
+    follow. Each block is guarded so a re-run adds only what is missing.
+    """
+    added = 0
+
+    if not _table_exists(cur, "pending_company_updates"):
+        cur.execute("""
+            CREATE TABLE pending_company_updates (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id      INTEGER NOT NULL REFERENCES companies(id),
+                field           TEXT    NOT NULL,
+                proposed_value  TEXT    NOT NULL,
+                current_value   TEXT,
+                source_sentence TEXT,
+                source_entry_id INTEGER,
+                status          TEXT    NOT NULL DEFAULT 'pending',
+                created_at      DATETIME,
+                resolved_at     DATETIME
+            )
+        """)
+        print("  + created table pending_company_updates")
+        added += 1
+    else:
+        for col, col_def in (
+            ("current_value",   "TEXT"),
+            ("source_sentence", "TEXT"),
+            ("source_entry_id", "INTEGER"),
+            ("status",          "TEXT NOT NULL DEFAULT 'pending'"),
+            ("created_at",      "DATETIME"),
+            ("resolved_at",     "DATETIME"),
+        ):
+            try:
+                added += _add_column(cur, "pending_company_updates", col, col_def)
+            except sqlite3.OperationalError as exc:
+                print(f"  ! pending_company_updates.{col} add skipped: {exc}")
+
+    for stmt in (
+        # The digest counts pending rows on every run, and the thread header
+        # reads one company's — both indexed rather than scanned.
+        "CREATE INDEX IF NOT EXISTS ix_pending_company_updates_company "
+        "ON pending_company_updates (company_id)",
+        "CREATE INDEX IF NOT EXISTS ix_pending_company_updates_status "
+        "ON pending_company_updates (status)",
+    ):
+        try:
+            cur.execute(stmt)
+        except sqlite3.OperationalError as exc:
+            print(f"  ! pending_company_updates index skipped: {exc}")
+
+    if not _table_exists(cur, "activity_attachments"):
+        # AUTOINCREMENT: an attachment id sits in a file URL, and a recycled id
+        # would open a different company's document.
+        cur.execute("""
+            CREATE TABLE activity_attachments (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                activity_log_id INTEGER NOT NULL REFERENCES activity_logs(id),
+                file_name       TEXT    NOT NULL,
+                stored_year     INTEGER NOT NULL,
+                description     TEXT,
+                saved_date      DATE    NOT NULL,
+                created_at      DATETIME
+            )
+        """)
+        print("  + created table activity_attachments")
+        added += 1
+    else:
+        for col, col_def in (
+            ("description", "TEXT"),
+            ("created_at",  "DATETIME"),
+        ):
+            try:
+                added += _add_column(cur, "activity_attachments", col, col_def)
+            except sqlite3.OperationalError as exc:
+                print(f"  ! activity_attachments.{col} add skipped: {exc}")
+
+    try:
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS ix_activity_attachments_log "
+            "ON activity_attachments (activity_log_id)"
+        )
+    except sqlite3.OperationalError as exc:
+        print(f"  ! activity_attachments index skipped: {exc}")
+
+    if not _table_exists(cur, "contact_address_overrides"):
+        cur.execute("""
+            CREATE TABLE contact_address_overrides (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                email           TEXT    NOT NULL,
+                contact_id      INTEGER NOT NULL REFERENCES contacts(id),
+                source_entry_id INTEGER,
+                created_at      DATETIME,
+                updated_at      DATETIME
+            )
+        """)
+        print("  + created table contact_address_overrides")
+        added += 1
+
+    for stmt in (
+        # UNIQUE: one address maps to one person. A later correction updates the
+        # row rather than adding a rival mapping the resolver would have to
+        # choose between.
+        "CREATE UNIQUE INDEX IF NOT EXISTS ix_contact_address_overrides_email "
+        "ON contact_address_overrides (email)",
+        "CREATE INDEX IF NOT EXISTS ix_contact_address_overrides_contact "
+        "ON contact_address_overrides (contact_id)",
+    ):
+        try:
+            cur.execute(stmt)
+        except sqlite3.OperationalError as exc:
+            print(f"  ! contact_address_overrides index skipped: {exc}")
 
     return added
 
@@ -1280,7 +1433,8 @@ def run() -> None:
     # Each guarded so a failure here never aborts startup; a failed step rolls
     # back its own partial work.
     lease_added = 0
-    for _step in (ensure_leases_table, migrate_company_leases_to_table, ensure_submarkets_table):
+    for _step in (ensure_leases_table, migrate_company_leases_to_table,
+                  ensure_submarkets_table, ensure_email_ingest_tables):
         try:
             lease_added += _step(cur)
             conn.commit()

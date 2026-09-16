@@ -1,18 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   ArrowLeft, ArrowDownLeft, ArrowUpRight, Building2, Check, ChevronDown,
-  ChevronRight, Clock, History, Mail, Pencil, Phone, Plus, Trash2,
-  TriangleAlert, Users, UserRound, X,
+  ChevronRight, Clock, Copy, FileText, History, Mail, Paperclip, Pencil, Phone,
+  Plus, Trash2, TriangleAlert, Users, UserRound, X,
 } from 'lucide-react'
 import {
-  acceptConflict, addContactFact, createActivity, deleteContact,
-  deleteContactFact, editContactFact, getContactThread, getContactTimeline,
-  rejectConflict, restampActivity, assignActivity, searchCompanies,
-  searchContacts, updateContact,
+  acceptConflict, acceptPendingUpdate, addContactFact, createActivity,
+  deleteContact, deleteContactFact, editContactFact, getContactThread,
+  getContactTimeline, rejectConflict, rejectPendingUpdate, restampActivity,
+  assignActivity, searchCompanies, searchContacts, updateContact,
 } from '../api/client'
 import type {
   ActivityStage, Channel, Contact, ContactFact, ContactType, DataConflict,
-  ThreadHeader, TimelineEntry,
+  PendingUpdate, ThreadHeader, TimelineEntry,
 } from '../types'
 import {
   CHANNELS, CLOSED_STAGE, CONTACT_STAGES, CONTACT_TYPE_LABELS,
@@ -407,6 +407,29 @@ function WhereWeAre({
             {plural(header.days_of_silence, 'day')} of silence
           </span>
         )}
+        {/* Someone copied on ten emails has no relationship with Jack. This
+            header has to say so plainly rather than read as an active thread
+            with a last touch and a silence clock. */}
+        {header.copied_only && (
+          <span
+            className="text-[10px] px-2 py-0.5 rounded border font-semibold
+                       bg-surface-muted text-ink-secondary border-ink-muted/40
+                       flex items-center gap-1"
+            title={
+              `On the Cc line of ${header.copied_count} ` +
+              `email${header.copied_count === 1 ? '' : 's'} — never written to ` +
+              `directly. A reply from them starts the relationship.`
+            }
+          >
+            <Copy size={10} /> Copied, never directly contacted
+          </span>
+        )}
+        {!header.copied_only && header.copied_count > 0 && (
+          <span className="text-[11px] text-ink-muted flex items-center gap-1">
+            <Copy size={11} />
+            {header.copied_count} copied
+          </span>
+        )}
       </div>
 
       {/* A placed tenant whose lease has come back around. This is the line
@@ -669,11 +692,14 @@ function RelationshipContext({
 
 // ── Slot 3 — Deal context ────────────────────────────────────────────────────
 function DealContext({
-  header, onAccept, onReject, onOpenCompany, onLeaseConfirmed,
+  header, onAccept, onReject, onAcceptUpdate, onRejectUpdate,
+  onOpenCompany, onLeaseConfirmed,
 }: {
   header: ThreadHeader
   onAccept: (c: DataConflict) => void
   onReject: (c: DataConflict) => void
+  onAcceptUpdate: (u: PendingUpdate) => void
+  onRejectUpdate: (u: PendingUpdate) => void
   onOpenCompany: () => void
   onLeaseConfirmed: () => void
 }) {
@@ -752,6 +778,45 @@ function DealContext({
             </button>
             <button
               onClick={() => onReject(conf)}
+              className="text-[10px] px-2.5 py-1 rounded bg-surface-muted hover:bg-surface-border
+                         text-ink-secondary font-semibold flex items-center gap-1"
+            >
+              <X size={10} /> Keep record
+            </button>
+          </div>
+        </div>
+      ))}
+
+      {/* The same decision as a conflict above, from written correspondence:
+          both values side by side with the sentence it came from. The sentence
+          is what makes it answerable — "they said 40" is not reviewable. */}
+      {header.pending_updates.map(upd => (
+        <div
+          key={upd.id}
+          className="mt-3 bg-sky-500/5 border border-sky-500/30 rounded-lg p-3"
+        >
+          <p className="text-xs text-ink-primary">
+            <span className="font-bold">{upd.company_name} {upd.label}:</span>{' '}
+            record says <span className="font-semibold">{upd.current_value ?? 'unknown'}</span>,
+            their email said <span className="font-semibold text-sky-300">{upd.proposed_value}</span>
+            {upd.source_entry_date ? ` on ${fmtDate(upd.source_entry_date)}` : ''}.
+          </p>
+          {upd.source_sentence && (
+            <p className="text-[11px] text-ink-secondary italic mt-1.5 pl-2
+                          border-l-2 border-sky-500/30">
+              “{upd.source_sentence}”
+            </p>
+          )}
+          <div className="flex items-center gap-2 mt-2">
+            <button
+              onClick={() => onAcceptUpdate(upd)}
+              className="text-[10px] px-2.5 py-1 rounded bg-emerald-600 hover:bg-emerald-700
+                         text-white font-semibold flex items-center gap-1"
+            >
+              <Check size={10} /> Use theirs
+            </button>
+            <button
+              onClick={() => onRejectUpdate(upd)}
               className="text-[10px] px-2.5 py-1 rounded bg-surface-muted hover:bg-surface-border
                          text-ink-secondary font-semibold flex items-center gap-1"
             >
@@ -902,17 +967,33 @@ function ThreadEntry({
       id={`thread-entry-${entry.id}`}
       className={`border rounded-xl p-3 transition-colors
         ${highlighted ? 'border-accent-blue ring-2 ring-accent-blue/40' : 'border-surface-border'}
-        ${inbound ? 'bg-violet-500/5 border-l-2 border-l-violet-500/60'
-                  : 'bg-surface-card border-l-2 border-l-blue-500/40'}`}
+        ${entry.participation
+          /* Copied, not written to: muted, dashed and set back, so scanning the
+             thread never mistakes it for correspondence with this person. */
+          ? 'bg-surface-card/40 border-l-2 border-l-ink-muted/30 border-dashed opacity-75'
+          : inbound ? 'bg-violet-500/5 border-l-2 border-l-violet-500/60'
+                    : 'bg-surface-card border-l-2 border-l-blue-500/40'}`}
     >
       <div className="flex items-center gap-2 flex-wrap mb-1">
-        {/* Direction is visually distinct — inbound is the thing Jack scans for. */}
-        <span className={`text-[9px] px-1.5 py-0.5 rounded font-bold uppercase tracking-wider
-                          flex items-center gap-1
-          ${inbound ? 'bg-violet-500/20 text-violet-300' : 'bg-blue-500/15 text-blue-300'}`}>
-          {inbound ? <ArrowDownLeft size={9} /> : <ArrowUpRight size={9} />}
-          {inbound ? 'In' : 'Out'}
-        </span>
+        {/* Direction is visually distinct — inbound is the thing Jack scans for.
+            A copied entry has no direction worth reading: he was not part of
+            it, so it is labelled for what it is. */}
+        {entry.participation ? (
+          <span
+            className="text-[9px] px-1.5 py-0.5 rounded font-bold uppercase tracking-wider
+                       flex items-center gap-1 bg-surface-muted text-ink-muted"
+            title="They were copied on this email, not written to. It counts toward nothing."
+          >
+            <Copy size={9} /> Copied
+          </span>
+        ) : (
+          <span className={`text-[9px] px-1.5 py-0.5 rounded font-bold uppercase tracking-wider
+                            flex items-center gap-1
+            ${inbound ? 'bg-violet-500/20 text-violet-300' : 'bg-blue-500/15 text-blue-300'}`}>
+            {inbound ? <ArrowDownLeft size={9} /> : <ArrowUpRight size={9} />}
+            {inbound ? 'In' : 'Out'}
+          </span>
+        )}
         <span className="text-[10px] text-ink-muted flex items-center gap-1 uppercase tracking-wider font-bold">
           {ChannelIcon && <ChannelIcon size={10} />}
           {entry.channel ?? 'other'}
@@ -949,6 +1030,34 @@ function ThreadEntry({
                 <span key={d} className="text-[9px] px-2 py-0.5 rounded bg-surface-muted text-ink-secondary">
                   {d}
                 </span>
+              ))}
+            </div>
+          )}
+
+          {/* What arrived on the email. Filed under the documents folder by
+              year — deliberately not the lease flow: only Jack uploads an
+              executed lease, because a draft and the signed copy look the
+              same from here. */}
+          {entry.attachments.length > 0 && (
+            <div className="mt-2 space-y-1">
+              {entry.attachments.map(att => (
+                <div key={att.id} className="flex items-start gap-1.5 text-[10px]">
+                  <Paperclip size={10} className="text-ink-muted mt-0.5 shrink-0" />
+                  <span className="text-ink-secondary">
+                    {att.file_name}
+                    {att.description && (
+                      <span className="text-ink-muted"> — {att.description}</span>
+                    )}
+                    {att.missing && (
+                      <span
+                        className="ml-1.5 text-amber-400"
+                        title="Recorded, but the file is not in the documents folder."
+                      >
+                        (file missing)
+                      </span>
+                    )}
+                  </span>
+                </div>
               ))}
             </div>
           )}
@@ -1237,6 +1346,19 @@ export default function ContactThread({
     await load(false)
   }
 
+  // Accept writes the value onto the company marked conversation-sourced;
+  // reject leaves the field alone and marks the disagreement. Same two
+  // outcomes as a conflict, so the same two handlers shape.
+  const handleAcceptUpdate = async (upd: PendingUpdate) => {
+    await acceptPendingUpdate(upd.id)
+    await load(false)
+  }
+
+  const handleRejectUpdate = async (upd: PendingUpdate) => {
+    await rejectPendingUpdate(upd.id)
+    await load(false)
+  }
+
   if (loading && !header) {
     return <div className="text-center py-12 text-ink-muted">Loading thread…</div>
   }
@@ -1326,6 +1448,8 @@ export default function ContactThread({
           header={header}
           onAccept={handleAccept}
           onReject={handleReject}
+          onAcceptUpdate={handleAcceptUpdate}
+          onRejectUpdate={handleRejectUpdate}
           onOpenCompany={() => header.company_business_id && onOpenCompany(header.company_business_id)}
         />
       </div>

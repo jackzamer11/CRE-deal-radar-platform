@@ -1,20 +1,31 @@
 import re
-from typing import List, Optional
+from typing import List, Optional, Tuple
 from datetime import date
 
 from fastapi import APIRouter, Depends, Query, HTTPException
+from sqlalchemy import func, or_
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session, joinedload
-from pydantic import BaseModel
+from sqlalchemy.orm import Session, aliased, joinedload
+from pydantic import BaseModel, field_validator
 
 from app.database import get_db
 from app.models.activity import ActivityLog
 from app.models.company import Company
 from app.models.contact import Contact
+from app.models.email_ingest import (
+    ActivityAttachment, PENDING_UPDATE_FIELDS,
+)
+from app.services.attachment_storage import (
+    attachment_file_exists, store_attachment,
+)
 from app.services.contact_service import (
-    STAGE_CHANGE_ACTION, apply_inbound_stage_rules, email_domain_of,
-    mark_engaged, normalize_email, resolve_company_for_email,
-    resolve_or_create_contact,
+    STAGE_CHANGE_ACTION, apply_inbound_stage_rules, create_fact,
+    email_domain_of, mark_engaged, normalize_email, resolve_company_by_name,
+    resolve_company_for_email, resolve_or_create_contact,
+)
+from app.services.email_ingest_service import (
+    StatedValueError, coerce_value, is_own_address, queue_company_update,
+    record_address_override, resolve_contact_for_address, write_company_value,
 )
 
 router = APIRouter(prefix="/activity", tags=["activity"])
@@ -97,6 +108,13 @@ class ActivityOut(BaseModel):
     direction:         Optional[str] = "outbound"
     channel:           Optional[str] = "other"
     source_message_id: Optional[str] = None
+    sender_email:      Optional[str] = None
+
+    # True when this person was only copied on the email. The timeline renders
+    # it distinctly, and every "real correspondence" read filters it out.
+    # Optional at the schema level so a row written before the column existed
+    # (NULL) reads back as False rather than failing validation.
+    participation:     Optional[bool] = False
 
     # Set only on a STAGE_CHANGE row — the transition the divider renders.
     stage_from: Optional[str] = None
@@ -127,6 +145,7 @@ def _to_out(log: ActivityLog) -> "ActivityOut":
     # Legacy rows created before the stage column existed read back as None.
     if not item.stage:
         item.stage = "Sent"
+    item.participation = bool(item.participation)
     if log.property:
         item.property_address = log.property.address
     if log.company:
@@ -204,17 +223,56 @@ def list_activity(
     since: Optional[date] = None,
     action_type: Optional[str] = None,
     stage: Optional[str] = None,
+    q: Optional[str] = Query(
+        None, description="Free text over the entry AND its linked contact and company",
+    ),
     limit: int = Query(1000, le=1000),
     db: Session = Depends(get_db),
 ):
-    q = db.query(ActivityLog).options(*_eager())
+    """The flat activity feed, optionally filtered and searched.
+
+    `q` searches the entry's own prose AND the names of the contact and company
+    linked to it. Both halves are required, because entries are no longer
+    written the way they used to be: the ingestion task writes a clean summary
+    and puts the person and the company in structured links rather than
+    repeating them in the sentence. Searching "Corcoran" against `action_taken`
+    alone would return nothing while nine entries sat linked to them.
+
+    One query. The contact and company are joined, not looked up per row.
+    """
+    query = db.query(ActivityLog).options(*_eager())
     if since:
-        q = q.filter(ActivityLog.log_date >= since)
+        query = query.filter(ActivityLog.log_date >= since)
     if action_type:
-        q = q.filter(ActivityLog.action_type == action_type)
+        query = query.filter(ActivityLog.action_type == action_type)
     if stage:
-        q = q.filter(ActivityLog.stage == stage)
-    logs = q.order_by(ActivityLog.created_at.desc()).limit(limit).all()
+        query = query.filter(ActivityLog.stage == stage)
+
+    term = (q or "").strip()
+    if term:
+        like = f"%{term.lower()}%"
+        # Aliased so the two company paths (the legacy free link and the stamp)
+        # can both be searched without colliding.
+        stamped = aliased(Company)
+        linked = aliased(Company)
+        query = (
+            query
+            .outerjoin(Contact, Contact.id == ActivityLog.contact_id)
+            .outerjoin(stamped, stamped.id == ActivityLog.company_stamp_id)
+            .outerjoin(linked, linked.id == ActivityLog.company_id)
+            .filter(or_(
+                func.lower(ActivityLog.action_taken).like(like),
+                func.lower(ActivityLog.outcome).like(like),
+                func.lower(ActivityLog.notes).like(like),
+                func.lower(ActivityLog.subject).like(like),
+                func.lower(Contact.name).like(like),
+                func.lower(Contact.email).like(like),
+                func.lower(stamped.name).like(like),
+                func.lower(linked.name).like(like),
+            ))
+        )
+
+    logs = query.order_by(ActivityLog.created_at.desc()).limit(limit).all()
     return [_to_out(log) for log in logs]
 
 
@@ -340,8 +398,56 @@ def list_message_ids(
     return [row[0] for row in q.all()]
 
 
+class EmailRecipient(BaseModel):
+    """One address on an email, with the display name if the mailbox gave one."""
+    email: Optional[str] = None
+    name:  Optional[str] = None
+
+
+class EmailFact(BaseModel):
+    """A durable statement the email made about the person.
+
+    Written straight through to their fact list, sourced to this entry. Facts
+    are prose about a human being, not data about a company — nothing scores
+    off them — so there is nothing to confirm and no queue.
+    """
+    text: str
+    learned_date: Optional[date] = None
+
+
+class ProposedCompanyUpdate(BaseModel):
+    """A value the email STATED about the company. Never written on arrival.
+
+    field is one of PENDING_UPDATE_FIELDS: headcount, growth_rate,
+    lease_expiry, sf. source_sentence is the sentence it came from, and it is
+    what makes the confirmation answerable — "they said 40" is not reviewable,
+    the sentence is.
+    """
+    field: str
+    value: str
+    source_sentence: Optional[str] = None
+
+
+class EmailAttachment(BaseModel):
+    """A file that arrived on the email.
+
+    stored_path is where the ingestion task put the download; it is read and
+    then discarded — only the filename and the year it was filed under reach a
+    column. `inline` marks a signature image or embedded screenshot: those are
+    dropped, not filed.
+    """
+    filename: str
+    stored_path: Optional[str] = None
+    description: Optional[str] = None
+    inline: bool = False
+
+
 class ActivityFromEmail(BaseModel):
-    """One email, as the scheduled mailbox check sees it."""
+    """One email, as the scheduled mailbox check interpreted it.
+
+    Every field beyond the original six is optional, so the mailbox task that
+    exists today keeps working against this endpoint unchanged.
+    """
     from_email: Optional[str] = None
     from_name:  Optional[str] = None
     to_email:   Optional[str] = None
@@ -353,21 +459,192 @@ class ActivityFromEmail(BaseModel):
     source_message_id: Optional[str] = None
     sent_at: Optional[date] = None
 
+    # ── The interpreted record ───────────────────────────────────────────────
+    facts: List[EmailFact] = []
 
-@router.post("/from-email", response_model=ActivityOut)
+    # Discovery capture, straight onto the entry. Displayed, never scored — a
+    # claim made in an email is not verified data.
+    disc_current_rent_psf:  Optional[float] = None
+    disc_current_sf:        Optional[int]   = None
+    disc_lease_expiry:      Optional[date]  = None
+    disc_decision_timeline: Optional[str]   = None
+    disc_buildout_needs:    Optional[str]   = None
+    disc_decision_maker:    Optional[str]   = None
+
+    # These NEVER write. They queue for Jack (see models/email_ingest.py) —
+    # except against a company created by this very request, where there is
+    # nothing to conflict with.
+    proposed_company_updates: List[ProposedCompanyUpdate] = []
+
+    # Set on the contact ONLY when the email named a specific day. The task does
+    # not send this otherwise, and nothing here infers one.
+    next_touch_date: Optional[date] = None
+
+    # Written-to versus copied. See the `participation` column on ActivityLog.
+    to_recipients: List[EmailRecipient] = []
+    cc_recipients: List[EmailRecipient] = []
+    # Accepted and deliberately IGNORED. Declared rather than rejected so a task
+    # that sends the full header set gets a clear contract: bcc is skipped
+    # entirely — no contact, no entry, not recorded anywhere.
+    bcc_recipients: List[EmailRecipient] = []
+
+    attachments: List[EmailAttachment] = []
+
+    # The company the email is clearly about, when it differs from the sender's
+    # domain — a broker at Avison Young writing about Collaborative AV. Either
+    # the name (resolved loosely, created if unknown) or an id.
+    company_override: Optional[str] = None
+    company_override_id: Optional[int] = None
+
+    @field_validator("facts", mode="before")
+    @classmethod
+    def _accept_bare_fact_strings(cls, value):
+        """Tolerate ["they moved offices"] as well as [{"text": "..."}]."""
+        if isinstance(value, list):
+            return [{"text": v} if isinstance(v, str) else v for v in value]
+        return value
+
+    @field_validator("proposed_company_updates", mode="before")
+    @classmethod
+    def _stringify_proposed_values(cls, value):
+        """Accept 40 as readily as "40" — the model may emit either."""
+        if isinstance(value, list):
+            out = []
+            for item in value:
+                if isinstance(item, dict) and "value" in item and item["value"] is not None:
+                    item = {**item, "value": str(item["value"])}
+                out.append(item)
+            return out
+        return value
+
+
+class ActivityFromEmailResult(ActivityOut):
+    """The entry that was created, plus what else the payload produced.
+
+    Extends ActivityOut rather than replacing it, so a caller reading `id` off
+    the response — the mailbox task does exactly that — is unaffected.
+    """
+    facts_written: int = 0
+    pending_updates_created: int = 0
+    company_values_written: List[str] = []
+    attachments_saved: int = 0
+    attachments_missing: List[str] = []
+    # One entry per additional participant: the other To recipients (direct) and
+    # every Cc recipient (participation).
+    participant_entry_ids: List[int] = []
+    participation_entry_ids: List[int] = []
+    # Addresses that resolved to nobody because Jack owns them.
+    skipped_own_addresses: List[str] = []
+
+
+class _Participant:
+    """One person an email reaches, and how directly."""
+    __slots__ = ("email", "name", "participation")
+
+    def __init__(self, email: str, name: Optional[str], participation: bool):
+        self.email = email
+        self.name = name
+        self.participation = participation
+
+
+def _collect_participants(
+    payload: ActivityFromEmail, direction: str,
+) -> Tuple[List[_Participant], List[str]]:
+    """Everyone this email reaches, in thread-owning order, plus skipped addresses.
+
+    Order, and why:
+      1. The sender owns the entry — on an inbound mail that is the counterpart,
+         and the first row carries the bare provider message id.
+      2. To recipients are direct participants: real correspondence.
+      3. Cc recipients are participation: on their timeline as history, counting
+         toward nothing.
+
+    Deduplicated on the normalized address, and a direct listing always wins
+    over a copied one — someone on both the To and the Cc line was written to.
+    Bcc never enters this function's inputs at all.
+
+    An address Jack owns resolves to nobody and is reported back rather than
+    silently dropped.
+    """
+    ordered: List[_Participant] = []
+    seen: dict = {}
+    skipped: List[str] = []
+
+    def add(raw_email: Optional[str], name: Optional[str], participation: bool):
+        normalized = normalize_email(raw_email)
+        if not normalized:
+            return
+        if is_own_address(normalized):
+            if normalized not in skipped:
+                skipped.append(normalized)
+            return
+        if normalized in seen:
+            # Already listed. A direct listing outranks a copied one.
+            if not participation:
+                seen[normalized].participation = False
+            return
+        person = _Participant(normalized, (name or "").strip() or None, participation)
+        seen[normalized] = person
+        ordered.append(person)
+
+    # The sender. On an outbound mail this is Jack and drops out via the guard,
+    # leaving the first To recipient owning the entry — which is exactly what
+    # this endpoint did before recipients existed.
+    add(payload.from_email, payload.from_name, False)
+
+    to_list = list(payload.to_recipients)
+    if not to_list and payload.to_email:
+        # The original single-recipient shape. Still supported, unchanged.
+        to_list = [EmailRecipient(email=payload.to_email)]
+    for recipient in to_list:
+        add(recipient.email, recipient.name, False)
+
+    for recipient in payload.cc_recipients:
+        add(recipient.email, recipient.name, True)
+
+    return ordered, skipped
+
+
+def _participant_message_id(base: Optional[str], index: int, contact_id: Optional[int]) -> Optional[str]:
+    """The provider id for one participant's row.
+
+    Only the first row carries the bare id, because the column is UNIQUE and one
+    email produces one row per participant. The rest carry it suffixed with the
+    contact id, which keeps them traceable to the same message while leaving the
+    dedup check — which looks for the bare id — correct.
+    """
+    if not base or index == 0:
+        return base
+    return f"{base}#p{contact_id or index}"
+
+
+@router.post("/from-email", response_model=ActivityFromEmailResult)
 def create_activity_from_email(
     payload: ActivityFromEmail, db: Session = Depends(get_db),
 ):
-    """Log an email, resolving or creating its contact and company.
+    """Log an interpreted email: the entry, its participants, and what it said.
 
-    Everything happens in one transaction: resolve or create the contact by
-    email address, resolve or create the company by email domain, stamp
-    company_stamp_id, create the entry. A failure anywhere rolls the whole thing
-    back rather than leaving a contact with no entry.
+    Everything happens in ONE transaction. Resolve the company, resolve or
+    create a contact per participant, write an entry on each of their threads,
+    write the facts and the discovery capture, queue anything the email stated
+    about the company, file the attachments. A failure anywhere rolls all of it
+    back — a half-written email is worse than an unwritten one, because nothing
+    downstream can tell it is half-written.
 
-    The automation's own spam and noise filter is the only gate. If an email is
-    clean enough to log, its sender is clean enough to become a contact — there
-    is deliberately no second relevance filter here.
+    What writes and what waits, and why the line sits there:
+
+    * **Facts write.** A fact is prose about a person. Nothing scores off it,
+      and it is visible and editable on the thread.
+    * **Discovery fields write.** They live on the entry, inert by design.
+    * **Stated company values do NOT write.** headcount, growth, lease expiry
+      and SF are scoring inputs; a sentence in an email is not verified data.
+      They queue with both values and the source sentence — unless the company
+      did not exist until this request, in which case there is nothing to
+      conflict with and confirmation would be theatre.
+
+    The automation's own spam and noise filter is the only relevance gate. If an
+    email is clean enough to log, its sender is clean enough to become a
+    contact — there is deliberately no second filter here.
     """
     direction = (payload.direction or "outbound").lower()
     if direction not in ("outbound", "inbound"):
@@ -376,8 +653,9 @@ def create_activity_from_email(
             detail="direction must be 'outbound' or 'inbound'",
         )
 
-    # Idempotency: a second POST with the same message id is a no-op, not a
-    # duplicate row and not a 500.
+    # Idempotency: a second POST with the same message id is a 409, not a
+    # duplicate row and not a 500. Checked against the BARE id, which only the
+    # first participant's row carries.
     if payload.source_message_id:
         existing = db.query(ActivityLog).filter(
             ActivityLog.source_message_id == payload.source_message_id
@@ -391,51 +669,225 @@ def create_activity_from_email(
                 ),
             )
 
-    # On an inbound mail the counterpart is the sender; on an outbound one it is
-    # the recipient. Either way the address is the identity, never the name.
-    counterpart_email = (
-        payload.from_email if direction == "inbound" else (payload.to_email or payload.from_email)
-    )
-    counterpart_name = payload.from_name if direction == "inbound" else None
+    participants, skipped_own = _collect_participants(payload, direction)
+
+    result_facts = 0
+    result_pending = 0
+    result_written: List[str] = []
+    result_attached = 0
+    result_missing: List[str] = []
+    extra_direct: List[int] = []
+    extra_participation: List[int] = []
 
     try:
-        # Free-mail senders get no company — never a company called "Gmail".
-        company, _company_created = resolve_company_for_email(
-            db, counterpart_email, counterpart_name,
-        )
-        contact, _contact_created = resolve_or_create_contact(
-            db, counterpart_email, counterpart_name, company=company,
-        )
-
-        if contact is not None:
-            # inbound → responded=True, and Sent → Replied only. A contact
-            # already at Interested or In Play is never regressed.
-            apply_inbound_stage_rules(contact, direction)
+        # ── The company the conversation is ABOUT ─────────────────────────────
+        # An override wins over the sender's domain: a broker at Avison Young
+        # writing about Collaborative AV is a conversation about Collaborative
+        # AV, stamped there, while the broker himself stays under Avison Young.
+        company = None
+        company_is_new = False
+        if payload.company_override_id is not None:
+            company = db.query(Company).filter(
+                Company.id == payload.company_override_id
+            ).first()
+            if company is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"company_override_id {payload.company_override_id} not found",
+                )
+        elif (payload.company_override or "").strip():
+            company, company_is_new = resolve_company_by_name(
+                db, payload.company_override,
+            )
+        elif participants:
+            # Free-mail senders get no company — never a company called "Gmail".
+            company, company_is_new = resolve_company_for_email(
+                db, participants[0].email, participants[0].name,
+            )
 
         summary = (payload.action_taken or "").strip()
-        if not summary:
-            who = (contact.name if contact else None) or counterpart_email or "contact"
-            verb = "Received email from" if direction == "inbound" else "Emailed"
-            summary = f"{verb} {who}" + (f" re {payload.subject}" if payload.subject else "")
 
-        log = ActivityLog(
-            log_date       = payload.sent_at or date.today(),
-            company_id     = company.id if company else None,
-            contact_id     = contact.id if contact else None,
-            company_stamp_id = company.id if company else None,
-            action_type    = "EMAIL",
-            action_taken   = summary,
-            outcome        = payload.outcome,
-            subject        = payload.subject,
-            follow_up_action = payload.follow_up_action,
-            stage          = "Sent",
-            direction      = direction,
-            channel        = "email",
-            source_message_id = payload.source_message_id,
-            contact_method = "email",
-            created_by     = "email-automation",
-        )
-        db.add(log)
+        primary_log = None
+        primary_contact = None
+
+        for index, person in enumerate(participants):
+            # Each participant's company comes from THEIR OWN domain, never
+            # from the entry's stamp. A broker at Avison Young copied on a
+            # Collaborative AV email lands under Avison Young.
+            own_company, _ = resolve_company_for_email(db, person.email, person.name)
+            contact, _created = resolve_contact_for_address(
+                db, person.email, person.name, company=own_company,
+                # Creation stays in this module's hands: it is the step that
+                # can fail mid-transaction, and this is where the transaction
+                # is owned.
+                create_fn=resolve_or_create_contact,
+            )
+            if contact is None:
+                continue
+
+            if not person.participation:
+                # inbound → responded=True, and Sent → Replied only. A contact
+                # already at Interested or In Play is never regressed.
+                apply_inbound_stage_rules(contact, direction)
+            # A copied recipient's stage, responded flag and triage are all left
+            # exactly as they were. Ten copies must not make a relationship.
+
+            if not summary:
+                who = contact.name or person.email
+                verb = "Received email from" if direction == "inbound" else "Emailed"
+                summary = f"{verb} {who}" + (
+                    f" re {payload.subject}" if payload.subject else ""
+                )
+
+            is_primary = primary_log is None
+            log = ActivityLog(
+                log_date       = payload.sent_at or date.today(),
+                company_id     = company.id if company else None,
+                contact_id     = contact.id,
+                company_stamp_id = (company.id if company else None) or (
+                    own_company.id if own_company else None
+                ),
+                action_type    = "EMAIL",
+                action_taken   = summary,
+                outcome        = payload.outcome if is_primary else None,
+                subject        = payload.subject,
+                follow_up_action = payload.follow_up_action if is_primary else None,
+                stage          = "Sent",
+                direction      = direction,
+                channel        = "email",
+                source_message_id = _participant_message_id(
+                    payload.source_message_id, index, contact.id,
+                ),
+                sender_email   = normalize_email(payload.from_email),
+                participation  = person.participation,
+                contact_method = "email",
+                created_by     = "email-automation",
+                # Discovery capture belongs to the conversation, not to the
+                # people copied on it.
+                disc_current_rent_psf  = payload.disc_current_rent_psf if is_primary else None,
+                disc_current_sf        = payload.disc_current_sf if is_primary else None,
+                disc_lease_expiry      = payload.disc_lease_expiry if is_primary else None,
+                disc_decision_timeline = payload.disc_decision_timeline if is_primary else None,
+                disc_buildout_needs    = payload.disc_buildout_needs if is_primary else None,
+                disc_decision_maker    = payload.disc_decision_maker if is_primary else None,
+            )
+            db.add(log)
+            db.flush()
+
+            if is_primary:
+                primary_log = log
+                primary_contact = contact
+            elif person.participation:
+                extra_participation.append(log.id)
+            else:
+                extra_direct.append(log.id)
+
+        # Nobody to attach to — every address on the mail is one Jack owns, or
+        # there were none. The entry is still logged, unattached, rather than
+        # filed under a contact called "Jack Zamer".
+        if primary_log is None:
+            if not summary:
+                verb = "Received email" if direction == "inbound" else "Sent email"
+                summary = verb + (f" re {payload.subject}" if payload.subject else "")
+            primary_log = ActivityLog(
+                log_date       = payload.sent_at or date.today(),
+                company_id     = company.id if company else None,
+                company_stamp_id = company.id if company else None,
+                action_type    = "EMAIL",
+                action_taken   = summary,
+                outcome        = payload.outcome,
+                subject        = payload.subject,
+                follow_up_action = payload.follow_up_action,
+                stage          = "Sent",
+                direction      = direction,
+                channel        = "email",
+                source_message_id = payload.source_message_id,
+                sender_email   = normalize_email(payload.from_email),
+                contact_method = "email",
+                created_by     = "email-automation",
+                disc_current_rent_psf  = payload.disc_current_rent_psf,
+                disc_current_sf        = payload.disc_current_sf,
+                disc_lease_expiry      = payload.disc_lease_expiry,
+                disc_decision_timeline = payload.disc_decision_timeline,
+                disc_buildout_needs    = payload.disc_buildout_needs,
+                disc_decision_maker    = payload.disc_decision_maker,
+            )
+            db.add(primary_log)
+            db.flush()
+
+        # ── Facts — straight through, sourced to this entry ───────────────────
+        if primary_contact is not None:
+            for fact in payload.facts:
+                text = (fact.text or "").strip()
+                if not text:
+                    continue
+                create_fact(
+                    db, primary_contact, text,
+                    source_entry_id=primary_log.id,
+                    learned_date=fact.learned_date or primary_log.log_date,
+                )
+                result_facts += 1
+
+            # Only when the email named a specific day. Nothing infers one.
+            if payload.next_touch_date is not None:
+                primary_contact.next_touch_date = payload.next_touch_date
+
+        # ── Stated company values ─────────────────────────────────────────────
+        for proposed in payload.proposed_company_updates:
+            field = (proposed.field or "").strip()
+            if field not in PENDING_UPDATE_FIELDS:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Unknown proposed update field '{proposed.field}'. "
+                        f"One of: {', '.join(PENDING_UPDATE_FIELDS)}"
+                    ),
+                )
+            if company is None:
+                # A free-mail sender with no company named: there is nothing to
+                # state a value about. Reported, never guessed at.
+                continue
+            try:
+                if company_is_new:
+                    # Nothing on file to conflict with, so confirmation would be
+                    # theatre. Written directly and marked conversation-sourced.
+                    write_company_value(
+                        company, field, coerce_value(field, proposed.value),
+                    )
+                    result_written.append(field)
+                elif queue_company_update(
+                    db, company, field, proposed.value,
+                    source_sentence=proposed.source_sentence,
+                    source_entry_id=primary_log.id,
+                ) is not None:
+                    result_pending += 1
+            except StatedValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc))
+
+        # ── Attachments ───────────────────────────────────────────────────────
+        # Filed under <DOCUMENTS_FOLDER>/<year>; the row stores the filename and
+        # the year, never a path. Nothing here routes into the lease flow.
+        for attachment in payload.attachments:
+            if attachment.inline:
+                continue   # signature images and embedded screenshots
+            name = (attachment.filename or "").strip()
+            if not name:
+                continue
+            stored_name, year, stored = store_attachment(
+                name, attachment.stored_path,
+                saved_on=primary_log.log_date,
+            )
+            db.add(ActivityAttachment(
+                activity_log_id=primary_log.id,
+                file_name=stored_name,
+                stored_year=year,
+                description=(attachment.description or None),
+                saved_date=primary_log.log_date or date.today(),
+            ))
+            result_attached += 1
+            if not stored:
+                result_missing.append(stored_name)
+
         db.commit()
     except HTTPException:
         db.rollback()
@@ -450,8 +902,17 @@ def create_activity_from_email(
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Could not log email: {exc}")
 
-    db.refresh(log)
-    return _to_out(log)
+    db.refresh(primary_log)
+    out = ActivityFromEmailResult.model_validate(_to_out(primary_log).model_dump())
+    out.facts_written = result_facts
+    out.pending_updates_created = result_pending
+    out.company_values_written = result_written
+    out.attachments_saved = result_attached
+    out.attachments_missing = result_missing
+    out.participant_entry_ids = extra_direct
+    out.participation_entry_ids = extra_participation
+    out.skipped_own_addresses = skipped_own
+    return out
 
 
 class ActivityNoteUpdate(BaseModel):
@@ -837,6 +1298,15 @@ def assign_activity(
         )
     if contact is not None:
         mark_engaged(db, contact)
+        # The correction teaches the resolver. The address that produced the
+        # wrong answer is mapped to the right person, and the next email from it
+        # resolves there before any domain matching runs — so Jack never has to
+        # make the same correction twice.
+        #
+        # An address Jack owns is never mapped: that would teach the resolver to
+        # file his own mail under a contact, which is the exact thing the guard
+        # in email_ingest_service exists to prevent.
+        record_address_override(db, log.sender_email, contact, source_entry_id=log.id)
     db.commit()
     db.refresh(log)
     return _to_out(log)
