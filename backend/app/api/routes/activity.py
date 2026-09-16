@@ -19,13 +19,14 @@ from app.services.attachment_storage import (
     attachment_file_exists, store_attachment,
 )
 from app.services.contact_service import (
-    STAGE_CHANGE_ACTION, apply_inbound_stage_rules, create_fact,
+    STAGE_CHANGE_ACTION, apply_inbound_stage_rules, create_contact, create_fact,
     email_domain_of, mark_engaged, normalize_email, resolve_companies_by_names,
     resolve_company_for_email, resolve_or_create_contact,
 )
 from app.services.email_ingest_service import (
     StatedValueError, coerce_value, is_own_address, queue_company_update,
-    record_address_override, resolve_contact_for_address, write_company_value,
+    record_address_override, resolve_contact_for_address,
+    resolve_contacts_for_addresses, write_company_value,
 )
 
 router = APIRouter(prefix="/activity", tags=["activity"])
@@ -488,6 +489,15 @@ class EmailDeal(BaseModel):
     # Overrides the email-level source_note for this deal only.
     source_note: Optional[str] = None
 
+    # The person this deal is about, when it is not the sender. Ann's weekly
+    # notes mention a Scott Management contact: that deal's entry and its facts
+    # belong on THEIR thread, not on Ann's — otherwise her Relationship panel
+    # fills with facts about other people's tenants. Resolved by the same rules
+    # as any address on the email (matched on email, created untriaged, company
+    # from their own domain). Absent, or an address Jack owns → the sender.
+    contact_email: Optional[str] = None
+    contact_name: Optional[str] = None
+
     disc_current_rent_psf:  Optional[float] = None
     disc_current_sf:        Optional[int]   = None
     disc_lease_expiry:      Optional[date]  = None
@@ -596,6 +606,9 @@ class EmailEntryResult(BaseModel):
     contact_name: Optional[str] = None
     action_taken: str
     source_note: Optional[str] = None
+    # The deal named a contact_email that could not be used — an address Jack
+    # owns, or not an address at all — so the entry went to the sender.
+    contact_email_ignored: Optional[str] = None
     facts_written: int = 0
     pending_updates_created: int = 0
     company_values_written: List[str] = []
@@ -726,6 +739,7 @@ class _DealSpec:
     __slots__ = (
         "company_override", "company_override_id", "action_taken", "source_note",
         "discovery", "proposed_company_updates", "facts",
+        "contact_email", "contact_name",
     )
 
     def __init__(self, source, source_note: Optional[str]):
@@ -736,6 +750,9 @@ class _DealSpec:
         self.discovery = {f: getattr(source, f) for f in _DISCOVERY_FIELDS}
         self.proposed_company_updates = list(source.proposed_company_updates)
         self.facts = list(source.facts)
+        # Only a deal names its own contact; a plain email has none.
+        self.contact_email = normalize_email(getattr(source, "contact_email", None))
+        self.contact_name = (getattr(source, "contact_name", None) or "").strip() or None
 
 
 def _deal_specs(payload: ActivityFromEmail) -> List[_DealSpec]:
@@ -926,6 +943,19 @@ def create_activity_from_email(
         log_date = payload.sent_at or date.today()
         sender_email = normalize_email(payload.from_email)
 
+        # ── The contact each deal is about — all of them in one pass ──────────
+        # The email still belongs to the sender: nothing above changes. This
+        # only decides whose thread each deal's entry and facts land on. An
+        # address Jack owns resolves to nobody and the deal stays with the
+        # sender. A deal contact keeps THEIR OWN company; the entry is stamped
+        # to the deal's company. The two are deliberately not reconciled.
+        deal_contacts = resolve_contacts_for_addresses(
+            db,
+            [(spec.contact_email, spec.contact_name) for spec in specs if spec.contact_email],
+            # The transaction is owned here, so creation is too.
+            create_fn=create_contact,
+        )
+
         for deal_index, (spec, (company, company_is_new)) in enumerate(zip(specs, companies)):
             deal_message_id = _deal_message_id(payload.source_message_id, deal_index)
             deal_direct: List[int] = []
@@ -941,8 +971,58 @@ def create_activity_from_email(
                     summary = "Received email" if direction == "inbound" else "Sent email"
                 summary += f" re {payload.subject}" if payload.subject else ""
 
+            deal_contact, deal_contact_company = deal_contacts.get(
+                spec.contact_email, (None, None),
+            ) if spec.contact_email else (None, None)
+            ignored_contact_email = (
+                spec.contact_email if spec.contact_email and deal_contact is None else None
+            )
+            if (deal_contact is not None and primary_contact is not None
+                    and deal_contact.id == primary_contact.id):
+                # The deal names the sender — that is simply today's path.
+                deal_contact = None
+
             primary_log = None
+            if deal_contact is not None:
+                # This deal's entry is redirected to the person it is about.
+                # Their stage and responded flag are untouched — they did not
+                # write this email. sender_email records the address that chose
+                # this contact, because a reassignment teaches the resolver from
+                # that column: correcting this entry must map THIS address, never
+                # the sender's.
+                primary_log = ActivityLog(
+                    log_date       = log_date,
+                    company_id     = company.id if company else None,
+                    contact_id     = deal_contact.id,
+                    company_stamp_id = (company.id if company else None) or (
+                        deal_contact_company.id if deal_contact_company else None
+                    ),
+                    action_type    = "EMAIL",
+                    action_taken   = summary,
+                    outcome        = payload.outcome,
+                    subject        = payload.subject,
+                    follow_up_action = payload.follow_up_action,
+                    stage          = "Sent",
+                    direction      = direction,
+                    channel        = "email",
+                    source_message_id = deal_message_id,
+                    sender_email   = spec.contact_email,
+                    participation  = False,
+                    contact_method = "email",
+                    created_by     = "email-automation",
+                    source_note    = spec.source_note,
+                    **spec.discovery,
+                )
+                db.add(primary_log)
+                db.flush()
+
             for index, person, contact, own_company in people:
+                if deal_contact is not None and (
+                    contact.id == primary_contact.id or contact.id == deal_contact.id
+                ):
+                    # The sender's row for this deal IS the entry that was
+                    # redirected; and the deal contact already has theirs.
+                    continue
                 is_primary = primary_log is None
                 log = ActivityLog(
                     log_date       = log_date,
@@ -1009,13 +1089,14 @@ def create_activity_from_email(
 
             # ── Facts — straight through, sourced to this deal's entry ────────
             deal_facts = 0
-            if primary_contact is not None:
+            fact_contact = deal_contact or primary_contact
+            if fact_contact is not None:
                 for fact in spec.facts:
                     text = (fact.text or "").strip()
                     if not text:
                         continue
                     create_fact(
-                        db, primary_contact, text,
+                        db, fact_contact, text,
                         source_entry_id=primary_log.id,
                         learned_date=fact.learned_date or primary_log.log_date,
                     )
@@ -1069,6 +1150,7 @@ def create_activity_from_email(
                 contact_id=primary_log.contact_id,
                 action_taken=summary,
                 source_note=spec.source_note,
+                contact_email_ignored=ignored_contact_email,
                 facts_written=deal_facts,
                 pending_updates_created=deal_pending,
                 company_values_written=deal_written,

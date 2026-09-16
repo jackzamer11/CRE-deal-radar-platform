@@ -16,7 +16,7 @@ Four concerns live here:
      to overwrite it.
 """
 from datetime import date, datetime
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from sqlalchemy.orm import Session
 
@@ -28,7 +28,8 @@ from app.models.email_ingest import (
     ContactAddressOverride, PendingCompanyUpdate,
 )
 from app.services.contact_service import (
-    normalize_email, resolve_contact_by_email, resolve_or_create_contact,
+    create_contact, normalize_email, resolve_companies_for_emails,
+    resolve_contact_by_email, resolve_or_create_contact,
 )
 
 # Company column that records where each accepted value came from. Only these
@@ -184,6 +185,75 @@ def resolve_contact_for_address(
 
     creator = create_fn or resolve_or_create_contact
     return creator(db, normalized, display_name, company=company)
+
+
+def resolve_contacts_for_addresses(
+    db: Session,
+    addresses: List[Tuple[Optional[str], Optional[str]]],
+    *,
+    create_fn=None,
+) -> Dict[str, Tuple[Contact, Optional[Company]]]:
+    """resolve_contact_for_address() for several (email, name) pairs, in ONE pass.
+
+    Returns {normalized email: (contact, company from their own domain)}.
+    Addresses Jack owns, blanks and strings that are not addresses are left out
+    of the result entirely — the caller treats a missing key as "no contact".
+
+    Same rules, same order, a fixed number of queries however many addresses:
+      1. an address Jack owns resolves to nobody
+      2. a correction Jack has made (ContactAddressOverride)
+      3. the address itself
+      4. create, untriaged, with the company from their own domain
+
+    `create_fn(db, email, name, company=...)` is the creation step, injectable
+    so the caller that owns the transaction owns it.
+    """
+    creator = create_fn or create_contact
+    wanted: Dict[str, Optional[str]] = {}
+    for email, name in addresses:
+        normalized = normalize_email(email)
+        if not normalized or "@" not in normalized or is_own_address(normalized):
+            continue
+        if normalized not in wanted or not wanted[normalized]:
+            wanted[normalized] = (name or "").strip() or None
+    if not wanted:
+        return {}
+
+    companies = resolve_companies_for_emails(db, list(wanted))
+    emails = list(wanted)
+
+    taught_rows = (
+        db.query(ContactAddressOverride)
+        .filter(ContactAddressOverride.email.in_(emails))
+        .all()
+    )
+    taught_ids = {row.contact_id for row in taught_rows}
+    taught_contacts = {
+        c.id: c for c in db.query(Contact).filter(Contact.id.in_(taught_ids)).all()
+    } if taught_ids else {}
+    taught = {
+        row.email: taught_contacts[row.contact_id]
+        for row in taught_rows if row.contact_id in taught_contacts
+    }
+
+    remaining = [e for e in emails if e not in taught]
+    by_email = {
+        c.email: c
+        for c in db.query(Contact).filter(Contact.email.in_(remaining)).all()
+    } if remaining else {}
+
+    out: Dict[str, Tuple[Contact, Optional[Company]]] = {}
+    for e in emails:
+        company = companies.get(e, (None, False))[0]
+        contact = taught.get(e) or by_email.get(e)
+        if contact is None:
+            contact = creator(db, e, wanted[e], company=company)
+            by_email[e] = contact
+        elif contact.company_id is None and company is not None:
+            # Backfill a company link learned later, but never overwrite one.
+            contact.company_id = company.id
+        out[e] = (contact, company)
+    return out
 
 
 # ── Stated company values ─────────────────────────────────────────────────────
