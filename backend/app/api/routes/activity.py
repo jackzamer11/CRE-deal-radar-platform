@@ -20,7 +20,7 @@ from app.services.attachment_storage import (
 )
 from app.services.contact_service import (
     STAGE_CHANGE_ACTION, apply_inbound_stage_rules, create_fact,
-    email_domain_of, mark_engaged, normalize_email, resolve_company_by_name,
+    email_domain_of, mark_engaged, normalize_email, resolve_companies_by_names,
     resolve_company_for_email, resolve_or_create_contact,
 )
 from app.services.email_ingest_service import (
@@ -115,6 +115,10 @@ class ActivityOut(BaseModel):
     # Optional at the schema level so a row written before the column existed
     # (NULL) reads back as False rather than failing validation.
     participation:     Optional[bool] = False
+
+    # Where a split entry came from when one email carried several deals — a
+    # weekly roundup rather than direct correspondence. Null otherwise.
+    source_note:       Optional[str] = None
 
     # Set only on a STAGE_CHANGE row — the transition the divider renders.
     stage_from: Optional[str] = None
@@ -442,6 +446,69 @@ class EmailAttachment(BaseModel):
     inline: bool = False
 
 
+def _bare_fact_strings(value):
+    """Tolerate ["they moved offices"] as well as [{"text": "..."}]."""
+    if isinstance(value, list):
+        return [{"text": v} if isinstance(v, str) else v for v in value]
+    return value
+
+
+def _stringified_proposed_values(value):
+    """Accept 40 as readily as "40" — the model may emit either."""
+    if isinstance(value, list):
+        out = []
+        for item in value:
+            if isinstance(item, dict) and "value" in item and item["value"] is not None:
+                item = {**item, "value": str(item["value"])}
+            out.append(item)
+        return out
+    return value
+
+
+# The discovery fields describe ONE deal. On a single-deal email they sit at the
+# top level of the payload; on a multi-deal email each deal carries its own.
+_DISCOVERY_FIELDS = (
+    "disc_current_rent_psf", "disc_current_sf", "disc_lease_expiry",
+    "disc_decision_timeline", "disc_buildout_needs", "disc_decision_maker",
+)
+
+
+class EmailDeal(BaseModel):
+    """One deal inside an email that carries several.
+
+    A weekly leasing-notes email lists seven deals — different tenants,
+    buildings, rates and expiries. Each becomes its own entry, stamped to its
+    own company. Everything about the EMAIL (sender, direction, message id,
+    date, recipients, attachments) stays on the parent payload and applies to
+    every deal: they all arrived in the same message.
+    """
+    company_override: Optional[str] = None
+    company_override_id: Optional[int] = None
+    action_taken: Optional[str] = None
+    # Overrides the email-level source_note for this deal only.
+    source_note: Optional[str] = None
+
+    disc_current_rent_psf:  Optional[float] = None
+    disc_current_sf:        Optional[int]   = None
+    disc_lease_expiry:      Optional[date]  = None
+    disc_decision_timeline: Optional[str]   = None
+    disc_buildout_needs:    Optional[str]   = None
+    disc_decision_maker:    Optional[str]   = None
+
+    proposed_company_updates: List[ProposedCompanyUpdate] = []
+    facts: List[EmailFact] = []
+
+    @field_validator("facts", mode="before")
+    @classmethod
+    def _accept_bare_fact_strings(cls, value):
+        return _bare_fact_strings(value)
+
+    @field_validator("proposed_company_updates", mode="before")
+    @classmethod
+    def _stringify_proposed_values(cls, value):
+        return _stringified_proposed_values(value)
+
+
 class ActivityFromEmail(BaseModel):
     """One email, as the scheduled mailbox check interpreted it.
 
@@ -458,6 +525,11 @@ class ActivityFromEmail(BaseModel):
     follow_up_action: Optional[str] = None
     source_message_id: Optional[str] = None
     sent_at: Optional[date] = None
+
+    # A short line recording where the entry came from — "From Ann Waller's
+    # leasing notes, September 15, 2026." Applies to every entry the email
+    # produces; a deal may override it.
+    source_note: Optional[str] = None
 
     # ── The interpreted record ───────────────────────────────────────────────
     facts: List[EmailFact] = []
@@ -496,33 +568,48 @@ class ActivityFromEmail(BaseModel):
     company_override: Optional[str] = None
     company_override_id: Optional[int] = None
 
+    # One email, several deals. When non-empty, the endpoint writes one entry
+    # per deal instead of one for the email, and the per-deal fields above
+    # (facts, discovery, proposed updates, company override) must be left empty
+    # — they belong on the deals, and silently dropping them would lose data.
+    # Absent or empty → exactly the single-entry path.
+    deals: Optional[List[EmailDeal]] = None
+
     @field_validator("facts", mode="before")
     @classmethod
     def _accept_bare_fact_strings(cls, value):
-        """Tolerate ["they moved offices"] as well as [{"text": "..."}]."""
-        if isinstance(value, list):
-            return [{"text": v} if isinstance(v, str) else v for v in value]
-        return value
+        return _bare_fact_strings(value)
 
     @field_validator("proposed_company_updates", mode="before")
     @classmethod
     def _stringify_proposed_values(cls, value):
-        """Accept 40 as readily as "40" — the model may emit either."""
-        if isinstance(value, list):
-            out = []
-            for item in value:
-                if isinstance(item, dict) and "value" in item and item["value"] is not None:
-                    item = {**item, "value": str(item["value"])}
-                out.append(item)
-            return out
-        return value
+        return _stringified_proposed_values(value)
+
+
+class EmailEntryResult(BaseModel):
+    """One entry an email produced — one per deal, or one for a plain email."""
+    id: int
+    source_message_id: Optional[str] = None
+    company_id: Optional[int] = None
+    company_name: Optional[str] = None
+    contact_id: Optional[int] = None
+    contact_name: Optional[str] = None
+    action_taken: str
+    source_note: Optional[str] = None
+    facts_written: int = 0
+    pending_updates_created: int = 0
+    company_values_written: List[str] = []
+    participant_entry_ids: List[int] = []
+    participation_entry_ids: List[int] = []
 
 
 class ActivityFromEmailResult(ActivityOut):
     """The entry that was created, plus what else the payload produced.
 
     Extends ActivityOut rather than replacing it, so a caller reading `id` off
-    the response — the mailbox task does exactly that — is unaffected.
+    the response — the mailbox task does exactly that — is unaffected. On a
+    multi-deal email the top-level entry is the FIRST deal's, the counts are
+    totals across every deal, and `entries` breaks them down per deal.
     """
     facts_written: int = 0
     pending_updates_created: int = 0
@@ -535,6 +622,8 @@ class ActivityFromEmailResult(ActivityOut):
     participation_entry_ids: List[int] = []
     # Addresses that resolved to nobody because Jack owns them.
     skipped_own_addresses: List[str] = []
+    # Every primary entry written, in deal order. One element for a plain email.
+    entries: List[EmailEntryResult] = []
 
 
 class _Participant:
@@ -618,6 +707,107 @@ def _participant_message_id(base: Optional[str], index: int, contact_id: Optiona
     return f"{base}#p{contact_id or index}"
 
 
+def _deal_message_id(base: Optional[str], deal_index: int) -> Optional[str]:
+    """The provider id for one deal's entry, when an email carries several.
+
+    The same pattern as participant rows, one level up: the first deal keeps the
+    bare id — so GET /message-ids still returns it and a re-POST is still caught
+    by the bare-id check before anything is written — and every later deal is
+    suffixed "#d2", "#d3"... Its participant rows then suffix that again.
+    """
+    if not base or deal_index == 0:
+        return base
+    return f"{base}#d{deal_index + 1}"
+
+
+class _DealSpec:
+    """What one entry is about. A plain email is a single spec built from the
+    top-level fields; a multi-deal email is one spec per deal."""
+    __slots__ = (
+        "company_override", "company_override_id", "action_taken", "source_note",
+        "discovery", "proposed_company_updates", "facts",
+    )
+
+    def __init__(self, source, source_note: Optional[str]):
+        self.company_override = (source.company_override or "").strip() or None
+        self.company_override_id = source.company_override_id
+        self.action_taken = (source.action_taken or "").strip()
+        self.source_note = (source_note or "").strip() or None
+        self.discovery = {f: getattr(source, f) for f in _DISCOVERY_FIELDS}
+        self.proposed_company_updates = list(source.proposed_company_updates)
+        self.facts = list(source.facts)
+
+
+def _deal_specs(payload: ActivityFromEmail) -> List[_DealSpec]:
+    """The entries this email becomes. Raises 400 on an ambiguous payload."""
+    if not payload.deals:
+        return [_DealSpec(payload, payload.source_note)]
+
+    # With deals present, per-deal fields at the top level have no deal to
+    # belong to. Refused rather than silently dropped.
+    stray = [
+        name for name, present in (
+            ("facts", bool(payload.facts)),
+            ("proposed_company_updates", bool(payload.proposed_company_updates)),
+            ("company_override", bool((payload.company_override or "").strip())),
+            ("company_override_id", payload.company_override_id is not None),
+        ) if present
+    ] + [f for f in _DISCOVERY_FIELDS if getattr(payload, f) is not None]
+    if stray:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "When deals is present these fields belong on each deal, not on "
+                f"the email: {', '.join(stray)}"
+            ),
+        )
+    return [
+        _DealSpec(deal, deal.source_note or payload.source_note)
+        for deal in payload.deals
+    ]
+
+
+def _resolve_deal_companies(
+    db: Session, specs: List[_DealSpec], sender_company_fn,
+) -> List[Tuple[Optional[Company], bool]]:
+    """(company, created) per deal, resolved in ONE pass however many deals.
+
+    Ids are fetched in one query, names are matched against one read of the
+    company table, and the sender-domain fallback runs at most once. Order of
+    precedence per deal is unchanged from the single-entry path: an id, then a
+    name, then the sender's domain.
+    """
+    ids = {s.company_override_id for s in specs if s.company_override_id is not None}
+    by_id = {}
+    if ids:
+        by_id = {c.id: c for c in db.query(Company).filter(Company.id.in_(ids)).all()}
+        missing = sorted(ids - set(by_id))
+        if missing:
+            raise HTTPException(
+                status_code=404,
+                detail=f"company_override_id {missing[0]} not found",
+            )
+
+    names = [
+        s.company_override for s in specs
+        if s.company_override_id is None and s.company_override
+    ]
+    by_name = resolve_companies_by_names(db, names) if names else {}
+
+    sender = None
+    out: List[Tuple[Optional[Company], bool]] = []
+    for spec in specs:
+        if spec.company_override_id is not None:
+            out.append((by_id[spec.company_override_id], False))
+        elif spec.company_override:
+            out.append(by_name[spec.company_override])
+        else:
+            if sender is None:
+                sender = sender_company_fn()
+            out.append(sender)
+    return out
+
+
 @router.post("/from-email", response_model=ActivityFromEmailResult)
 def create_activity_from_email(
     payload: ActivityFromEmail, db: Session = Depends(get_db),
@@ -630,6 +820,14 @@ def create_activity_from_email(
     about the company, file the attachments. A failure anywhere rolls all of it
     back — a half-written email is worse than an unwritten one, because nothing
     downstream can tell it is half-written.
+
+    **One email, several deals.** A weekly leasing-notes email carries seven
+    deals for seven tenants. With `deals` present, each becomes its own entry
+    stamped to its own company, with its own discovery capture, facts and
+    stated values. The email-level fields (sender, direction, message id, date,
+    recipients, attachments, source_note) apply to every one. All seven write
+    in the same single transaction: a failure on the fifth writes none, and the
+    message id stays free for the next run.
 
     What writes and what waits, and why the line sits there:
 
@@ -653,9 +851,12 @@ def create_activity_from_email(
             detail="direction must be 'outbound' or 'inbound'",
         )
 
+    specs = _deal_specs(payload)
+
     # Idempotency: a second POST with the same message id is a 409, not a
     # duplicate row and not a 500. Checked against the BARE id, which only the
-    # first participant's row carries.
+    # first participant's row of the first deal carries — so an email that
+    # produced seven entries is still caught by one lookup.
     if payload.source_message_id:
         existing = db.query(ActivityLog).filter(
             ActivityLog.source_message_id == payload.source_message_id
@@ -678,42 +879,31 @@ def create_activity_from_email(
     result_missing: List[str] = []
     extra_direct: List[int] = []
     extra_participation: List[int] = []
+    # Per primary entry, in deal order: (log, EmailEntryResult counts).
+    deal_logs: List[ActivityLog] = []
+    deal_results: List[EmailEntryResult] = []
 
     try:
-        # ── The company the conversation is ABOUT ─────────────────────────────
+        # ── The company each deal is ABOUT ────────────────────────────────────
         # An override wins over the sender's domain: a broker at Avison Young
         # writing about Collaborative AV is a conversation about Collaborative
         # AV, stamped there, while the broker himself stays under Avison Young.
-        company = None
-        company_is_new = False
-        if payload.company_override_id is not None:
-            company = db.query(Company).filter(
-                Company.id == payload.company_override_id
-            ).first()
-            if company is None:
-                raise HTTPException(
-                    status_code=404,
-                    detail=f"company_override_id {payload.company_override_id} not found",
-                )
-        elif (payload.company_override or "").strip():
-            company, company_is_new = resolve_company_by_name(
-                db, payload.company_override,
-            )
-        elif participants:
+        def _sender_company():
+            if not participants:
+                return None, False
             # Free-mail senders get no company — never a company called "Gmail".
-            company, company_is_new = resolve_company_for_email(
+            return resolve_company_for_email(
                 db, participants[0].email, participants[0].name,
             )
 
-        summary = (payload.action_taken or "").strip()
+        companies = _resolve_deal_companies(db, specs, _sender_company)
 
-        primary_log = None
-        primary_contact = None
-
+        # ── The people — resolved once, whatever the deal count ───────────────
+        # Each participant's company comes from THEIR OWN domain, never from the
+        # entry's stamp. A broker at Avison Young copied on a Collaborative AV
+        # email lands under Avison Young.
+        people = []   # (index, person, contact, own_company)
         for index, person in enumerate(participants):
-            # Each participant's company comes from THEIR OWN domain, never
-            # from the entry's stamp. A broker at Avison Young copied on a
-            # Collaborative AV email lands under Avison Young.
             own_company, _ = resolve_company_for_email(db, person.email, person.name)
             contact, _created = resolve_contact_for_address(
                 db, person.email, person.name, company=own_company,
@@ -724,149 +914,177 @@ def create_activity_from_email(
             )
             if contact is None:
                 continue
-
             if not person.participation:
                 # inbound → responded=True, and Sent → Replied only. A contact
                 # already at Interested or In Play is never regressed.
                 apply_inbound_stage_rules(contact, direction)
             # A copied recipient's stage, responded flag and triage are all left
             # exactly as they were. Ten copies must not make a relationship.
+            people.append((index, person, contact, own_company))
 
+        primary_contact = people[0][2] if people else None
+        log_date = payload.sent_at or date.today()
+        sender_email = normalize_email(payload.from_email)
+
+        for deal_index, (spec, (company, company_is_new)) in enumerate(zip(specs, companies)):
+            deal_message_id = _deal_message_id(payload.source_message_id, deal_index)
+            deal_direct: List[int] = []
+            deal_participation: List[int] = []
+
+            summary = spec.action_taken
             if not summary:
-                who = contact.name or person.email
-                verb = "Received email from" if direction == "inbound" else "Emailed"
-                summary = f"{verb} {who}" + (
-                    f" re {payload.subject}" if payload.subject else ""
-                )
+                if primary_contact is not None:
+                    who = primary_contact.name or people[0][1].email
+                    verb = "Received email from" if direction == "inbound" else "Emailed"
+                    summary = f"{verb} {who}"
+                else:
+                    summary = "Received email" if direction == "inbound" else "Sent email"
+                summary += f" re {payload.subject}" if payload.subject else ""
 
-            is_primary = primary_log is None
-            log = ActivityLog(
-                log_date       = payload.sent_at or date.today(),
-                company_id     = company.id if company else None,
-                contact_id     = contact.id,
-                company_stamp_id = (company.id if company else None) or (
-                    own_company.id if own_company else None
-                ),
-                action_type    = "EMAIL",
-                action_taken   = summary,
-                outcome        = payload.outcome if is_primary else None,
-                subject        = payload.subject,
-                follow_up_action = payload.follow_up_action if is_primary else None,
-                stage          = "Sent",
-                direction      = direction,
-                channel        = "email",
-                source_message_id = _participant_message_id(
-                    payload.source_message_id, index, contact.id,
-                ),
-                sender_email   = normalize_email(payload.from_email),
-                participation  = person.participation,
-                contact_method = "email",
-                created_by     = "email-automation",
-                # Discovery capture belongs to the conversation, not to the
-                # people copied on it.
-                disc_current_rent_psf  = payload.disc_current_rent_psf if is_primary else None,
-                disc_current_sf        = payload.disc_current_sf if is_primary else None,
-                disc_lease_expiry      = payload.disc_lease_expiry if is_primary else None,
-                disc_decision_timeline = payload.disc_decision_timeline if is_primary else None,
-                disc_buildout_needs    = payload.disc_buildout_needs if is_primary else None,
-                disc_decision_maker    = payload.disc_decision_maker if is_primary else None,
-            )
-            db.add(log)
-            db.flush()
-
-            if is_primary:
-                primary_log = log
-                primary_contact = contact
-            elif person.participation:
-                extra_participation.append(log.id)
-            else:
-                extra_direct.append(log.id)
-
-        # Nobody to attach to — every address on the mail is one Jack owns, or
-        # there were none. The entry is still logged, unattached, rather than
-        # filed under a contact called "Jack Zamer".
-        if primary_log is None:
-            if not summary:
-                verb = "Received email" if direction == "inbound" else "Sent email"
-                summary = verb + (f" re {payload.subject}" if payload.subject else "")
-            primary_log = ActivityLog(
-                log_date       = payload.sent_at or date.today(),
-                company_id     = company.id if company else None,
-                company_stamp_id = company.id if company else None,
-                action_type    = "EMAIL",
-                action_taken   = summary,
-                outcome        = payload.outcome,
-                subject        = payload.subject,
-                follow_up_action = payload.follow_up_action,
-                stage          = "Sent",
-                direction      = direction,
-                channel        = "email",
-                source_message_id = payload.source_message_id,
-                sender_email   = normalize_email(payload.from_email),
-                contact_method = "email",
-                created_by     = "email-automation",
-                disc_current_rent_psf  = payload.disc_current_rent_psf,
-                disc_current_sf        = payload.disc_current_sf,
-                disc_lease_expiry      = payload.disc_lease_expiry,
-                disc_decision_timeline = payload.disc_decision_timeline,
-                disc_buildout_needs    = payload.disc_buildout_needs,
-                disc_decision_maker    = payload.disc_decision_maker,
-            )
-            db.add(primary_log)
-            db.flush()
-
-        # ── Facts — straight through, sourced to this entry ───────────────────
-        if primary_contact is not None:
-            for fact in payload.facts:
-                text = (fact.text or "").strip()
-                if not text:
-                    continue
-                create_fact(
-                    db, primary_contact, text,
-                    source_entry_id=primary_log.id,
-                    learned_date=fact.learned_date or primary_log.log_date,
-                )
-                result_facts += 1
-
-            # Only when the email named a specific day. Nothing infers one.
-            if payload.next_touch_date is not None:
-                primary_contact.next_touch_date = payload.next_touch_date
-
-        # ── Stated company values ─────────────────────────────────────────────
-        for proposed in payload.proposed_company_updates:
-            field = (proposed.field or "").strip()
-            if field not in PENDING_UPDATE_FIELDS:
-                raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        f"Unknown proposed update field '{proposed.field}'. "
-                        f"One of: {', '.join(PENDING_UPDATE_FIELDS)}"
+            primary_log = None
+            for index, person, contact, own_company in people:
+                is_primary = primary_log is None
+                log = ActivityLog(
+                    log_date       = log_date,
+                    company_id     = company.id if company else None,
+                    contact_id     = contact.id,
+                    company_stamp_id = (company.id if company else None) or (
+                        own_company.id if own_company else None
                     ),
+                    action_type    = "EMAIL",
+                    action_taken   = summary,
+                    outcome        = payload.outcome if is_primary else None,
+                    subject        = payload.subject,
+                    follow_up_action = payload.follow_up_action if is_primary else None,
+                    stage          = "Sent",
+                    direction      = direction,
+                    channel        = "email",
+                    source_message_id = _participant_message_id(
+                        deal_message_id, index, contact.id,
+                    ),
+                    sender_email   = sender_email,
+                    participation  = person.participation,
+                    contact_method = "email",
+                    created_by     = "email-automation",
+                    source_note    = spec.source_note,
+                    # Discovery capture belongs to the conversation, not to the
+                    # people copied on it.
+                    **{f: (v if is_primary else None) for f, v in spec.discovery.items()},
                 )
-            if company is None:
-                # A free-mail sender with no company named: there is nothing to
-                # state a value about. Reported, never guessed at.
-                continue
-            try:
-                if company_is_new:
-                    # Nothing on file to conflict with, so confirmation would be
-                    # theatre. Written directly and marked conversation-sourced.
-                    write_company_value(
-                        company, field, coerce_value(field, proposed.value),
+                db.add(log)
+                db.flush()
+
+                if is_primary:
+                    primary_log = log
+                elif person.participation:
+                    deal_participation.append(log.id)
+                else:
+                    deal_direct.append(log.id)
+
+            # Nobody to attach to — every address on the mail is one Jack owns,
+            # or there were none. The entry is still logged, unattached, rather
+            # than filed under a contact called "Jack Zamer".
+            if primary_log is None:
+                primary_log = ActivityLog(
+                    log_date       = log_date,
+                    company_id     = company.id if company else None,
+                    company_stamp_id = company.id if company else None,
+                    action_type    = "EMAIL",
+                    action_taken   = summary,
+                    outcome        = payload.outcome,
+                    subject        = payload.subject,
+                    follow_up_action = payload.follow_up_action,
+                    stage          = "Sent",
+                    direction      = direction,
+                    channel        = "email",
+                    source_message_id = deal_message_id,
+                    sender_email   = sender_email,
+                    contact_method = "email",
+                    created_by     = "email-automation",
+                    source_note    = spec.source_note,
+                    **spec.discovery,
+                )
+                db.add(primary_log)
+                db.flush()
+
+            # ── Facts — straight through, sourced to this deal's entry ────────
+            deal_facts = 0
+            if primary_contact is not None:
+                for fact in spec.facts:
+                    text = (fact.text or "").strip()
+                    if not text:
+                        continue
+                    create_fact(
+                        db, primary_contact, text,
+                        source_entry_id=primary_log.id,
+                        learned_date=fact.learned_date or primary_log.log_date,
                     )
-                    result_written.append(field)
-                elif queue_company_update(
-                    db, company, field, proposed.value,
-                    source_sentence=proposed.source_sentence,
-                    source_entry_id=primary_log.id,
-                ) is not None:
-                    result_pending += 1
-            except StatedValueError as exc:
-                raise HTTPException(status_code=400, detail=str(exc))
+                    deal_facts += 1
+
+            # ── Stated company values ─────────────────────────────────────────
+            deal_pending = 0
+            deal_written: List[str] = []
+            for proposed in spec.proposed_company_updates:
+                field = (proposed.field or "").strip()
+                if field not in PENDING_UPDATE_FIELDS:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            f"Unknown proposed update field '{proposed.field}'. "
+                            f"One of: {', '.join(PENDING_UPDATE_FIELDS)}"
+                        ),
+                    )
+                if company is None:
+                    # A free-mail sender with no company named: there is nothing
+                    # to state a value about. Reported, never guessed at.
+                    continue
+                try:
+                    if company_is_new:
+                        # Nothing on file to conflict with, so confirmation
+                        # would be theatre. Written directly and marked
+                        # conversation-sourced.
+                        write_company_value(
+                            company, field, coerce_value(field, proposed.value),
+                        )
+                        deal_written.append(field)
+                    elif queue_company_update(
+                        db, company, field, proposed.value,
+                        source_sentence=proposed.source_sentence,
+                        source_entry_id=primary_log.id,
+                    ) is not None:
+                        deal_pending += 1
+                except StatedValueError as exc:
+                    raise HTTPException(status_code=400, detail=str(exc))
+
+            result_facts += deal_facts
+            result_pending += deal_pending
+            result_written.extend(deal_written)
+            extra_direct.extend(deal_direct)
+            extra_participation.extend(deal_participation)
+            deal_logs.append(primary_log)
+            deal_results.append(EmailEntryResult(
+                id=primary_log.id,
+                source_message_id=primary_log.source_message_id,
+                company_id=primary_log.company_stamp_id,
+                contact_id=primary_log.contact_id,
+                action_taken=summary,
+                source_note=spec.source_note,
+                facts_written=deal_facts,
+                pending_updates_created=deal_pending,
+                company_values_written=deal_written,
+                participant_entry_ids=deal_direct,
+                participation_entry_ids=deal_participation,
+            ))
+
+        # Only when the email named a specific day. Nothing infers one.
+        if primary_contact is not None and payload.next_touch_date is not None:
+            primary_contact.next_touch_date = payload.next_touch_date
 
         # ── Attachments ───────────────────────────────────────────────────────
-        # Filed under <DOCUMENTS_FOLDER>/<year>; the row stores the filename and
-        # the year, never a path. Nothing here routes into the lease flow.
+        # Filed once under <DOCUMENTS_FOLDER>/<year>, and recorded against every
+        # deal's entry — the file arrived with all of them. Each row stores the
+        # filename and the year, never a path. Nothing here routes into the
+        # lease flow.
         for attachment in payload.attachments:
             if attachment.inline:
                 continue   # signature images and embedded screenshots
@@ -874,16 +1092,16 @@ def create_activity_from_email(
             if not name:
                 continue
             stored_name, year, stored = store_attachment(
-                name, attachment.stored_path,
-                saved_on=primary_log.log_date,
+                name, attachment.stored_path, saved_on=log_date,
             )
-            db.add(ActivityAttachment(
-                activity_log_id=primary_log.id,
-                file_name=stored_name,
-                stored_year=year,
-                description=(attachment.description or None),
-                saved_date=primary_log.log_date or date.today(),
-            ))
+            for deal_log in deal_logs:
+                db.add(ActivityAttachment(
+                    activity_log_id=deal_log.id,
+                    file_name=stored_name,
+                    stored_year=year,
+                    description=(attachment.description or None),
+                    saved_date=deal_log.log_date or date.today(),
+                ))
             result_attached += 1
             if not stored:
                 result_missing.append(stored_name)
@@ -902,8 +1120,19 @@ def create_activity_from_email(
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Could not log email: {exc}")
 
-    db.refresh(primary_log)
-    out = ActivityFromEmailResult.model_validate(_to_out(primary_log).model_dump())
+    # One eager query for every entry written, not a lazy load per deal.
+    ids = [r.id for r in deal_results]
+    loaded = {
+        row.id: row
+        for row in db.query(ActivityLog).options(*_eager())
+        .filter(ActivityLog.id.in_(ids)).all()
+    }
+    for result in deal_results:
+        row = loaded[result.id]
+        result.company_name = row.stamped_company.name if row.stamped_company else None
+        result.contact_name = row.contact.name if row.contact else None
+
+    out = ActivityFromEmailResult.model_validate(_to_out(loaded[ids[0]]).model_dump())
     out.facts_written = result_facts
     out.pending_updates_created = result_pending
     out.company_values_written = result_written
@@ -912,6 +1141,7 @@ def create_activity_from_email(
     out.participant_entry_ids = extra_direct
     out.participation_entry_ids = extra_participation
     out.skipped_own_addresses = skipped_own
+    out.entries = deal_results
     return out
 
 

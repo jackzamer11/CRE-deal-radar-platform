@@ -180,6 +180,9 @@ class TimelineEntry(BaseModel):
     # True when this person was only copied. Rendered distinctly — it is
     # history on their thread, not correspondence with them.
     participation: Optional[bool] = False
+    # Where a split entry came from — a weekly roundup rather than direct
+    # correspondence. Rendered beneath the summary, subordinate to it.
+    source_note: Optional[str] = None
     # Files that arrived on the email. Filename and description only; the path
     # is resolved from settings at read time, never stored.
     attachments: List["TimelineAttachment"] = []

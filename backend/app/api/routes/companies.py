@@ -1236,6 +1236,9 @@ class CompanyTimelineEntry(BaseModel):
     channel: Optional[str] = "other"
     outreach_type: Optional[str] = None
     subject: Optional[str] = None
+    # Set when the entry was split out of a multi-deal email, so the company's
+    # timeline shows it arrived in a roundup rather than in direct correspondence.
+    source_note: Optional[str] = None
 
     class Config:
         from_attributes = True
