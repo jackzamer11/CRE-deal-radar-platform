@@ -437,7 +437,11 @@ export interface ContactListRow {
   lease_expiry_months: number | null
   company_id: number | null
   company_name: string | null
+  // Real correspondence only; copies counted separately. copied_only means this
+  // person has never been written to directly.
   entry_count: number
+  copied_count: number
+  copied_only: boolean
   latest_entry_date: string | null
   latest_entry_summary: string | null
   latest_entry_channel: Channel | null
@@ -478,6 +482,21 @@ export interface TimelineEntry {
   disc_decision_timeline: string | null
   disc_buildout_needs: string | null
   disc_decision_maker: string | null
+  // True when this person was only copied on the email. Rendered distinctly —
+  // it is history on their thread, not correspondence with them.
+  participation: boolean
+  attachments: TimelineAttachment[]
+}
+
+// A file that arrived on an ingested email. The database holds the filename and
+// the year it was filed under; the folder is a setting joined at read time.
+export interface TimelineAttachment {
+  id: number
+  file_name: string
+  stored_year: number
+  description: string | null
+  saved_date: string | null
+  missing: boolean
 }
 
 // The fields the shared entry editor writes. Both ActivityLog (the flat feed)
@@ -547,6 +566,31 @@ export interface DataConflict {
   resolution: string | null
 }
 
+// A value an email STATED about a company, waiting on Jack. The same decision
+// as a DataConflict and rendered by the same panel — both values side by side
+// with where the claim came from — but sourced from written correspondence
+// rather than a call, so it carries the sentence it came from.
+export interface PendingUpdate {
+  id: number
+  company_id: number
+  company_name: string | null
+  field: string
+  label: string
+  proposed_value: string | null
+  current_value: string | null
+  source_sentence: string | null
+  source_entry_id: number | null
+  source_entry_date: string | null
+  status: string
+  created_at: string | null
+}
+
+export interface PendingUpdateDigest {
+  total: number
+  by_company: { company_id: number; company_name: string | null; count: number }[]
+  updates: PendingUpdate[]
+}
+
 export interface RelationshipLine {
   text: string
   source_entry_id: number | null
@@ -562,7 +606,13 @@ export interface ThreadHeader {
   last_touch_channel: Channel | null
   days_of_silence: number | null
   open_loop: string | null
+  // Real correspondence only. copied_count is emails this person was merely on
+  // the Cc line of; copied_only means every entry on the thread is one of
+  // those — "copied, never directly contacted", which is a different kind of
+  // person from an active one and has to read that way.
   entry_count: number
+  copied_count: number
+  copied_only: boolean
   relationship_lines: RelationshipLine[]
   facts: ContactFact[]
   company_name: string | null
@@ -583,6 +633,7 @@ export interface ThreadHeader {
   past_client_reentry: boolean
   has_data_conflict: boolean
   conflicts: DataConflict[]
+  pending_updates: PendingUpdate[]
 }
 
 // ── Lease document ──────────────────────────────────────────────────────────

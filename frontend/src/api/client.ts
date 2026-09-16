@@ -31,6 +31,8 @@ import type {
   TimelinePage,
   CompanyTimelinePage,
   DataConflict,
+  PendingUpdate,
+  PendingUpdateDigest,
   LeaseStatus,
   LeaseConfirmResult,
   LeaseRemovalResult,
@@ -357,6 +359,11 @@ export interface ActivityFilters {
   since?: string
   action_type?: string
   limit?: number
+  // Free text over the entry AND the names of the contact and company linked
+  // to it. Both halves matter: summaries are written cleanly now, with the
+  // person and the company as structured links rather than repeated in the
+  // prose, so matching only the prose would return nothing for "Corcoran".
+  q?: string
 }
 
 export const getActivity = (filters?: ActivityFilters): Promise<ActivityLog[]> =>
@@ -601,6 +608,24 @@ export const rejectConflict = (
   companyPk: number, field: string,
 ): Promise<DataConflict[]> =>
   api.post(`/contacts/conflicts/${companyPk}/${field}/reject`).then(r => r.data)
+
+// ── Pending company updates ────────────────────────────────────────────────
+// Values an EMAIL stated about a company. Same decision as a data conflict —
+// both values side by side, Jack chooses — sourced from written correspondence
+// rather than a call, so each carries the sentence it came from.
+
+export const getPendingUpdates = (
+  companyId?: number,
+): Promise<PendingUpdateDigest> =>
+  api.get('/pending-updates/', {
+    params: companyId ? { company_id: companyId } : undefined,
+  }).then(r => r.data)
+
+export const acceptPendingUpdate = (updateId: number): Promise<PendingUpdate> =>
+  api.post(`/pending-updates/${updateId}/accept`).then(r => r.data)
+
+export const rejectPendingUpdate = (updateId: number): Promise<PendingUpdate> =>
+  api.post(`/pending-updates/${updateId}/reject`).then(r => r.data)
 
 // Every entry stamped to a company, interleaved across all contacts —
 // including entries with no contact attached.

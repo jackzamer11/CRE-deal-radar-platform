@@ -21,6 +21,7 @@ from app.services import signal_engine as se
 from app.services.scoring_model import score_property
 from app.services.match_scoring import medical_mismatch_penalty
 from app.services.lease_storage import delete_lease_file
+from app.models.email_ingest import CONVERSATION_SOURCE
 from app.services.lease_records import (
     CONFIRMED_LEASE_SOURCES, LEASE_DOCUMENT_SOURCE, MANUAL_SOURCE, choose_current,
     company_leases, current_lease, sync_company_from_lease,
@@ -79,12 +80,22 @@ COSTAR_SUBMARKET_MAP: dict = {
 # hand — and outranks CoStar for the same reason. See api/routes/leases.py.
 # LEASE_DOCUMENT_SOURCE and MANUAL_SOURCE are defined in services/lease_records
 # and re-exported here, where the import guard reads them.
+#
+# CONVERSATION_SOURCE joins them: a value Jack ACCEPTED off something someone
+# said in an email is a call he already made, and an import must not quietly
+# unmake it. It is written only by the pending-update accept flow, so no record
+# that has not been through that confirmation is affected.
 PROTECTED_LEASE_SOURCES = frozenset(
     {
         "manual", "compstak", "sec_filing", "landlord_confirmed", "public_record",
-        LEASE_DOCUMENT_SOURCE,
+        LEASE_DOCUMENT_SOURCE, CONVERSATION_SOURCE,
     }
 )
+
+# The sources that protect the non-expiry fields (address, SF, headcount) from
+# a CoStar import: a confirmed lease, Jack's own typing, or a conversation value
+# he accepted.
+PROTECTED_FIELD_SOURCES = frozenset(CONFIRMED_LEASE_SOURCES | {CONVERSATION_SOURCE})
 
 COSTAR_TENANT_COLS = [
     "Address", "Tenant Name", "Industry", "Employees", "Website",
@@ -576,17 +587,23 @@ async def costar_tenant_import(
         if key in existing:
             c = existing[key]
             c.industry              = payload["industry"]
-            c.current_headcount     = payload["current_headcount"]
+            # A headcount Jack accepted off a conversation outranks CoStar's —
+            # he already made that call, and re-importing must not quietly
+            # unmake it. Null on every record that has not been through the
+            # confirmation flow, so the previous import behaviour is unchanged.
+            if getattr(c, "current_headcount_source", None) not in PROTECTED_FIELD_SOURCES:
+                c.current_headcount = payload["current_headcount"]
             # Address and SF confirmed from a lease outrank CoStar's values for
             # the same reason the expiry does — the document is the primary
             # record. That covers a value read off the page ("lease_document")
-            # AND one Jack typed in the review panel ("manual"). No other
-            # source is set on these two columns, so every other record keeps
-            # the previous import behaviour exactly.
-            if getattr(c, "current_address_source", None) not in CONFIRMED_LEASE_SOURCES:
+            # AND one Jack typed in the review panel ("manual"), and now also a
+            # value accepted from something someone said in an email
+            # ("conversation"). No other source is set on these columns, so
+            # every other record keeps the previous import behaviour exactly.
+            if getattr(c, "current_address_source", None) not in PROTECTED_FIELD_SOURCES:
                 c.current_address   = payload["current_address"]
             c.current_submarket     = payload["current_submarket"]
-            if getattr(c, "current_sf_occupied_source", None) not in CONFIRMED_LEASE_SOURCES:
+            if getattr(c, "current_sf_occupied_source", None) not in PROTECTED_FIELD_SOURCES:
                 c.current_sf_occupied = payload["current_sf_occupied"]
             # Guard: never overwrite user-verified lease data with CoStar's value.
             # If the existing record has a protected source AND a verified date,
@@ -834,7 +851,7 @@ def unsnooze_company(company_id: str, db: Session = Depends(get_db)):
 
 VALID_LEASE_SOURCES = {
     "costar", "manual", "compstak", "sec_filing", "landlord_confirmed",
-    "public_record", LEASE_DOCUMENT_SOURCE,
+    "public_record", LEASE_DOCUMENT_SOURCE, CONVERSATION_SOURCE,
 }
 
 
