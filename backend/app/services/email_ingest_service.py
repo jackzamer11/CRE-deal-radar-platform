@@ -18,6 +18,7 @@ Four concerns live here:
 from datetime import date, datetime
 from typing import Dict, List, Optional, Tuple
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -253,6 +254,78 @@ def resolve_contacts_for_addresses(
             # Backfill a company link learned later, but never overwrite one.
             contact.company_id = company.id
         out[e] = (contact, company)
+    return out
+
+
+def name_key(name: Optional[str]) -> Optional[str]:
+    """The comparison form of a person's name: casefolded, whitespace collapsed.
+
+    "R. Kibby", "r. kibby" and "R.  Kibby" are one person. Nothing else is
+    normalised away — punctuation and initials are part of how Jack wrote the
+    name, and stripping them would start merging "R. Kibby" into "Rob Kibby".
+    """
+    collapsed = " ".join((name or "").split())
+    return collapsed.casefold() or None
+
+
+def resolve_contacts_for_names(
+    db: Session,
+    entries: List[Tuple[Optional[str], Optional[Company]]],
+    *,
+    create_fn=None,
+) -> Dict[Tuple[str, Optional[int]], Contact]:
+    """Resolve (name, company) pairs to contacts in ONE pass. Creates as needed.
+
+    For people an email names without giving an address. Returns
+    {(name_key, company_id): contact}; a blank name is left out entirely and the
+    caller treats a missing key as "no contact".
+
+    A name is a weak identifier — two people called Mike Johnson are two people
+    — so the match is scoped to the company the deal is about. Within that
+    company the match is case-insensitive, and it only ever considers contacts
+    with NO email address. A name-keyed contact is never matched to, or merged
+    into, a contact that holds an address: the address is that person's
+    identity, and a bare name is not evidence that they are the same human.
+
+    Fixed query count however many names: one read of the candidate contacts,
+    then creation for whoever is left.
+    """
+    creator = create_fn or create_contact
+
+    wanted: Dict[Tuple[str, Optional[int]], Tuple[str, Optional[Company]]] = {}
+    for raw_name, company in entries:
+        key = name_key(raw_name)
+        if not key:
+            continue
+        wanted.setdefault(
+            (key, company.id if company is not None else None),
+            (" ".join((raw_name or "").split()), company),
+        )
+    if not wanted:
+        return {}
+
+    # One query. Company scoping is applied in Python so a null company_id — a
+    # deal with no company resolved — buckets like any other value instead of
+    # falling out of an IN clause.
+    candidates = (
+        db.query(Contact)
+        .filter(Contact.email.is_(None))
+        .filter(func.lower(Contact.name).in_(sorted({k for k, _ in wanted})))
+        .all()
+    )
+    existing: Dict[Tuple[str, Optional[int]], Contact] = {}
+    for contact in candidates:
+        key = (name_key(contact.name), contact.company_id)
+        if key[0] and key not in existing:
+            existing[key] = contact
+
+    out: Dict[Tuple[str, Optional[int]], Contact] = {}
+    for key, (display_name, company) in wanted.items():
+        contact = existing.get(key)
+        if contact is None:
+            contact = creator(db, None, display_name, company=company)
+            existing[key] = contact
+        out[key] = contact
     return out
 
 
