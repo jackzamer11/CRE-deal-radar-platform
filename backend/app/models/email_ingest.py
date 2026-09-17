@@ -22,7 +22,7 @@ Each exists because the alternative was silently wrong:
 from datetime import date, datetime
 
 from sqlalchemy import (
-    Column, Date, DateTime, ForeignKey, Integer, String, Text, text,
+    Boolean, Column, Date, DateTime, ForeignKey, Integer, String, Text, text,
 )
 
 from app.database import Base
@@ -116,11 +116,23 @@ class ActivityAttachment(Base):
 
 
 class ContactAddressOverride(Base):
-    """An address Jack has taught the resolver to file under a given contact.
+    """Every address a contact can be reached at — one row per address.
 
-    Written when he moves an entry to a different contact. The resolver checks
-    this table FIRST, before matching on the address itself or on the domain,
-    so the same correction is never needed twice.
+    Doubles as two things, because they are the same mapping: an address maps
+    to exactly one contact.
+
+      * A correction Jack has taught the resolver, by moving an entry to a
+        different contact. The resolver checks this table FIRST, before
+        matching on the primary address or on the domain, so the same
+        correction is never needed twice. These rows have is_primary=False.
+      * A contact's full set of known addresses — the primary one (mirrored
+        here from Contact.email whenever it is set, is_primary=True) plus any
+        alias Jack has added by hand (POST /contacts/{id}/addresses). Fred
+        Zamer receiving mail at both a personal and a work address is the
+        motivating case: one contact, two rows here, one history.
+
+    Row per email, never two contacts sharing one: adding an address already
+    held elsewhere is refused rather than silently reassigned.
     """
     __tablename__ = "contact_address_overrides"
 
@@ -131,7 +143,14 @@ class ContactAddressOverride(Base):
     contact_id = Column(
         Integer, ForeignKey("contacts.id"), nullable=False, index=True,
     )
-    # Which correction taught this, for the audit trail.
+    # True for the one row mirroring this contact's Contact.email. Exactly one
+    # primary row per contact that has an email at all; every other row for
+    # that contact is a plain alias.
+    is_primary = Column(
+        Boolean, nullable=False, default=False, server_default=text("0"),
+    )
+    # Which correction taught this, for the audit trail. Null for an address
+    # added directly (the primary mirror, or a hand-added alias).
     source_entry_id = Column(
         Integer, ForeignKey("activity_logs.id"), nullable=True,
     )

@@ -2,14 +2,17 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   ArrowLeft, ArrowDownLeft, ArrowUpRight, Building2, Check, ChevronDown,
   ChevronRight, Clock, Copy, FileText, History, Mail, Paperclip, Pencil, Phone,
-  Plus, Trash2, TriangleAlert, Users, UserRound, X,
+  Plus, Star, Trash2, TriangleAlert, Users, UserRound, X,
 } from 'lucide-react'
 import {
-  acceptConflict, acceptPendingUpdate, addContactFact, createActivity,
-  deleteContact, deleteContactFact, editContactFact, getContactThread,
-  getContactTimeline, rejectConflict, rejectPendingUpdate, restampActivity,
-  assignActivity, searchCompanies, searchContacts, updateContact,
+  acceptConflict, acceptPendingUpdate, addContactAddress, addContactFact,
+  createActivity, deleteContact, deleteContactFact, editContactFact,
+  getContactAddresses, getContactThread, getContactTimeline, mergeContact,
+  rejectConflict, rejectPendingUpdate, removeContactAddress, restampActivity,
+  assignActivity, searchCompanies, searchContacts, setPrimaryContactAddress,
+  updateContact,
 } from '../api/client'
+import type { ContactAddress } from '../api/client'
 import type {
   ActivityStage, Channel, Contact, ContactFact, ContactType, DataConflict,
   PendingUpdate, ThreadHeader, TimelineEntry,
@@ -173,18 +176,252 @@ function ContactPicker({
   )
 }
 
+// ── Addresses ─────────────────────────────────────────────────────────────
+// A contact can be reached at more than one address — a personal inbox and a
+// work one, or a new address after a firm change. contact.email (shown above,
+// in the main form) stays "the" primary; this manages the rest, and making
+// one primary moves that flag rather than adding a second one.
+function AddressesEditor({ contactId }: { contactId: number }) {
+  const [addresses, setAddresses] = useState<ContactAddress[]>([])
+  const [loading, setLoading] = useState(true)
+  const [newEmail, setNewEmail] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    try {
+      setAddresses(await getContactAddresses(contactId))
+    } finally {
+      setLoading(false)
+    }
+  }, [contactId])
+
+  useEffect(() => { void load() }, [load])
+
+  const add = async () => {
+    const email = newEmail.trim()
+    if (!email) return
+    setBusy(true)
+    setError(null)
+    try {
+      await addContactAddress(contactId, email)
+      setNewEmail('')
+      await load()
+    } catch (e: any) {
+      setError(e?.response?.data?.detail ?? 'Could not add this address.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const remove = async (addressId: number) => {
+    setBusy(true)
+    setError(null)
+    try {
+      await removeContactAddress(contactId, addressId)
+      await load()
+    } catch (e: any) {
+      setError(e?.response?.data?.detail ?? 'Could not remove this address.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const makePrimary = async (addressId: number) => {
+    setBusy(true)
+    setError(null)
+    try {
+      await setPrimaryContactAddress(contactId, addressId)
+      await load()
+    } catch (e: any) {
+      setError(e?.response?.data?.detail ?? 'Could not set this as the primary address.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="mt-2">
+      <label className="text-[10px] text-ink-muted">Addresses</label>
+      {loading ? (
+        <p className="text-[11px] text-ink-muted mt-1">Loading…</p>
+      ) : (
+        <div className="space-y-1 mt-1">
+          {addresses.map(a => (
+            <div
+              key={a.id}
+              className="flex items-center justify-between gap-2 bg-surface-muted
+                         border border-surface-border rounded-lg px-2 py-1"
+            >
+              <div className="flex items-center gap-1.5 min-w-0">
+                {a.is_primary
+                  ? <Star size={10} className="text-amber-400 flex-shrink-0" fill="currentColor" />
+                  : <span className="w-[10px] flex-shrink-0" />}
+                <span className="text-[11px] text-ink-primary truncate">{a.email}</span>
+                {a.is_primary && (
+                  <span className="text-[9px] text-amber-400 uppercase tracking-wide flex-shrink-0">
+                    primary
+                  </span>
+                )}
+              </div>
+              <div className="flex items-center gap-2 flex-shrink-0">
+                {!a.is_primary && (
+                  <button
+                    onClick={() => void makePrimary(a.id)}
+                    disabled={busy}
+                    className="text-[10px] text-accent-blue hover:underline disabled:opacity-50"
+                  >
+                    Make primary
+                  </button>
+                )}
+                <button
+                  onClick={() => void remove(a.id)}
+                  disabled={busy || a.is_primary}
+                  title={a.is_primary ? 'Promote another address first' : 'Remove'}
+                  className="text-ink-muted hover:text-red-400 disabled:opacity-30 disabled:hover:text-ink-muted"
+                >
+                  <X size={11} />
+                </button>
+              </div>
+            </div>
+          ))}
+          {addresses.length === 0 && (
+            <p className="text-[11px] text-ink-muted">No addresses on file yet.</p>
+          )}
+        </div>
+      )}
+      <div className="flex items-center gap-1.5 mt-1.5">
+        <input
+          value={newEmail}
+          onChange={e => setNewEmail(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter') void add() }}
+          placeholder="Add another address…"
+          className={`${FIELD} flex-1`}
+        />
+        <button
+          onClick={() => void add()}
+          disabled={busy || !newEmail.trim()}
+          className="px-2.5 py-1.5 rounded-lg bg-surface-muted border border-surface-border
+                     text-[11px] text-ink-secondary hover:text-ink-primary disabled:opacity-50"
+        >
+          Add
+        </button>
+      </div>
+      {error && <p className="text-[11px] text-red-400 mt-1">{error}</p>}
+    </div>
+  )
+}
+
+// ── Merge two contacts ───────────────────────────────────────────────────────
+// The control Jack uses when the same person exists twice — most often
+// someone who mails from both a work and a personal address. Irreversible, so
+// it states plainly what moves before it runs.
+function MergeContactDialog({
+  contact, onMerged, onCancel,
+}: {
+  contact: Contact
+  onMerged: () => void
+  onCancel: () => void
+}) {
+  const [source, setSource] = useState<Contact | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const run = async () => {
+    if (!source) return
+    setBusy(true)
+    setError(null)
+    try {
+      await mergeContact(contact.id, source.id)
+      onMerged()
+    } catch (e: any) {
+      setError(e?.response?.data?.detail ?? 'Could not merge these contacts.')
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={onCancel}>
+      <div
+        className="w-full max-w-md bg-surface-card border border-surface-border rounded-xl p-5"
+        onClick={e => e.stopPropagation()}
+      >
+        <h3 className="text-sm font-bold text-ink-primary">Merge another contact into {contact.name}</h3>
+        <p className="text-[11px] text-ink-muted mt-1">
+          Find the duplicate record — the one whose history should end up here.
+        </p>
+
+        <div className="mt-3">
+          {source ? (
+            <div
+              className="flex items-center justify-between bg-surface-muted border border-surface-border
+                         rounded-lg px-2.5 py-1.5"
+            >
+              <div className="text-[11px] text-ink-primary">
+                {source.name}
+                {source.email && <span className="text-ink-muted ml-2">{source.email}</span>}
+              </div>
+              <button onClick={() => setSource(null)} className="text-ink-muted hover:text-red-400">
+                <X size={11} />
+              </button>
+            </div>
+          ) : (
+            <ContactPicker
+              placeholder="Search for the duplicate contact…"
+              excludeId={contact.id}
+              onPick={setSource}
+            />
+          )}
+        </div>
+
+        {source && (
+          <div className="mt-3 p-2.5 rounded-lg bg-amber-500/10 border border-amber-500/30">
+            <p className="text-[11px] text-amber-300 font-semibold flex items-center gap-1.5">
+              <TriangleAlert size={11} /> This cannot be undone
+            </p>
+            <ul className="text-[11px] text-ink-secondary mt-1.5 space-y-0.5 list-disc list-inside">
+              <li>Every entry and fact on <strong>{source.name}</strong> moves onto <strong>{contact.name}</strong></li>
+              <li>{source.email ?? "Their address"} becomes another address on {contact.name}'s record</li>
+              <li><strong>{contact.name}</strong> keeps their own stage, next-touch date, company and type</li>
+              <li><strong>{source.name}</strong> is deleted</li>
+            </ul>
+          </div>
+        )}
+
+        {error && <p className="text-[11px] text-red-400 mt-2">{error}</p>}
+
+        <div className="flex items-center justify-end gap-2 mt-4">
+          <button onClick={onCancel} className="px-3 py-1.5 text-[11px] text-ink-muted hover:text-ink-primary">
+            Cancel
+          </button>
+          <button
+            onClick={() => void run()}
+            disabled={!source || busy}
+            className="px-3 py-1.5 rounded-lg bg-red-500/90 text-white text-[11px] font-semibold
+                       hover:bg-red-500 disabled:opacity-50"
+          >
+            {busy ? 'Merging…' : 'Merge — cannot be undone'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── Contact details editor ───────────────────────────────────────────────────
 // Everything the automation guesses about a person — name, address, title,
 // type, employer — is correctable here. Changing the employer changes current
 // employment only: every existing entry keeps the company it was stamped to,
 // which is what keeps a departed contact's history on the old company's page.
 function ContactEditor({
-  contact, onSaved, onCancel, onDelete,
+  contact, onSaved, onCancel, onDelete, onMerge,
 }: {
   contact: Contact
   onSaved: () => void
   onCancel: () => void
   onDelete: () => void
+  onMerge: () => void
 }) {
   const [form, setForm] = useState({
     name: contact.name ?? '',
@@ -243,6 +480,8 @@ function ContactEditor({
         />
       </div>
 
+      <AddressesEditor contactId={contact.id} />
+
       <div className="flex items-center gap-1.5 mt-2 flex-wrap">
         {UI_CONTACT_TYPES.map(t => (
           <button
@@ -269,12 +508,20 @@ function ContactEditor({
       {error && <p className="text-[11px] text-red-400 mt-2">{error}</p>}
 
       <div className="flex items-center justify-between gap-2 mt-3">
-        <button
-          onClick={onDelete}
-          className="text-[10px] text-ink-muted hover:text-red-400 flex items-center gap-1"
-        >
-          <Trash2 size={10} /> Delete contact
-        </button>
+        <div className="flex items-center gap-3">
+          <button
+            onClick={onDelete}
+            className="text-[10px] text-ink-muted hover:text-red-400 flex items-center gap-1"
+          >
+            <Trash2 size={10} /> Delete contact
+          </button>
+          <button
+            onClick={onMerge}
+            className="text-[10px] text-ink-muted hover:text-accent-blue flex items-center gap-1"
+          >
+            <Users size={10} /> Merge with another contact…
+          </button>
+        </div>
         <div className="flex items-center gap-2">
           <button onClick={onCancel} className="px-3 py-1.5 text-[11px] text-ink-muted hover:text-ink-primary">
             Cancel
@@ -1273,6 +1520,7 @@ export default function ContactThread({
   const [logging, setLogging] = useState(false)
   const [editingContact, setEditingContact] = useState(false)
   const [deleting, setDeleting] = useState(false)
+  const [merging, setMerging] = useState(false)
   const [highlightId, setHighlightId] = useState<number | null>(null)
 
   const PAGE = 50
@@ -1426,6 +1674,7 @@ export default function ContactThread({
           onSaved={() => { setEditingContact(false); void load(false) }}
           onCancel={() => setEditingContact(false)}
           onDelete={() => { setEditingContact(false); setDeleting(true) }}
+          onMerge={() => { setEditingContact(false); setMerging(true) }}
         />
       )}
 
@@ -1435,6 +1684,14 @@ export default function ContactThread({
           entryCount={header.entry_count}
           onDeleted={() => { setDeleting(false); onBack() }}
           onCancel={() => setDeleting(false)}
+        />
+      )}
+
+      {merging && (
+        <MergeContactDialog
+          contact={c}
+          onMerged={() => { setMerging(false); void load(false) }}
+          onCancel={() => setMerging(false)}
         />
       )}
 

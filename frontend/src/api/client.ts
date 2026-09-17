@@ -587,6 +587,48 @@ export const deleteContact = (
 ): Promise<ContactDeleteResult> =>
   api.delete(`/contacts/${contactId}`, { params: { mode } }).then(r => r.data)
 
+// ── Contact addresses ─────────────────────────────────────────────────────
+// A contact can be reached at more than one address (a personal inbox and a
+// work one, or a new address after a firm change). Contact.email stays "the"
+// primary; these manage the rest, and promoting one moves that flag rather
+// than adding a second one.
+
+export interface ContactAddress {
+  id: number
+  email: string
+  is_primary: boolean
+  created_at?: string | null
+}
+
+export const getContactAddresses = (contactId: number): Promise<ContactAddress[]> =>
+  api.get(`/contacts/${contactId}/addresses`).then(r => r.data)
+
+export const addContactAddress = (
+  contactId: number, email: string,
+): Promise<ContactAddress> =>
+  api.post(`/contacts/${contactId}/addresses`, { email }).then(r => r.data)
+
+export const removeContactAddress = (
+  contactId: number, addressId: number,
+): Promise<{ deleted: number }> =>
+  api.delete(`/contacts/${contactId}/addresses/${addressId}`).then(r => r.data)
+
+export const setPrimaryContactAddress = (
+  contactId: number, addressId: number,
+): Promise<Contact> =>
+  api.patch(`/contacts/${contactId}/addresses/${addressId}/primary`).then(r => r.data)
+
+// ── Merging two contacts ───────────────────────────────────────────────────
+// Irreversible: every entry, fact and address on sourceContactId moves onto
+// contactId, and sourceContactId is deleted. Confirm with the user before
+// calling this.
+
+export const mergeContact = (
+  contactId: number, sourceContactId: number,
+): Promise<Contact> =>
+  api.post(`/contacts/${contactId}/merge`, { source_contact_id: sourceContactId })
+    .then(r => r.data)
+
 // ── Data conflicts ─────────────────────────────────────────────────────────
 // Lease expiry, headcount, growth rate and SF never write silently.
 

@@ -21,7 +21,6 @@ from typing import Dict, List, Optional, Tuple
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.config import settings
 from app.models.company import Company
 from app.models.contact import Contact
 from app.models.email_ingest import (
@@ -29,8 +28,9 @@ from app.models.email_ingest import (
     ContactAddressOverride, PendingCompanyUpdate,
 )
 from app.services.contact_service import (
-    create_contact, normalize_email, resolve_companies_for_emails,
-    resolve_contact_by_email, resolve_or_create_contact,
+    create_contact, is_own_address, normalize_email, own_email_addresses,
+    own_email_domains, resolve_companies_for_emails, resolve_contact_by_email,
+    resolve_or_create_contact,
 )
 
 # Company column that records where each accepted value came from. Only these
@@ -52,48 +52,12 @@ FIELD_LABEL = {
 
 
 # ── Addresses Jack owns ───────────────────────────────────────────────────────
-
-def _split_setting(raw: Optional[str]) -> set:
-    return {
-        part.strip().lower().lstrip("@")
-        for part in str(raw or "").split(",")
-        if part.strip()
-    }
-
-
-def own_email_domains() -> set:
-    """Read at call time so the env var is live, never cached at import."""
-    return _split_setting(getattr(settings, "OWN_EMAIL_DOMAINS", ""))
-
-
-def own_email_addresses() -> set:
-    return _split_setting(getattr(settings, "OWN_EMAIL_ADDRESSES", ""))
-
-
-def is_own_address(email: Optional[str]) -> bool:
-    """True when this address is Jack's own.
-
-    Two tests, because they are not the same question. A domain Jack owns covers
-    every address at it (jzamer@z-reg.com, anything@z-reg.com). A free-mail
-    address has to match exactly — blocklisting gmail.com as a domain would
-    swallow every real contact who uses it.
-    """
-    normalized = normalize_email(email)
-    if not normalized:
-        return False
-    if normalized in own_email_addresses():
-        return True
-    if "@" not in normalized:
-        return False
-    domain = normalized.rsplit("@", 1)[1]
-    if domain in own_email_domains():
-        return True
-    # Subdomain of an owned domain (mail.z-reg.com) is still Jack's.
-    parts = domain.split(".")
-    for i in range(1, len(parts) - 1):
-        if ".".join(parts[i:]) in own_email_domains():
-            return True
-    return False
+#
+# own_email_domains / own_email_addresses / is_own_address now live in
+# contact_service (the alias/dedup guard needs them too, and this module
+# already imports from contact_service — the dependency only runs one way).
+# Imported above and re-exported here so existing callers of
+# `email_ingest_service.is_own_address` keep working unchanged.
 
 
 # ── Corrections that teach the resolver ───────────────────────────────────────
@@ -124,6 +88,12 @@ def record_address_override(
     Called when Jack reassigns an entry. An address Jack owns is never mapped —
     that would teach the resolver to file his own mail under a contact, which is
     the exact thing the guard exists to prevent.
+
+    Always writes is_primary=False, even when the row being taken over was
+    someone else's primary-mirror row (the sender's address, before this
+    correction, was literally that contact's own Contact.email — the common
+    case). A teaching correction is never a primary claim on the new contact:
+    it only says future mail from this address should route to them.
     """
     normalized = normalize_email(email)
     if not normalized or contact is None or is_own_address(normalized):
@@ -134,11 +104,12 @@ def record_address_override(
         .first()
     )
     if row is None:
-        row = ContactAddressOverride(email=normalized, contact_id=contact.id)
+        row = ContactAddressOverride(email=normalized, contact_id=contact.id, is_primary=False)
         db.add(row)
     else:
         # A later correction wins — Jack is correcting the correction.
         row.contact_id = contact.id
+        row.is_primary = False
         row.updated_at = datetime.utcnow()
     if source_entry_id is not None:
         row.source_entry_id = source_entry_id

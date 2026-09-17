@@ -72,7 +72,7 @@ class Settings(BaseSettings):
     # blocklisting gmail.com would swallow every real contact who uses it.
     OWN_EMAIL_DOMAINS: str = "z-reg.com,simpsondev.com"
     OWN_EMAIL_ADDRESSES: str = (
-        "jzamer@z-reg.com,jzamer@simpsondev.com,jackzamer1@gmail.com"
+        "jzamer@z-reg.com,jzamer@simpsondev.com,jackzamer1@gmail.com,jfzamer@wm.edu"
     )
 
     # Submarket reference data (avg asking $/SF for comps)
