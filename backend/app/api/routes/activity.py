@@ -25,8 +25,9 @@ from app.services.contact_service import (
 )
 from app.services.email_ingest_service import (
     StatedValueError, coerce_value, is_own_address, queue_company_update,
-    record_address_override, resolve_contact_for_address,
-    resolve_contacts_for_addresses, write_company_value,
+    name_key, record_address_override, resolve_contact_for_address,
+    resolve_contacts_for_addresses, resolve_contacts_for_names,
+    write_company_value,
 )
 
 router = APIRouter(prefix="/activity", tags=["activity"])
@@ -492,9 +493,23 @@ class EmailDeal(BaseModel):
     # The person this deal is about, when it is not the sender. Ann's weekly
     # notes mention a Scott Management contact: that deal's entry and its facts
     # belong on THEIR thread, not on Ann's — otherwise her Relationship panel
-    # fills with facts about other people's tenants. Resolved by the same rules
-    # as any address on the email (matched on email, created untriaged, company
-    # from their own domain). Absent, or an address Jack owns → the sender.
+    # fills with facts about other people's tenants.
+    #
+    # Resolution is strictly ordered:
+    #
+    #   contact_email → the same rules as any address on the email (a taught
+    #     correction, then the address itself, then created untriaged with the
+    #     company from their own domain). The address ALWAYS wins; contact_name
+    #     is then only a display name, and an address Jack owns still falls back
+    #     to the sender rather than reaching for the name.
+    #   contact_name alone → matched case-insensitively against the contacts at
+    #     THIS DEAL'S company that hold no email address, and created as one
+    #     (null email, untriaged) if none matches. Ann's Brinks note names three
+    #     renewal contacts and gives no address for any of them; without this
+    #     their facts had nowhere to land. Scoped to the company because a bare
+    #     name is a weak identifier — two people called Mike Johnson are two
+    #     people — and never matched against a contact who has an address.
+    #   neither → the sender.
     contact_email: Optional[str] = None
     contact_name: Optional[str] = None
 
@@ -957,6 +972,18 @@ def create_activity_from_email(
             # The transaction is owned here, so creation is too.
             create_fn=create_contact,
         )
+        # And the ones named without an address — a second single pass, not a
+        # lookup per deal. The company is the deal's own, already resolved
+        # above, because a bare name is only an identity within one company.
+        deal_name_contacts = resolve_contacts_for_names(
+            db,
+            [
+                (spec.contact_name, company)
+                for spec, (company, _) in zip(specs, companies)
+                if not spec.contact_email and spec.contact_name
+            ],
+            create_fn=create_contact,
+        )
 
         for deal_index, (spec, (company, company_is_new)) in enumerate(zip(specs, companies)):
             deal_message_id = _deal_message_id(payload.source_message_id, deal_index)
@@ -973,9 +1000,24 @@ def create_activity_from_email(
                     summary = "Received email" if direction == "inbound" else "Sent email"
                 summary += f" re {payload.subject}" if payload.subject else ""
 
-            deal_contact, deal_contact_company = deal_contacts.get(
-                spec.contact_email, (None, None),
-            ) if spec.contact_email else (None, None)
+            # Address first, always. Only when the deal gave no address does
+            # the name get a say — an address that resolves to nobody (one Jack
+            # owns) falls back to the sender exactly as it did before, rather
+            # than quietly reaching for the name instead.
+            if spec.contact_email:
+                deal_contact, deal_contact_company = deal_contacts.get(
+                    spec.contact_email, (None, None),
+                )
+            elif spec.contact_name:
+                deal_contact = deal_name_contacts.get(
+                    (name_key(spec.contact_name),
+                     company.id if company is not None else None),
+                )
+                # A name-keyed contact holds the deal's company already; there
+                # is no separate domain to stamp them under.
+                deal_contact_company = company if deal_contact is not None else None
+            else:
+                deal_contact, deal_contact_company = None, None
             ignored_contact_email = (
                 spec.contact_email if spec.contact_email and deal_contact is None else None
             )

@@ -1316,3 +1316,330 @@ def test_ensure_schema_adds_deal_sourced_idempotently():
     cur.execute("SELECT deal_sourced FROM activity_logs WHERE id = 1")
     assert cur.fetchone() == (0,)
     conn.close()
+
+
+# ══ 8. A deal contact named without an address ════════════════════════════════
+#
+# Ann's Brinks renewal email named three renewal contacts and gave no address
+# for any of them; her L P Roofing email named Cendy and Luis Panameno the same
+# way. A deal could only name its contact by email, so neither deal carried one
+# and every fact about those five people returned facts_written: 0 and was lost.
+# A name alone now resolves — scoped to the deal's company, because a bare name
+# is a weak identifier and two people called Mike Johnson are two people.
+
+
+def _named_deal(company, name, **kw):
+    deal = {
+        "company_override": company,
+        "contact_name": name,
+        "action_taken": f"{company} renewal note.",
+    }
+    deal.update(kw)
+    return deal
+
+
+def test_a_named_deal_contact_with_no_address_gets_a_contact_and_the_facts(
+    db_session, client,
+):
+    brinks = _company(db_session, "Brinks", "CO-980", email_domain="brinks.com")
+    crg = _company(db_session, "CRG NoVA", "CO-981", email_domain="crgnova.com")
+    ann = _existing_contact(db_session, "Ann Waller", "ann.waller@crgnova.com", crg)
+
+    body = _post(client, _roundup([_named_deal(
+        "Brinks", "Ryan Pordes",
+        facts=["Ryan handles the renewal paperwork"],
+    )]))
+
+    ryan = db_session.query(Contact).filter(Contact.name == "Ryan Pordes").one()
+    assert ryan.email is None
+    assert ryan.company_id == brinks.id
+    assert ryan.auto_created is True
+
+    assert body["entries"][0]["contact_id"] == ryan.id
+    assert body["entries"][0]["contact_name"] == "Ryan Pordes"
+    assert body["entries"][0]["facts_written"] == 1
+    assert body["facts_written"] == 1
+    assert _facts_of(db_session, ryan) == ["Ryan handles the renewal paperwork"]
+    assert _facts_of(db_session, ann) == []
+
+
+def test_three_named_contacts_on_one_email_each_get_their_own_thread(db_session, client):
+    _company(db_session, "Brinks", "CO-982", email_domain="brinks.com")
+    crg = _company(db_session, "CRG NoVA", "CO-983", email_domain="crgnova.com")
+    _existing_contact(db_session, "Ann Waller", "ann.waller@crgnova.com", crg)
+
+    body = _post(client, _roundup([
+        _named_deal("Brinks", "Ryan Pordes", facts=["Ryan runs the renewal"]),
+        _named_deal("Brinks", "Rebeca Orta-Williamson", facts=["Rebeca signs off"]),
+        _named_deal("Brinks", "R. Kibby", facts=["Kibby is the facilities lead"]),
+    ]))
+
+    assert body["facts_written"] == 3
+    assert [e["facts_written"] for e in body["entries"]] == [1, 1, 1]
+    names = [e["contact_name"] for e in body["entries"]]
+    assert names == ["Ryan Pordes", "Rebeca Orta-Williamson", "R. Kibby"]
+    for name, fact in zip(names, ["Ryan runs the renewal", "Rebeca signs off",
+                                  "Kibby is the facilities lead"]):
+        person = db_session.query(Contact).filter(Contact.name == name).one()
+        assert _facts_of(db_session, person) == [fact]
+
+
+def test_the_same_name_on_a_later_deal_matches_rather_than_duplicating(
+    db_session, client,
+):
+    _company(db_session, "Brinks", "CO-984", email_domain="brinks.com")
+    crg = _company(db_session, "CRG NoVA", "CO-985", email_domain="crgnova.com")
+    _existing_contact(db_session, "Ann Waller", "ann.waller@crgnova.com", crg)
+
+    _post(client, _roundup([_named_deal("Brinks", "Ryan Pordes", facts=["first"])]))
+    # Casing differs, and so does the spacing. One person either way.
+    _post(client, _roundup(
+        [_named_deal("Brinks", "  ryan   pordes ", facts=["second"])],
+        source_message_id="<second@mail>",
+    ))
+
+    people = db_session.query(Contact).filter(Contact.email.is_(None)).all()
+    assert len(people) == 1
+    assert people[0].name == "Ryan Pordes"   # the first spelling is kept
+    assert _facts_of(db_session, people[0]) == ["first", "second"]
+
+
+def test_the_same_name_twice_in_one_email_is_one_contact(db_session, client):
+    _company(db_session, "Brinks", "CO-986", email_domain="brinks.com")
+    crg = _company(db_session, "CRG NoVA", "CO-987", email_domain="crgnova.com")
+    _existing_contact(db_session, "Ann Waller", "ann.waller@crgnova.com", crg)
+
+    body = _post(client, _roundup([
+        _named_deal("Brinks", "Ryan Pordes", facts=["renewal paperwork"]),
+        _named_deal("Brinks", "Ryan Pordes", facts=["also the parking"]),
+    ]))
+
+    assert db_session.query(Contact).filter(Contact.email.is_(None)).count() == 1
+    assert len({e["contact_id"] for e in body["entries"]}) == 1
+    ryan = db_session.query(Contact).filter(Contact.name == "Ryan Pordes").one()
+    assert _facts_of(db_session, ryan) == ["renewal paperwork", "also the parking"]
+
+
+def test_the_same_name_at_a_different_company_is_a_different_person(db_session, client):
+    brinks = _company(db_session, "Brinks", "CO-988", email_domain="brinks.com")
+    roofing = _company(db_session, "L P Roofing", "CO-989", email_domain="lproofing.com")
+    crg = _company(db_session, "CRG NoVA", "CO-990", email_domain="crgnova.com")
+    _existing_contact(db_session, "Ann Waller", "ann.waller@crgnova.com", crg)
+
+    body = _post(client, _roundup([
+        _named_deal("Brinks", "Mike Johnson", facts=["Brinks side"]),
+        _named_deal("L P Roofing", "Mike Johnson", facts=["Roofing side"]),
+    ]))
+
+    mikes = db_session.query(Contact).filter(Contact.name == "Mike Johnson").all()
+    assert len(mikes) == 2
+    assert {m.company_id for m in mikes} == {brinks.id, roofing.id}
+    assert len({e["contact_id"] for e in body["entries"]}) == 2
+    by_company = {m.company_id: m for m in mikes}
+    assert _facts_of(db_session, by_company[brinks.id]) == ["Brinks side"]
+    assert _facts_of(db_session, by_company[roofing.id]) == ["Roofing side"]
+
+
+def test_a_named_contact_never_matches_a_contact_who_has_an_address(db_session, client):
+    """An address is an identity. A bare name is not evidence of the same human."""
+    brinks = _company(db_session, "Brinks", "CO-991", email_domain="brinks.com")
+    crg = _company(db_session, "CRG NoVA", "CO-992", email_domain="crgnova.com")
+    _existing_contact(db_session, "Ann Waller", "ann.waller@crgnova.com", crg)
+    addressed = _existing_contact(
+        db_session, "Ryan Pordes", "ryan.pordes@brinks.com", brinks,
+    )
+
+    body = _post(client, _roundup([_named_deal(
+        "Brinks", "Ryan Pordes", facts=["named without an address"],
+    )]))
+
+    named = (
+        db_session.query(Contact)
+        .filter(Contact.name == "Ryan Pordes", Contact.email.is_(None))
+        .one()
+    )
+    assert named.id != addressed.id
+    assert addressed.email == "ryan.pordes@brinks.com"   # untouched, not merged
+    assert body["entries"][0]["contact_id"] == named.id
+    assert _facts_of(db_session, named) == ["named without an address"]
+    assert _facts_of(db_session, addressed) == []
+
+
+def test_contact_email_still_wins_when_both_are_present(db_session, client):
+    scott = _company(db_session, "Scott Management", "CO-993", email_domain="scottmgmt.com")
+    crg = _company(db_session, "CRG NoVA", "CO-994", email_domain="crgnova.com")
+    _existing_contact(db_session, "Ann Waller", "ann.waller@crgnova.com", crg)
+    bill = _existing_contact(db_session, "Bill Scott", "bill@scottmgmt.com", scott)
+
+    body = _post(client, _roundup([{
+        "company_override": "Scott Management",
+        "contact_email": "bill@scottmgmt.com",
+        "contact_name": "Someone Else Entirely",
+        "action_taken": "Scott Management renewing.",
+        "facts": ["signs every renewal himself"],
+    }]))
+
+    assert body["entries"][0]["contact_id"] == bill.id
+    assert _facts_of(db_session, bill) == ["signs every renewal himself"]
+    assert db_session.query(Contact).filter(
+        Contact.name == "Someone Else Entirely"
+    ).first() is None
+
+
+def test_an_own_address_with_a_name_still_falls_back_to_the_sender(db_session, client):
+    """Address always wins — including when it wins by resolving to nobody."""
+    _company(db_session, "Brinks", "CO-995", email_domain="brinks.com")
+    crg = _company(db_session, "CRG NoVA", "CO-996", email_domain="crgnova.com")
+    ann = _existing_contact(db_session, "Ann Waller", "ann.waller@crgnova.com", crg)
+
+    body = _post(client, _roundup([{
+        "company_override": "Brinks",
+        "contact_email": "jzamer@z-reg.com",
+        "contact_name": "Ryan Pordes",
+        "action_taken": "Brinks renewal.",
+        "facts": ["noted on the call"],
+    }]))
+
+    assert body["entries"][0]["contact_id"] == ann.id
+    assert body["entries"][0]["contact_email_ignored"] == "jzamer@z-reg.com"
+    assert db_session.query(Contact).filter(Contact.name == "Ryan Pordes").first() is None
+    assert _facts_of(db_session, ann) == ["noted on the call"]
+
+
+def test_neither_email_nor_name_still_falls_back_to_the_sender(db_session, client):
+    _company(db_session, "Brinks", "CO-997", email_domain="brinks.com")
+    crg = _company(db_session, "CRG NoVA", "CO-998", email_domain="crgnova.com")
+    ann = _existing_contact(db_session, "Ann Waller", "ann.waller@crgnova.com", crg)
+
+    body = _post(client, _roundup([{
+        "company_override": "Brinks",
+        "action_taken": "Brinks renewal.",
+        "facts": ["straight onto Ann's thread"],
+    }]))
+
+    assert body["entries"][0]["contact_id"] == ann.id
+    assert body["entries"][0]["contact_email_ignored"] is None
+    assert _facts_of(db_session, ann) == ["straight onto Ann's thread"]
+    assert db_session.query(Contact).filter(Contact.email.is_(None)).count() == 0
+
+
+def test_a_blank_contact_name_falls_back_to_the_sender(db_session, client):
+    _company(db_session, "Brinks", "CO-999", email_domain="brinks.com")
+    crg = _company(db_session, "CRG NoVA", "CO-1000", email_domain="crgnova.com")
+    ann = _existing_contact(db_session, "Ann Waller", "ann.waller@crgnova.com", crg)
+
+    body = _post(client, _roundup([{
+        "company_override": "Brinks",
+        "contact_name": "   ",
+        "action_taken": "Brinks renewal.",
+        "facts": ["nowhere else to go"],
+    }]))
+
+    assert body["entries"][0]["contact_id"] == ann.id
+    assert _facts_of(db_session, ann) == ["nowhere else to go"]
+    assert db_session.query(Contact).filter(Contact.email.is_(None)).count() == 0
+
+
+def test_a_named_deal_contact_is_created_untriaged_and_a_fact_does_not_triage_them(
+    db_session, client,
+):
+    _company(db_session, "Brinks", "CO-1001", email_domain="brinks.com")
+    crg = _company(db_session, "CRG NoVA", "CO-1002", email_domain="crgnova.com")
+    _existing_contact(db_session, "Ann Waller", "ann.waller@crgnova.com", crg)
+
+    _post(client, _roundup([_named_deal(
+        "Brinks", "Rebeca Orta-Williamson", facts=["Rebeca signs the renewal"],
+    )]))
+
+    rebeca = db_session.query(Contact).filter(
+        Contact.name == "Rebeca Orta-Williamson"
+    ).one()
+    assert rebeca.triaged is False
+    assert rebeca.auto_created is True
+    assert rebeca.responded is False
+    assert rebeca.stage == "Sent"
+    assert _facts_of(db_session, rebeca) == ["Rebeca signs the renewal"]
+
+
+def test_a_named_deal_contacts_rows_are_marked_deal_sourced(db_session, client):
+    _company(db_session, "Brinks", "CO-1003", email_domain="brinks.com")
+    crg = _company(db_session, "CRG NoVA", "CO-1004", email_domain="crgnova.com")
+    _existing_contact(db_session, "Ann Waller", "ann.waller@crgnova.com", crg)
+
+    body = _post(client, _roundup([_named_deal("Brinks", "R. Kibby")]))
+
+    entry = db_session.query(ActivityLog).filter(
+        ActivityLog.id == body["entries"][0]["id"]
+    ).one()
+    assert entry.deal_sourced is True
+    # No address chose this contact, so there is no address to teach from.
+    assert entry.sender_email is None
+
+
+def test_ten_named_contacts_resolve_in_one_pass(db_session, client):
+    crg = _company(db_session, "CRG NoVA", "CO-1005", email_domain="crgnova.com")
+    _existing_contact(db_session, "Ann Waller", "ann.waller@crgnova.com", crg)
+    for i in range(10):
+        _company(db_session, f"Named Co {i}", f"CO-101{i}", email_domain=f"named{i}.com")
+
+    tables = ("contacts", "contact_address_overrides", "companies")
+    two = _table_queries_for(client, db_session, _roundup(
+        [_named_deal(f"Named Co {i}", f"Person {i}") for i in range(2)],
+        source_message_id="<two-named@mail>",
+    ), tables)
+    ten = _table_queries_for(client, db_session, _roundup(
+        [_named_deal(f"Named Co {i}", f"Other {i}") for i in range(10)],
+        source_message_id="<ten-named@mail>",
+    ), tables)
+    assert len(ten) == len(two)
+
+    stamped = db_session.query(ActivityLog).filter(
+        ActivityLog.source_message_id.like("<ten-named@mail>%")
+    ).all()
+    assert len({r.contact_id for r in stamped}) == 10
+
+
+def test_a_failure_on_the_third_named_deal_writes_none_of_the_three(db_session, client):
+    crg = _company(db_session, "CRG NoVA", "CO-1020", email_domain="crgnova.com")
+    _existing_contact(db_session, "Ann Waller", "ann.waller@crgnova.com", crg)
+    for name, cid in (("Alpha Co", "CO-1021"), ("Beta Co", "CO-1022"),
+                      ("Gamma Co", "CO-1023")):
+        _company(db_session, name, cid, email_domain=f"{name.split()[0].lower()}.com")
+
+    _post(client, _roundup([
+        _named_deal("Alpha Co", "Alpha Person", facts=["a"]),
+        _named_deal("Beta Co", "Beta Person", facts=["b"]),
+        dict(_named_deal("Gamma Co", "Gamma Person", facts=["c"]),
+             proposed_company_updates=[{"field": "headcount", "value": "not a number"}]),
+    ]), status=400)
+
+    assert db_session.query(Contact).filter(Contact.email.is_(None)).count() == 0
+    assert db_session.query(ContactFact).count() == 0
+    assert db_session.query(ActivityLog).count() == 0
+
+
+def test_companies_contract_holds_after_named_deal_contacts(db_session, client):
+    _company(
+        db_session, "Brinks", "CO-1030",
+        email_domain="brinks.com",
+        current_headcount=42, headcount_growth_pct=12.5,
+        lease_expiry_date=date.today() + timedelta(days=210),
+        current_submarket="Tysons", priority="HIGH", opportunity_score=77.0,
+    )
+    crg = _company(db_session, "CRG NoVA", "CO-1031", email_domain="crgnova.com")
+    _existing_contact(db_session, "Ann Waller", "ann.waller@crgnova.com", crg)
+
+    _post(client, _roundup([_named_deal(
+        "Brinks", "Ryan Pordes", facts=["Ryan handles the renewal"],
+    )]))
+
+    row = next(
+        r for r in client.get("/api/companies/").json() if r["company_id"] == "CO-1030"
+    )
+    assert row["company_id"] == "CO-1030"
+    assert row["priority"] == "HIGH"
+    assert row["current_headcount"] == 42
+    assert row["headcount_growth_pct"] == 12.5
+    assert row["lease_expiry_months"] is not None
+    assert row["current_submarket"] == "Tysons"
+    assert row["opportunity_score"] == 77.0
