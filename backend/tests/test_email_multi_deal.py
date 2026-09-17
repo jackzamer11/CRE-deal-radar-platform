@@ -36,7 +36,9 @@ from app.main import app
 from app.models.activity import ActivityLog
 from app.models.company import Company
 from app.models.contact import Contact, ContactFact
-from app.models.email_ingest import ActivityAttachment, PendingCompanyUpdate
+from app.models.email_ingest import (
+    ActivityAttachment, ContactAddressOverride, PendingCompanyUpdate,
+)
 from app.services import attachment_storage
 from migrations import ensure_schema
 
@@ -1022,6 +1024,40 @@ def test_ten_deals_with_ten_contacts_resolve_in_one_pass(db_session, client):
 
     stamped = db_session.query(ActivityLog).filter(
         ActivityLog.source_message_id.like("<ten@mail>%")
+    ).all()
+    assert len({r.contact_id for r in stamped}) == 10
+
+
+def test_ten_deals_resolve_through_aliases_in_one_pass(db_session, client):
+    """Every contact here is named by an ALIAS address, not its primary — the
+    alias table growing (primary mirrors plus hand-added aliases) must not turn
+    the batched resolver back into a per-deal query loop."""
+    crg = _company(db_session, "CRG NoVA", "CO-975", email_domain="crgnova.com")
+    _existing_contact(db_session, "Ann Waller", "ann.waller@crgnova.com", crg)
+    pairs = []
+    for i in range(10):
+        co = _company(db_session, f"Alias Tenant {chr(65 + i)}", f"CO-99{i}",
+                      email_domain=f"aliastenant{i}.com")
+        primary_email = f"lead@aliastenant{i}.com"
+        alias_email = f"personal{i}@gmail.com"
+        contact = _existing_contact(db_session, f"Alias Lead {i}", primary_email, co)
+        db_session.add(ContactAddressOverride(
+            email=alias_email, contact_id=contact.id, is_primary=False,
+        ))
+        db_session.commit()
+        pairs.append((co.name, alias_email))
+
+    tables = ("contacts", "contact_address_overrides", "companies")
+    two = _table_queries_for(client, db_session, _roundup(
+        _deals_with_contacts(pairs[:2]), source_message_id="<alias-two@mail>",
+    ), tables)
+    ten = _table_queries_for(client, db_session, _roundup(
+        _deals_with_contacts(pairs), source_message_id="<alias-ten@mail>",
+    ), tables)
+    assert len(ten) == len(two)
+
+    stamped = db_session.query(ActivityLog).filter(
+        ActivityLog.source_message_id.like("<alias-ten@mail>%")
     ).all()
     assert len({r.contact_id for r in stamped}) == 10
 

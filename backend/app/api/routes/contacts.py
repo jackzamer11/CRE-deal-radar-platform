@@ -20,15 +20,18 @@ from app.models.company import Company
 from app.models.contact import (
     Contact, ContactFact, CLOSED_STAGE, CONTACT_STAGES, CONTACT_TYPES,
 )
-from app.models.email_ingest import ActivityAttachment
+from app.models.email_ingest import ActivityAttachment, ContactAddressOverride
 from app.services.attachment_storage import attachment_file_exists
 from app.api.routes.pending_updates import pending_updates_for_company
 from app.schemas.company import months_until_lease_expiry
 from app.schemas.pending_update import PendingUpdateOut
 from app.services.contact_service import (
-    STAGE_CHANGE_ACTION, active_facts, apply_closed_stage_bookkeeping,
-    create_fact, mark_engaged, normalize_email, record_stage_change,
-    resolve_contact_by_email,
+    STAGE_CHANGE_ACTION, AddressAlreadyClaimed, AddressOwnedByJack,
+    ContactMergeConflict, PrimaryAddressRemoval, active_facts,
+    add_contact_address, apply_closed_stage_bookkeeping, contact_addresses,
+    create_fact, mark_engaged, merge_contacts, normalize_email,
+    record_stage_change, remove_contact_address, resolve_contact_by_email,
+    set_primary_contact_address, sync_primary_alias,
 )
 from app.services.lease_records import current_lease
 from app.services.lease_storage import lease_file_exists
@@ -82,6 +85,16 @@ class ContactOut(BaseModel):
     triaged: bool = False
     auto_created: bool = False
     company_name: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+class ContactAddressOut(BaseModel):
+    id: int
+    email: str
+    is_primary: bool
+    created_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True
@@ -933,6 +946,8 @@ def create_contact(payload: ContactCreate, db: Session = Depends(get_db)):
     apply_closed_stage_bookkeeping(contact, payload.stage)
     db.add(contact)
     db.flush()
+    if email:
+        sync_primary_alias(db, contact)
     if contact.triaged:
         mark_engaged(db, contact)
     db.commit()
@@ -1114,7 +1129,8 @@ def update_contact(
 
     if payload.email is not None:
         new_email = normalize_email(payload.email)
-        if new_email and new_email != contact.email:
+        old_email = contact.email
+        if new_email and new_email != old_email:
             clash = resolve_contact_by_email(db, new_email)
             if clash and clash.id != contact.id:
                 raise HTTPException(
@@ -1122,6 +1138,8 @@ def update_contact(
                     detail=f"A contact with email {new_email} already exists",
                 )
         contact.email = new_email
+        if new_email != old_email:
+            sync_primary_alias(db, contact, old_email=old_email)
 
     old_stage = contact.stage or "Sent"
     stage_moved = payload.stage is not None and payload.stage != old_stage
@@ -1202,6 +1220,13 @@ def delete_contact(
             detail="mode must be 'unattach' or 'cascade'",
         )
     contact = _get_contact(db, contact_id)
+
+    # Addresses (primary mirror and any alias) go with the contact either
+    # way — leaving them behind would dangle a row pointing at a deleted id
+    # and make that address unresolvable and un-reclaimable at once.
+    db.query(ContactAddressOverride).filter(
+        ContactAddressOverride.contact_id == contact_id
+    ).delete(synchronize_session=False)
 
     facts_deleted = (
         db.query(ContactFact)
@@ -1326,3 +1351,121 @@ def contact_timeline(
     return TimelinePage(
         total=total, limit=limit, offset=offset, entries=entries,
     )
+
+
+# ── Addresses ─────────────────────────────────────────────────────────────────
+#
+# A contact owns one identity but may be reachable at more than one address.
+# Contact.email is still "the" primary address; these endpoints manage the
+# rest, and promoting one moves that flag rather than adding a second one.
+
+@router.get("/{contact_id}/addresses", response_model=List[ContactAddressOut])
+def list_addresses(contact_id: int, db: Session = Depends(get_db)):
+    """Every address this contact is known by, primary first."""
+    _get_contact(db, contact_id)
+    rows = contact_addresses(db, contact_id)
+    db.commit()
+    return [ContactAddressOut.model_validate(a) for a in rows]
+
+
+class AddressCreate(BaseModel):
+    email: str
+
+
+@router.post("/{contact_id}/addresses", response_model=ContactAddressOut)
+def add_address(
+    contact_id: int, payload: AddressCreate, db: Session = Depends(get_db),
+):
+    """Add an alias address to a contact.
+
+    Refused outright for an address Jack owns, and with a 409 naming the
+    current owner for an address another contact already holds — never a
+    silent steal.
+    """
+    contact = _get_contact(db, contact_id)
+    try:
+        row = add_contact_address(db, contact, payload.email)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="email is required")
+    except AddressOwnedByJack:
+        raise HTTPException(
+            status_code=400,
+            detail="That address belongs to Jack — it can never be a contact's address",
+        )
+    except AddressAlreadyClaimed as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=f"{exc.contact.name} already holds this address",
+        )
+    mark_engaged(db, contact)
+    db.commit()
+    db.refresh(row)
+    return ContactAddressOut.model_validate(row)
+
+
+@router.delete("/{contact_id}/addresses/{address_id}")
+def delete_address(contact_id: int, address_id: int, db: Session = Depends(get_db)):
+    """Remove one of a contact's addresses.
+
+    Refused on the primary address — promote another one first
+    (PATCH .../addresses/{address_id}/primary), so a contact is never left
+    with no primary at all.
+    """
+    contact = _get_contact(db, contact_id)
+    try:
+        remove_contact_address(db, contact, address_id)
+    except LookupError:
+        raise HTTPException(status_code=404, detail="Address not found")
+    except PrimaryAddressRemoval:
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot remove the primary address — promote another address first",
+        )
+    db.commit()
+    return {"deleted": address_id}
+
+
+@router.patch("/{contact_id}/addresses/{address_id}/primary", response_model=ContactOut)
+def set_primary_address(
+    contact_id: int, address_id: int, db: Session = Depends(get_db),
+):
+    """Promote one of a contact's addresses to primary. The old primary
+    becomes a plain alias; contact.email moves to match."""
+    contact = _get_contact(db, contact_id)
+    try:
+        set_primary_contact_address(db, contact, address_id)
+    except LookupError:
+        raise HTTPException(status_code=404, detail="Address not found")
+    mark_engaged(db, contact)
+    db.commit()
+    db.refresh(contact)
+    return _contact_out(contact)
+
+
+# ── Merging two contacts ─────────────────────────────────────────────────────
+
+class ContactMergeRequest(BaseModel):
+    source_contact_id: int
+
+
+@router.post("/{contact_id}/merge", response_model=ContactOut)
+def merge_contact(
+    contact_id: int, payload: ContactMergeRequest, db: Session = Depends(get_db),
+):
+    """Merge source_contact_id into contact_id: one transaction, target wins.
+
+    Every activity entry, fact and address on the source moves to the
+    target; the source's own address becomes an alias of the target; the
+    source contact is deleted. Irreversible — the frontend confirms with
+    Jack before calling this.
+    """
+    target = _get_contact(db, contact_id)
+    source = _get_contact(db, payload.source_contact_id)
+    try:
+        merge_contacts(db, target, source)
+    except ContactMergeConflict as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    mark_engaged(db, target)
+    db.commit()
+    db.refresh(target)
+    return _contact_out(target)

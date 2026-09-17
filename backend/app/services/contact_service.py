@@ -17,9 +17,11 @@ from typing import Dict, List, Optional, Tuple
 from sqlalchemy import null
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.models.activity import ActivityLog
 from app.models.company import Company
 from app.models.contact import Contact, ContactFact, CLOSED_STAGE
+from app.models.email_ingest import ContactAddressOverride
 
 # Domains where the sender's address says nothing about who they work for.
 # A contact from one of these gets a null company_id — never a company called
@@ -81,6 +83,55 @@ def email_domain_of(email: Optional[str]) -> Optional[str]:
     if not e or "@" not in e:
         return None
     return e.rsplit("@", 1)[1] or None
+
+
+# ── Addresses Jack owns ─────────────────────────────────────────────────────────
+#
+# Lives here (rather than email_ingest_service, which imports it) because the
+# alias/dedup guard below needs it too, and contact_service must not import
+# email_ingest_service — email_ingest_service already imports from here.
+
+def _split_setting(raw: Optional[str]) -> set:
+    return {
+        part.strip().lower().lstrip("@")
+        for part in str(raw or "").split(",")
+        if part.strip()
+    }
+
+
+def own_email_domains() -> set:
+    """Read at call time so the env var is live, never cached at import."""
+    return _split_setting(getattr(settings, "OWN_EMAIL_DOMAINS", ""))
+
+
+def own_email_addresses() -> set:
+    return _split_setting(getattr(settings, "OWN_EMAIL_ADDRESSES", ""))
+
+
+def is_own_address(email: Optional[str]) -> bool:
+    """True when this address is Jack's own.
+
+    Two tests, because they are not the same question. A domain Jack owns covers
+    every address at it (jzamer@z-reg.com, anything@z-reg.com). A free-mail
+    address has to match exactly — blocklisting gmail.com as a domain would
+    swallow every real contact who uses it.
+    """
+    normalized = normalize_email(email)
+    if not normalized:
+        return False
+    if normalized in own_email_addresses():
+        return True
+    if "@" not in normalized:
+        return False
+    domain = normalized.rsplit("@", 1)[1]
+    if domain in own_email_domains():
+        return True
+    # Subdomain of an owned domain (mail.z-reg.com) is still Jack's.
+    parts = domain.split(".")
+    for i in range(1, len(parts) - 1):
+        if ".".join(parts[i:]) in own_email_domains():
+            return True
+    return False
 
 
 # ── Triage ────────────────────────────────────────────────────────────────────
@@ -318,13 +369,29 @@ def active_facts(db: Session, contact_id: int) -> list:
 def resolve_contact_by_email(db: Session, email: Optional[str]) -> Optional[Contact]:
     """Find a contact by email address — exact, case-insensitive.
 
+    Checks the primary field first, then the alias table (contacts.email —
+    itself mirrored into the alias table as that contact's primary row — has
+    no reason to be checked twice, but going to the ORM column directly here
+    saves a query on the overwhelmingly common case). A hit on either the
+    primary field or an alias returns the same contact, so a contact with
+    several addresses (a work inbox and a personal one) resolves identically
+    from any of them.
+
     Email is the identifier. A name string is never used to match: two people
     called "Mike Johnson" are two people.
     """
     e = normalize_email(email)
     if not e:
         return None
-    return db.query(Contact).filter(Contact.email == e).first()
+    contact = db.query(Contact).filter(Contact.email == e).first()
+    if contact is not None:
+        return contact
+    alias = db.query(ContactAddressOverride).filter(
+        ContactAddressOverride.email == e
+    ).first()
+    if alias is None:
+        return None
+    return db.query(Contact).filter(Contact.id == alias.contact_id).first()
 
 
 def _normalize_company_name(name: str) -> str:
@@ -600,6 +667,14 @@ def create_contact(
     )
     db.add(contact)
     db.flush()
+    # Deliberately NOT mirrored into the alias table here: this is the
+    # high-volume auto-creation path (every inbound sender, every recipient),
+    # and the alias table doubles as the "Jack corrected a misattribution"
+    # memory — eagerly writing a row for every auto-created contact's address
+    # would make that memory indistinguishable from a real correction. The
+    # mirror gets backfilled lazily (contact_addresses(), the first time
+    # anyone looks), by the startup migration, or immediately for a
+    # human-driven create/edit (routes/contacts.py, sync_primary_alias).
     return contact
 
 
@@ -618,3 +693,282 @@ def apply_inbound_stage_rules(contact: Contact, direction: Optional[str]) -> boo
         contact.stage_changed_at = date.today()
         return True
     return False
+
+
+# ── Contact addresses (a contact can own several) ───────────────────────────────
+#
+# A contact owns one identity but may be reachable at more than one address —
+# Fred Zamer answers mail at both a personal and a work inbox, and it is the
+# same relationship either way. Contact.email is the primary address and stays
+# the source of truth for it; every address (primary and alias alike) also has
+# a row in ContactAddressOverride, which doubles as this table and as the
+# "Jack corrected a misattribution" memory the email ingestion path writes to.
+# One address, one contact, always: adding or promoting an address that
+# already belongs to someone else is refused, never silently reassigned.
+
+class AddressOwnedByJack(Exception):
+    """Raised when an address Jack owns is offered as a contact's alias."""
+
+
+class AddressAlreadyClaimed(Exception):
+    """Raised when an address already resolves to a different contact."""
+
+    def __init__(self, contact: Contact):
+        self.contact = contact
+        super().__init__(f"{contact.email or contact.name} already holds this address")
+
+
+class PrimaryAddressRemoval(Exception):
+    """Raised by remove_contact_address on the primary address.
+
+    Removing the last/primary address would leave the contact with no address
+    to promote in its place — promote another address first.
+    """
+
+
+def sync_primary_alias(
+    db: Session, contact: Contact, old_email: Optional[str] = None,
+) -> None:
+    """Keep the alias table's primary-mirror row in step with contact.email.
+
+    Call after contact.email has been set to its new value — on create, or
+    after the generic contact edit changes it. `old_email` is whatever
+    contact.email held immediately before, so its mirror row (if any) can be
+    demoted rather than left incorrectly flagged primary.
+
+    Clearing the email (new value None) demotes the old mirror to a plain
+    alias rather than deleting it: the address still belongs to this contact
+    and still resolves to them, it is just no longer the primary one.
+
+    Does not commit — the caller owns the transaction. Trusts the caller to
+    have already checked the new address is not claimed elsewhere (every
+    caller runs that check first, because it is also where the 409 belongs).
+    """
+    new_email = contact.email
+    if old_email and old_email != new_email:
+        old_row = db.query(ContactAddressOverride).filter(
+            ContactAddressOverride.email == old_email,
+            ContactAddressOverride.contact_id == contact.id,
+        ).first()
+        if old_row is not None and old_row.is_primary:
+            old_row.is_primary = False
+
+    if not new_email:
+        return
+
+    row = db.query(ContactAddressOverride).filter(
+        ContactAddressOverride.email == new_email
+    ).first()
+    if row is None:
+        row = ContactAddressOverride(
+            email=new_email, contact_id=contact.id, is_primary=True,
+        )
+        db.add(row)
+    else:
+        row.contact_id = contact.id
+        row.is_primary = True
+        row.updated_at = datetime.utcnow()
+    db.flush()
+
+
+def contact_addresses(db: Session, contact_id: int) -> List[ContactAddressOverride]:
+    """Every address this contact is known by, primary first.
+
+    Self-healing: an auto-created contact (the overwhelming majority — every
+    inbound sender, every recipient) is deliberately never mirrored into the
+    alias table at create time (see create_contact). The first time anyone
+    actually looks at their addresses, the mirror is written here so the list
+    is complete — the startup migration and every human-driven edit do the
+    same, this just covers the gap between them. Does not commit; the caller
+    (a GET route) does.
+    """
+    contact = db.query(Contact).filter(Contact.id == contact_id).first()
+    if contact is not None and contact.email:
+        row = db.query(ContactAddressOverride).filter(
+            ContactAddressOverride.email == contact.email
+        ).first()
+        if row is None:
+            db.add(ContactAddressOverride(
+                email=contact.email, contact_id=contact.id, is_primary=True,
+            ))
+            db.flush()
+        elif row.contact_id == contact.id and not row.is_primary:
+            row.is_primary = True
+            db.flush()
+
+    return (
+        db.query(ContactAddressOverride)
+        .filter(ContactAddressOverride.contact_id == contact_id)
+        .order_by(ContactAddressOverride.is_primary.desc(), ContactAddressOverride.id.asc())
+        .all()
+    )
+
+
+def add_contact_address(
+    db: Session, contact: Contact, email: Optional[str],
+) -> ContactAddressOverride:
+    """Add an alias address to a contact.
+
+    Raises AddressOwnedByJack if the address is one of Jack's own, and
+    AddressAlreadyClaimed(other_contact) if it already resolves to a
+    different contact — the route turns each into the appropriate HTTP error.
+    Adding an address the contact already holds (primary or alias) is a
+    no-op that returns the existing row.
+
+    Does not commit — the caller owns the transaction.
+    """
+    normalized = normalize_email(email)
+    if not normalized:
+        raise ValueError("email is required")
+    if is_own_address(normalized):
+        raise AddressOwnedByJack(normalized)
+
+    owner = resolve_contact_by_email(db, normalized)
+    if owner is not None and owner.id != contact.id:
+        raise AddressAlreadyClaimed(owner)
+    if owner is not None and owner.id == contact.id:
+        row = db.query(ContactAddressOverride).filter(
+            ContactAddressOverride.email == normalized
+        ).first()
+        if row is None:
+            # This matched via Contact.email directly — the contact's own
+            # primary address, never mirrored (an auto-created contact no one
+            # has looked at yet). Self-heal rather than return nothing.
+            row = ContactAddressOverride(
+                email=normalized, contact_id=contact.id, is_primary=True,
+            )
+            db.add(row)
+            db.flush()
+        return row
+
+    row = ContactAddressOverride(email=normalized, contact_id=contact.id, is_primary=False)
+    db.add(row)
+    db.flush()
+    return row
+
+
+def remove_contact_address(db: Session, contact: Contact, address_id: int) -> None:
+    """Remove one of a contact's addresses.
+
+    Raises LookupError if the address does not belong to this contact, and
+    PrimaryAddressRemoval if it is the primary — promote another address
+    first (set_primary_contact_address), then remove the old one.
+
+    Does not commit — the caller owns the transaction.
+    """
+    row = db.query(ContactAddressOverride).filter(
+        ContactAddressOverride.id == address_id,
+        ContactAddressOverride.contact_id == contact.id,
+    ).first()
+    if row is None:
+        raise LookupError(address_id)
+    if row.is_primary:
+        raise PrimaryAddressRemoval(row.email)
+    db.delete(row)
+    db.flush()
+
+
+def set_primary_contact_address(
+    db: Session, contact: Contact, address_id: int,
+) -> ContactAddressOverride:
+    """Promote one of a contact's addresses to primary.
+
+    Demotes whichever address held is_primary before, and mirrors the change
+    onto Contact.email — the field stays the source of truth for "the"
+    primary address, this table just has to agree with it.
+
+    Raises LookupError if the address does not belong to this contact. A
+    no-op, returning the row unchanged, if it is already primary.
+
+    Does not commit — the caller owns the transaction.
+    """
+    row = db.query(ContactAddressOverride).filter(
+        ContactAddressOverride.id == address_id,
+        ContactAddressOverride.contact_id == contact.id,
+    ).first()
+    if row is None:
+        raise LookupError(address_id)
+    if row.is_primary:
+        return row
+
+    old_primary = db.query(ContactAddressOverride).filter(
+        ContactAddressOverride.contact_id == contact.id,
+        ContactAddressOverride.is_primary.is_(True),
+    ).first()
+    if old_primary is not None:
+        old_primary.is_primary = False
+
+    row.is_primary = True
+    row.updated_at = datetime.utcnow()
+    contact.email = row.email
+    contact.updated_at = datetime.utcnow()
+    db.flush()
+    return row
+
+
+# ── Merging two contacts ─────────────────────────────────────────────────────
+
+class ContactMergeConflict(Exception):
+    """Raised when the two contacts given are not eligible to merge."""
+
+
+def merge_contacts(db: Session, target: Contact, source: Contact) -> Contact:
+    """Merge `source` into `target`. One transaction; target wins on conflict.
+
+    Moves every ActivityLog entry, ContactFact and address (alias row) from
+    source onto target, makes source's own address an alias of target, and
+    deletes source. Everything here is a bulk UPDATE against an explicit
+    filter (never a per-row Python loop), so a contact with hundreds of
+    entries costs the same as one with a handful, and the whole thing lives
+    inside the caller's transaction — a failure partway rolls back with
+    nothing written, never a half-merged pair.
+
+    target keeps its own name, stage, next_touch_date, company and type
+    untouched — nothing here ever copies those fields from source, so
+    target's stage can never regress by way of a merge. responded and
+    is_past_client carry over from source only when True, since both are
+    permanent "this happened at least once" flags rather than current state.
+
+    Raises ContactMergeConflict if target and source are the same contact.
+    Caller commits.
+    """
+    if target.id == source.id:
+        raise ContactMergeConflict("Cannot merge a contact into itself")
+
+    db.query(ActivityLog).filter(ActivityLog.contact_id == source.id).update(
+        {"contact_id": target.id}, synchronize_session=False,
+    )
+    db.query(ContactFact).filter(ContactFact.contact_id == source.id).update(
+        {"contact_id": target.id}, synchronize_session=False,
+    )
+    db.query(ContactAddressOverride).filter(
+        ContactAddressOverride.contact_id == source.id
+    ).update(
+        {"contact_id": target.id, "is_primary": False}, synchronize_session=False,
+    )
+
+    # Belt-and-suspenders for a source whose primary email predates the alias
+    # table being kept in sync (or any other gap): guarantee the address
+    # itself ends up mapped to target, even if no row existed to move above.
+    if source.email:
+        row = db.query(ContactAddressOverride).filter(
+            ContactAddressOverride.email == source.email
+        ).first()
+        if row is None:
+            db.add(ContactAddressOverride(
+                email=source.email, contact_id=target.id, is_primary=False,
+            ))
+        else:
+            row.contact_id = target.id
+            row.is_primary = False
+
+    if source.responded:
+        target.responded = True
+    if source.is_past_client:
+        target.is_past_client = True
+    target.updated_at = datetime.utcnow()
+
+    db.flush()
+    db.delete(source)
+    db.flush()
+    return target

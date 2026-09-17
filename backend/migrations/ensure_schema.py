@@ -1075,6 +1075,7 @@ def ensure_email_ingest_tables(cur: sqlite3.Cursor) -> int:
                 id              INTEGER PRIMARY KEY AUTOINCREMENT,
                 email           TEXT    NOT NULL,
                 contact_id      INTEGER NOT NULL REFERENCES contacts(id),
+                is_primary      BOOLEAN NOT NULL DEFAULT 0,
                 source_entry_id INTEGER,
                 created_at      DATETIME,
                 updated_at      DATETIME
@@ -1082,6 +1083,15 @@ def ensure_email_ingest_tables(cur: sqlite3.Cursor) -> int:
         """)
         print("  + created table contact_address_overrides")
         added += 1
+    else:
+        # is_primary: added when the table grew from "corrections only" into
+        # the full multi-address store. Guarded like every other late column.
+        try:
+            added += _add_column(
+                cur, "contact_address_overrides", "is_primary", "BOOLEAN NOT NULL DEFAULT 0"
+            )
+        except Exception as _exc:
+            print(f"  ! contact_address_overrides.is_primary add skipped: {_exc}")
 
     for stmt in (
         # UNIQUE: one address maps to one person. A later correction updates the
@@ -1098,6 +1108,64 @@ def ensure_email_ingest_tables(cur: sqlite3.Cursor) -> int:
             print(f"  ! contact_address_overrides index skipped: {exc}")
 
     return added
+
+
+def backfill_contact_primary_aliases(cur: sqlite3.Cursor) -> int:
+    """Mirror every contact's existing primary email into the alias table.
+
+    Contacts created before the multi-address alias table existed have an
+    email on the Contact row but no matching contact_address_overrides row.
+    Address resolution now checks that table too, so every primary email
+    needs a mirror row (is_primary=1) for its contact to keep resolving from
+    it exactly as before.
+
+    Name-keyed contacts from the 355-entry historical backfill (email IS
+    NULL) are untouched — the WHERE clause excludes them entirely, so they
+    keep matching by name exactly as they always have.
+
+    Idempotent: a contact whose email already has a matching row is skipped,
+    unless that row exists but was never flagged primary (a "taught"
+    correction that happens to equal the contact's own address), in which
+    case it is flagged now. A second run changes nothing.
+    """
+    if not _table_exists(cur, "contacts") or not _table_exists(cur, "contact_address_overrides"):
+        return 0
+    cur.execute("SELECT id, email FROM contacts WHERE email IS NOT NULL AND TRIM(email) != ''")
+    rows = cur.fetchall()
+    if not rows:
+        return 0
+
+    from datetime import datetime as _dt
+    now = _dt.utcnow().isoformat(sep=" ")
+
+    changed = 0
+    for contact_id, email in rows:
+        normalized = email.strip().lower()
+        cur.execute(
+            "SELECT id, contact_id, is_primary FROM contact_address_overrides WHERE email = ?",
+            (normalized,),
+        )
+        existing = cur.fetchone()
+        if existing is None:
+            cur.execute(
+                "INSERT INTO contact_address_overrides "
+                "(email, contact_id, is_primary, created_at, updated_at) "
+                "VALUES (?, ?, 1, ?, ?)",
+                (normalized, contact_id, now, now),
+            )
+            changed += 1
+        elif existing[1] == contact_id and not existing[2]:
+            cur.execute(
+                "UPDATE contact_address_overrides SET is_primary = 1 WHERE id = ?",
+                (existing[0],),
+            )
+            changed += 1
+        # existing[1] != contact_id: the address is already mapped to someone
+        # else (a stale/conflicting override). Leave it alone rather than
+        # silently reassigning ownership from a migration pass.
+    if changed:
+        print(f"  + mirrored {changed} contact primary email(s) into the alias table")
+    return changed
 
 
 def _table_exists(cur: sqlite3.Cursor, table: str) -> bool:
@@ -1444,7 +1512,8 @@ def run() -> None:
     # back its own partial work.
     lease_added = 0
     for _step in (ensure_leases_table, migrate_company_leases_to_table,
-                  ensure_submarkets_table, ensure_email_ingest_tables):
+                  ensure_submarkets_table, ensure_email_ingest_tables,
+                  backfill_contact_primary_aliases):
         try:
             lease_added += _step(cur)
             conn.commit()
