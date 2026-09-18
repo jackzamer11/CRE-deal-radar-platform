@@ -5,10 +5,10 @@
     refused. Ingestion keeps the wider domain test unchanged — no colleague is
     ever resolved AS Jack — but Jack deliberately naming an alias is a
     different question from an ingested email being attributed.
-  - contact_email / contact_name on a plain email are refused, not dropped.
-    ActivityFromEmail did not declare them, so Pydantic discarded them and the
-    entry landed on the sender with a 200. The same field inside a deal still
-    works — that is where it belongs.
+  - contact_email / contact_name at the email level are refused, not dropped —
+    with deals present and without. ActivityFromEmail did not declare them, so
+    Pydantic discarded them and the entry landed on the sender with a 200. The
+    same field inside a deal still works — that is where it belongs.
 
 In-memory SQLite, dependency-overridden get_db. No live database, no network,
 no OpenAI or Anthropic calls.
@@ -96,6 +96,25 @@ def test_contact_name_on_a_plain_email_is_refused_and_writes_nothing(db_session,
         "source_message_id": "<msg-stray-contact@mail>",
         "action_taken": "Ann sent her leasing notes.",
         "contact_name": "Mike Johnson",
+    })
+    assert resp.status_code == 400
+    assert "contact_name" in resp.json()["detail"]
+    assert db_session.query(ActivityLog).count() == 0
+
+
+def test_contact_name_beside_deals_is_refused_too(db_session, client):
+    """The other half of the same mistake: with deals present a top-level
+    contact_name has no deal to belong to, and was dropped just as quietly."""
+    resp = client.post("/api/activity/from-email", json={
+        "from_email": "ann@avisonyoung.com",
+        "from_name": "Ann Waller",
+        "direction": "inbound",
+        "source_message_id": "<msg-stray-beside-deals@mail>",
+        "contact_name": "Mike Johnson",
+        "deals": [{
+            "action_taken": "Brinks renewal.",
+            "company_override": "Brinks",
+        }],
     })
     assert resp.status_code == 400
     assert "contact_name" in resp.json()["detail"]
