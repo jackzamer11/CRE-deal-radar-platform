@@ -135,6 +135,38 @@ def test_an_exact_website_domain_still_claims_the_company(db_session):
     assert magnet.email_domain == "mail.magnetforensics.com"
 
 
+def test_a_sender_at_ics_com_does_not_match_magnet_forensics(db_session):
+    # "ics" — the name derived from ics.com — is a character substring of
+    # "magnet forensics" but not a word in it. No website on file, so only the
+    # name step could have matched.
+    magnet = _company(db_session, "Magnet Forensics", "CO-155")
+
+    company, created = resolve_company_for_email(db_session, "someone@ics.com")
+    db_session.flush()
+
+    assert created is True
+    assert company.id != magnet.id
+    db_session.refresh(magnet)
+    assert magnet.email_domain is None
+
+
+@pytest.mark.parametrize("derived, existing, expected", [
+    ("ics", "magnet forensics", False),            # substring, not a word
+    ("forensic", "magnet forensics", False),       # word prefix, not a word
+    ("magnet forensics", "magnet forensics", True),
+    ("magnet", "magnet forensics", True),          # whole word inside the longer name
+    ("magnet forensics labs", "magnet forensics", True),
+])
+def test_name_guess_matches_whole_words_only(db_session, derived, existing, expected):
+    _company(db_session, existing.title(), "CO-1")
+    # The resolver derives "Magnet Forensics" from "magnet-forensics.com".
+    domain = derived.replace(" ", "-") + ".com"
+
+    company, created = resolve_company_for_email(db_session, f"someone@{domain}")
+
+    assert (company.name == existing.title() and created is False) is expected
+
+
 @pytest.mark.parametrize("provider", PERSONAL_PROVIDERS)
 def test_a_personal_provider_domain_is_never_written_to_a_company(db_session, provider):
     # A company whose website contains the provider domain as a substring, and

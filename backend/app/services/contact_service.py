@@ -454,6 +454,25 @@ def _normalize_company_name(name: str) -> str:
     return re.sub(r"\s+", " ", n).strip()
 
 
+def _contains_words(outer: List[str], inner: List[str]) -> bool:
+    """True when `inner` appears in `outer` as a contiguous run of whole words."""
+    n = len(inner)
+    return any(outer[i:i + n] == inner for i in range(len(outer) - n + 1))
+
+
+def _names_match(a: str, b: str) -> bool:
+    """Two normalized company names match when they are equal, or one is a
+    whole-word run inside the other ("acme" in "acme holdings").
+
+    Never a character substring: the name derived from ics.com is "ics", which
+    sits inside "magnet forensics" and filed that sender under Magnet Forensics.
+    """
+    wa, wb = a.split(), b.split()
+    if not wa or not wb:
+        return False
+    return wa == wb or _contains_words(wb, wa) or _contains_words(wa, wb)
+
+
 def resolve_company_for_email(
     db: Session, email: Optional[str], display_name: Optional[str] = None,
 ) -> Tuple[Optional[Company], bool]:
@@ -466,9 +485,9 @@ def resolve_company_for_email(
       1. email_domain match (a company already claims this domain)
       2. the domain is an existing company's website domain, or a subdomain
          of it (exact — see domain_matches_website)
-      3. the name derived from the domain, matched loosely against existing
-         company names — this is what stops a "Mm-Realestate" duplicate of a
-         hand-entered "Corcoran McEnearney"
+      3. the name derived from the domain, matched on whole words against
+         existing company names (see _names_match) — this is what stops a
+         "Corcoran Mcenearney" duplicate of a hand-entered "Corcoran McEnearney"
       4. create, flagged auto_created + untriaged, with no company_type
     """
     return resolve_companies_for_emails(db, [email]).get(
@@ -537,15 +556,16 @@ def resolve_companies_for_emails(
             derived = stem.replace("-", " ").replace("_", " ").strip()
             derived_title = " ".join(w.capitalize() for w in derived.split()) or domain
 
-            # Loose name match against what Jack already typed by hand, both
-            # directions (a short derived name can be contained in a longer one).
+            # Name match against what Jack already typed by hand, both
+            # directions (a short derived name can be contained in a longer one)
+            # — but only on whole words. See _names_match.
             target = _normalize_company_name(derived_title)
             match = None
             if target:
                 for cand, cand_norm in named:
                     if not cand_norm:
                         continue
-                    if cand_norm == target or target in cand_norm or cand_norm in target:
+                    if _names_match(target, cand_norm):
                         match = cand
                         break
             if match is not None:
