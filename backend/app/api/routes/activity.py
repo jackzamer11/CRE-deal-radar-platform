@@ -24,7 +24,7 @@ from app.services.contact_service import (
     resolve_company_for_email, resolve_or_create_contact,
 )
 from app.services.email_ingest_service import (
-    StatedValueError, coerce_value, is_own_address, queue_company_update,
+    StatedValueError, coerce_value, is_own_literal_address, queue_company_update,
     name_key, record_address_override, resolve_contact_for_address,
     resolve_contacts_for_addresses, resolve_contacts_for_names,
     write_company_value,
@@ -699,7 +699,7 @@ def _collect_participants(
         normalized = normalize_email(raw_email)
         if not normalized:
             return
-        if is_own_address(normalized):
+        if is_own_literal_address(normalized):
             if normalized not in skipped:
                 skipped.append(normalized)
             return

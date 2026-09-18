@@ -28,8 +28,9 @@ from app.models.email_ingest import (
     ContactAddressOverride, PendingCompanyUpdate,
 )
 from app.services.contact_service import (
-    create_contact, is_own_address, normalize_email, own_email_addresses,
-    own_email_domains, resolve_companies_for_emails, resolve_contact_by_email,
+    create_contact, is_own_address, is_own_literal_address, normalize_email,
+    own_email_addresses, own_email_domains, resolve_companies_for_emails,
+    resolve_contact_by_email,
     resolve_or_create_contact,
 )
 
@@ -58,6 +59,11 @@ FIELD_LABEL = {
 # already imports from contact_service — the dependency only runs one way).
 # Imported above and re-exported here so existing callers of
 # `email_ingest_service.is_own_address` keep working unchanged.
+#
+# Ingestion uses is_own_literal_address: only Jack's exact addresses resolve to
+# nobody. Colleagues at simpsondev.com — Ann Waller, Karl Acorda, Fred Zamer at
+# FZamer@simpsondev.com — are real contacts, and their mail is where the
+# brokerage's intelligence lives.
 
 
 # ── Corrections that teach the resolver ───────────────────────────────────────
@@ -96,7 +102,7 @@ def record_address_override(
     it only says future mail from this address should route to them.
     """
     normalized = normalize_email(email)
-    if not normalized or contact is None or is_own_address(normalized):
+    if not normalized or contact is None or is_own_literal_address(normalized):
         return None
     row = (
         db.query(ContactAddressOverride)
@@ -143,7 +149,7 @@ def resolve_contact_for_address(
     module boundary.
     """
     normalized = normalize_email(email)
-    if not normalized or is_own_address(normalized):
+    if not normalized or is_own_literal_address(normalized):
         return None, False
 
     taught = lookup_address_override(db, normalized)
@@ -184,7 +190,7 @@ def resolve_contacts_for_addresses(
     wanted: Dict[str, Optional[str]] = {}
     for email, name in addresses:
         normalized = normalize_email(email)
-        if not normalized or "@" not in normalized or is_own_address(normalized):
+        if not normalized or "@" not in normalized or is_own_literal_address(normalized):
             continue
         if normalized not in wanted or not wanted[normalized]:
             wanted[normalized] = (name or "").strip() or None

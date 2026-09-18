@@ -147,6 +147,9 @@ def is_own_address(email: Optional[str]) -> bool:
     every address at it (jzamer@z-reg.com, anything@z-reg.com). A free-mail
     address has to match exactly — blocklisting gmail.com as a domain would
     swallow every real contact who uses it.
+
+    No longer called by ingestion, which uses is_own_literal_address: a
+    colleague at an owned domain is a contact, not Jack.
     """
     normalized = normalize_email(email)
     if not normalized:
@@ -169,12 +172,10 @@ def is_own_address(email: Optional[str]) -> bool:
 def is_own_literal_address(email: Optional[str]) -> bool:
     """True only for the exact addresses Jack owns — the domain list is not read.
 
-    The narrower of the two tests, and the right one wherever Jack is naming an
-    address deliberately rather than an ingested email being attributed. The
-    domain sweep in is_own_address exists so no colleague at simpsondev.com is
-    ever resolved AS Jack during ingestion; it would also refuse
-    FZamer@simpsondev.com as an alias of Fred Zamer, which is the case the alias
-    feature exists for. A colleague's address is not Jack's address.
+    The test ingestion and the alias guard both use. Jack's own addresses are
+    exactly the OWN_EMAIL_ADDRESSES list; a colleague at simpsondev.com — Ann
+    Waller, Karl Acorda, Fred Zamer at FZamer@simpsondev.com — is a contact,
+    not Jack. A colleague's address is not Jack's address.
     """
     normalized = normalize_email(email)
     if not normalized:
@@ -888,7 +889,7 @@ def add_contact_address(
     The owned-address test here is the LITERAL one, not the domain sweep that
     ingestion uses: Jack adding FZamer@simpsondev.com as Fred Zamer's second
     address is the whole point of aliases, while jzamer@simpsondev.com is still
-    refused. Ingestion keeps the wider test — see is_own_literal_address.
+    refused. Ingestion uses the same literal test.
 
     Does not commit — the caller owns the transaction.
     """
