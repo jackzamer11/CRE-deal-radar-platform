@@ -600,6 +600,14 @@ class ActivityFromEmail(BaseModel):
     # Absent or empty → exactly the single-entry path.
     deals: Optional[List[EmailDeal]] = None
 
+    # Declared only so they can be REFUSED. Naming the person is a per-deal
+    # question: a plain email's entry belongs to its sender, so there is no
+    # address or name to override. Undeclared, Pydantic dropped these silently
+    # and the entry landed on the sender anyway — a lost contact, 200 OK. See
+    # _deal_specs.
+    contact_email: Optional[str] = None
+    contact_name: Optional[str] = None
+
     @field_validator("facts", mode="before")
     @classmethod
     def _accept_bare_fact_strings(cls, value):
@@ -773,6 +781,24 @@ class _DealSpec:
 def _deal_specs(payload: ActivityFromEmail) -> List[_DealSpec]:
     """The entries this email becomes. Raises 400 on an ambiguous payload."""
     if not payload.deals:
+        # The mirror of the stray check below. Without deals there is one entry
+        # and it belongs to the sender, so naming a contact on it means the
+        # caller meant to send a deal. Refused rather than dropped: the old
+        # silent drop returned 200 and lost the contact.
+        misplaced = [
+            name for name, present in (
+                ("contact_email", bool((payload.contact_email or "").strip())),
+                ("contact_name", bool((payload.contact_name or "").strip())),
+            ) if present
+        ]
+        if misplaced:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"{', '.join(misplaced)} belongs on a deal — a plain email's "
+                    "entry belongs to its sender. Send it inside deals."
+                ),
+            )
         return [_DealSpec(payload, payload.source_note)]
 
     # With deals present, per-deal fields at the top level have no deal to

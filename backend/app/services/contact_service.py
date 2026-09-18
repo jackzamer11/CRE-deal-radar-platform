@@ -134,6 +134,22 @@ def is_own_address(email: Optional[str]) -> bool:
     return False
 
 
+def is_own_literal_address(email: Optional[str]) -> bool:
+    """True only for the exact addresses Jack owns — the domain list is not read.
+
+    The narrower of the two tests, and the right one wherever Jack is naming an
+    address deliberately rather than an ingested email being attributed. The
+    domain sweep in is_own_address exists so no colleague at simpsondev.com is
+    ever resolved AS Jack during ingestion; it would also refuse
+    FZamer@simpsondev.com as an alias of Fred Zamer, which is the case the alias
+    feature exists for. A colleague's address is not Jack's address.
+    """
+    normalized = normalize_email(email)
+    if not normalized:
+        return False
+    return normalized in own_email_addresses()
+
+
 # ── Triage ────────────────────────────────────────────────────────────────────
 
 def mark_engaged(db: Session, contact: Optional[Contact],
@@ -815,12 +831,17 @@ def add_contact_address(
     Adding an address the contact already holds (primary or alias) is a
     no-op that returns the existing row.
 
+    The owned-address test here is the LITERAL one, not the domain sweep that
+    ingestion uses: Jack adding FZamer@simpsondev.com as Fred Zamer's second
+    address is the whole point of aliases, while jzamer@simpsondev.com is still
+    refused. Ingestion keeps the wider test — see is_own_literal_address.
+
     Does not commit — the caller owns the transaction.
     """
     normalized = normalize_email(email)
     if not normalized:
         raise ValueError("email is required")
-    if is_own_address(normalized):
+    if is_own_literal_address(normalized):
         raise AddressOwnedByJack(normalized)
 
     owner = resolve_contact_by_email(db, normalized)
