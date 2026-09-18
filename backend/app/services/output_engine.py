@@ -514,12 +514,21 @@ def generate_daily_briefing(db: Session) -> DailyBriefing:
         avg_signal_score=round(avg_signal, 1),
     )
 
-    tenant_match_actions = _compute_tenant_actions(db)
+    # Section A is gated: while it is hidden in the UI, skip the properties x
+    # companies Match Score sweep entirely rather than compute ~110k pairs the
+    # frontend throws away. Read at call time so flipping the flag needs no
+    # rewrite here. Empty lists keep the DailyBriefing contract intact.
+    if getattr(config, "BRIEFING_TENANT_MATCH_SECTION_ENABLED", False):
+        tenant_match_actions = _compute_tenant_actions(db)
+        # Snoozed variant powers the "Snoozed" toggle bubble (hidden by default).
+        snoozed_tenant_match_actions = _compute_tenant_actions(db, snoozed=True)
+    else:
+        tenant_match_actions = []
+        snoozed_tenant_match_actions = []
+
     acquisition_targets  = _compute_acquisition_targets(db)
     expired_leases       = _compute_expired_leases(db)
     past_client_reentries = _compute_past_client_reentries(db)
-    # Snoozed variants power the "Snoozed" toggle bubbles (hidden by default).
-    snoozed_tenant_match_actions = _compute_tenant_actions(db, snoozed=True)
     snoozed_acquisition_targets  = _compute_acquisition_targets(db, snoozed=True)
 
     return DailyBriefing(

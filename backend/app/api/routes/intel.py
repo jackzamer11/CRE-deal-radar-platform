@@ -10,14 +10,17 @@ from app.models.activity import ActivityLog
 from app.models.intel import (
     IntelActivityExtraction, IntelCriterion, IntelFeedback, IntelOpportunity,
 )
-from app.services.activity_intel_service import mine_all_activity_logs
+from app.services.activity_intel_service import (
+    mine_all_activity_logs,
+    requeue_fuzzy_dates,
+)
 from app.services.document_extraction_service import MissingAPIKeyError
 from app.services.intel_feedback_service import (
     FeedbackError,
     disposition_opportunity,
     save_criterion,
 )
-from app.services.intel_signal_service import generate_opportunities
+from app.services.intel_signal_service import generate_with_stats
 
 router = APIRouter(prefix="/intel", tags=["intel"])
 
@@ -55,13 +58,37 @@ def _to_out(opp: IntelOpportunity) -> IntelOpportunityOut:
     )
 
 
-@router.post("/opportunities/generate", response_model=List[IntelOpportunityOut])
+class GenerateStatsOut(BaseModel):
+    """What the run actually looked at — so an empty result is explainable."""
+
+    facts_scanned: int = 0
+    expirations_found: int = 0
+    expirations_unreadable: int = 0
+    expirations_past: int = 0
+    expirations_beyond_horizon: int = 0
+    opportunities: int = 0
+    by_signal_type: dict = {}
+
+
+class GenerateOut(BaseModel):
+    opportunities: List[IntelOpportunityOut]
+    stats: GenerateStatsOut
+
+
+@router.post("/opportunities/generate", response_model=GenerateOut)
 def generate(db: Session = Depends(get_db)):
-    """Run the signal rules and upsert opportunities (idempotent). Returns the
-    opportunities touched this run, highest score first."""
-    touched = generate_opportunities(db)
+    """Run the signal rules and upsert opportunities (idempotent).
+
+    Returns the opportunities touched this run, highest score first, plus a scan
+    summary. The summary matters: a run that produces nothing used to render the
+    same blank screen as a broken button.
+    """
+    touched, stats = generate_with_stats(db)
     touched.sort(key=lambda o: o.score, reverse=True)
-    return [_to_out(o) for o in touched]
+    return GenerateOut(
+        opportunities=[_to_out(o) for o in touched],
+        stats=GenerateStatsOut(**stats),
+    )
 
 
 @router.get("/opportunities", response_model=List[IntelOpportunityOut])
@@ -186,6 +213,22 @@ def mine_activity(payload: ActivityMineIn, db: Session = Depends(get_db)):
     except MissingAPIKeyError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     return ActivityMineOut(**result)
+
+
+class RequeueDatesOut(BaseModel):
+    requeued: int
+    unreadable: int
+    checked: int
+
+
+@router.post("/activity/requeue-dates", response_model=RequeueDatesOut)
+def requeue_dates(db: Session = Depends(get_db)):
+    """Send auto-approved but imprecise lease dates back to the Review queue.
+
+    One-time backfill for facts mined before auto-approval became value-aware.
+    Idempotent, and never touches a fact a human already verified.
+    """
+    return RequeueDatesOut(**requeue_fuzzy_dates(db))
 
 
 @router.get("/activity/status", response_model=ActivityStatusOut)

@@ -290,6 +290,12 @@ function SectionHeader({
   )
 }
 
+// Section A — Tenant Match Actions: hidden from the briefing, not deleted.
+// The match-scoring logic behind it is frozen but intact (services/match_scoring.py),
+// and the backend still returns `tenant_match_actions` on the briefing payload.
+// Flip to true to bring the section and its stat card back.
+const SHOW_TENANT_MATCH_SECTION = false
+
 export default function Dashboard() {
   const navigate = useNavigate()
   const [briefing, setBriefing]           = useState<DailyBriefing | null>(null)
@@ -495,7 +501,9 @@ export default function Dashboard() {
   const snoozedTenantActions = briefing.snoozed_tenant_match_actions ?? []
   const snoozedAcqTargets    = briefing.snoozed_acquisition_targets ?? []
 
-  const noContent = tenantActions.length === 0 && acqTargets.length === 0
+  // With Section A hidden, an empty briefing depends only on Section B.
+  const noContent =
+    (!SHOW_TENANT_MATCH_SECTION || tenantActions.length === 0) && acqTargets.length === 0
 
   return (
     <div className="p-8 max-w-screen-xl">
@@ -605,8 +613,10 @@ export default function Dashboard() {
       )}
 
       {/* Stat cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-        <StatCard label="Tenant Match Actions" value={tenantActions.length}   sub="Section A queue"  icon={Building2}     color="text-violet-400" />
+      <div className={`grid grid-cols-2 ${SHOW_TENANT_MATCH_SECTION ? 'lg:grid-cols-4' : 'lg:grid-cols-3'} gap-4 mb-6`}>
+        {SHOW_TENANT_MATCH_SECTION && (
+          <StatCard label="Tenant Match Actions" value={tenantActions.length}   sub="Section A queue"  icon={Building2}     color="text-violet-400" />
+        )}
         <StatCard label="Acquisition Targets"  value={acqTargets.length}      sub="Signal ≥ 40"      icon={Zap}           color="text-emerald-400" />
         <StatCard label="Properties"           value={stats.total_properties} sub="In portfolio"     icon={TrendingUp}    color="text-purple-400" />
         <StatCard label="Avg Signal Score"     value={stats.avg_signal_score.toFixed(0)} sub="Portfolio avg" icon={AlertTriangle} color="text-amber-400" />
@@ -845,7 +855,10 @@ export default function Dashboard() {
         </div>
       ) : (
         <div className="space-y-10">
-          {/* Section A — Tenant Match Actions (sorted by lease expiry ASC) */}
+          {/* Section A — Tenant Match Actions (sorted by lease expiry ASC).
+              Hidden from the briefing — see SHOW_TENANT_MATCH_SECTION at the top
+              of this file. Markup retained, not deleted. */}
+          {SHOW_TENANT_MATCH_SECTION && (
           <section>
             <div className="flex items-center justify-between gap-3">
               <SectionHeader
@@ -946,6 +959,7 @@ export default function Dashboard() {
               </div>
             )}
           </section>
+          )}
 
           {/* Section B — Acquisition Targets (signal_score >= 40, sorted DESC) */}
           <section>

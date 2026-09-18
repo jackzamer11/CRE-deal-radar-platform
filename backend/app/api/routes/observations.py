@@ -22,12 +22,39 @@ class ObservationOut(BaseModel):
     human_verified: bool
     superseded_by_id: Optional[int] = None
     created_at: str
+    # Derived, never stored: a clean ISO date read out of a hedged value like
+    # "~February 2027", offered in Review as a one-tap correction. Null unless
+    # this is a date field whose text needs pinning down.
+    suggested_value: Optional[str] = None
+    # exact | month | quarter | year — how precise the stored text really was.
+    value_precision: Optional[str] = None
 
     class Config:
         from_attributes = True
 
 
+# Fields whose stored text is a date and may need normalizing before it is useful.
+DATE_FIELDS = {"expiration_date", "commencement_date"}
+
+
+def _date_hint(observation: Observation) -> tuple:
+    """(suggested ISO value, precision) for a date field — (None, None) otherwise.
+
+    Only offered when the stored text is NOT already an exact date: an exact
+    value needs no suggestion, and an unparseable one gets no invented guess.
+    """
+    if observation.field not in DATE_FIELDS or not observation.value:
+        return None, None
+    from app.services.intel_signal_service import parse_expiry
+
+    parsed = parse_expiry(observation.value)
+    if not parsed or parsed.precision == "exact":
+        return None, parsed.precision
+    return parsed.normalized, parsed.precision
+
+
 def _to_out(observation: Observation) -> ObservationOut:
+    suggested, precision = _date_hint(observation)
     return ObservationOut(
         id=observation.id,
         entity_type=observation.entity_type,
@@ -41,6 +68,8 @@ def _to_out(observation: Observation) -> ObservationOut:
         human_verified=observation.human_verified,
         superseded_by_id=observation.superseded_by_id,
         created_at=observation.created_at.isoformat() if observation.created_at else "",
+        suggested_value=suggested,
+        value_precision=precision,
     )
 
 

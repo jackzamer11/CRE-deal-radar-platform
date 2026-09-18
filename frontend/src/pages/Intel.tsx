@@ -1,19 +1,22 @@
 import { useEffect, useState } from 'react'
 import {
   Sparkles, RefreshCw, ArrowRight, AlertTriangle, CheckCircle2, Clock,
-  ThumbsUp, ThumbsDown, PauseCircle, X, BookmarkPlus,
+  ThumbsUp, ThumbsDown, PauseCircle, X, BookmarkPlus, Target,
 } from 'lucide-react'
 import {
   getIntelOpportunities, generateIntelOpportunities,
   dispositionIntelOpportunity, getIntelHistory, saveIntelCriterion,
 } from '../api/client'
-import type { IntelOpportunity, IntelHistoryItem, IntelDisposition } from '../types'
+import type {
+  IntelOpportunity, IntelHistoryItem, IntelDisposition, IntelGenerateStats,
+} from '../types'
 
 // Signal-type → visual treatment.
 const SIGNAL_META: Record<string, { label: string; icon: React.ElementType; color: string }> = {
   lease_expiring:         { label: 'Lease Expiring',    icon: Clock,         color: 'text-emerald-400 bg-emerald-500/10 border-emerald-500/30' },
   expiration_unverified:  { label: 'Verify First',      icon: AlertTriangle, color: 'text-amber-400 bg-amber-500/10 border-amber-500/30' },
   stale_data:             { label: 'Incomplete Record', icon: CheckCircle2,  color: 'text-ink-secondary bg-surface-muted border-surface-border' },
+  stated_requirement:     { label: 'Stated Requirement', icon: Target,       color: 'text-blue-400 bg-blue-500/10 border-blue-500/30' },
 }
 
 // Reason categories for reject/defer (one tap).
@@ -106,6 +109,14 @@ function OppCard({
 
       {opp.rationale && (
         <p className="mt-2.5 text-xs text-ink-secondary leading-relaxed">{opp.rationale}</p>
+      )}
+
+      {/* The tenant's own words. A card you can judge without leaving the page. */}
+      {opp.signals[0]?.source_snippet && (
+        <p className="mt-2 text-[11px] italic text-ink-muted leading-snug border-l-2
+                      border-surface-border pl-2">
+          “{opp.signals[0].source_snippet}”
+        </p>
       )}
 
       <div className="mt-2 flex items-center gap-3 flex-wrap">
@@ -232,6 +243,7 @@ export default function IntelPage() {
   const [generating, setGenerating] = useState(false)
   const [ruleSuggestion, setRuleSuggestion] = useState<string | null>(null)
   const [ruleSaved, setRuleSaved] = useState(false)
+  const [stats, setStats] = useState<IntelGenerateStats | null>(null)
 
   const load = async () => {
     setLoading(true)
@@ -249,7 +261,8 @@ export default function IntelPage() {
   const handleGenerate = async () => {
     setGenerating(true)
     try {
-      await generateIntelOpportunities()
+      const res = await generateIntelOpportunities()
+      setStats(res.stats)
       await load()
     } finally {
       setGenerating(false)
@@ -288,6 +301,41 @@ export default function IntelPage() {
           {generating ? 'Generating…' : 'Generate Opportunities'}
         </button>
       </div>
+
+      {/* What the last run actually looked at. Without this, "no opportunities"
+          is indistinguishable from a button that did nothing at all. */}
+      {stats && (
+        <div className="mb-5 bg-surface-card border border-surface-border rounded-xl px-4 py-3
+                        flex items-start justify-between gap-3">
+          <div className="text-[11px] text-ink-secondary leading-relaxed">
+            Scanned <span className="font-bold text-ink-primary">{stats.facts_scanned}</span> facts
+            {' · '}<span className="font-bold text-ink-primary">{stats.expirations_found}</span> lease dates
+            {stats.expirations_unreadable > 0 && (
+              <span className="text-amber-400"> · {stats.expirations_unreadable} unreadable</span>
+            )}
+            {stats.expirations_past > 0 && (
+              <span className="text-ink-muted"> · {stats.expirations_past} already expired</span>
+            )}
+            {stats.expirations_beyond_horizon > 0 && (
+              <span className="text-ink-muted"> · {stats.expirations_beyond_horizon} over a year out</span>
+            )}
+            {' → '}
+            <span className="font-bold text-accent-blue">{stats.opportunities}</span> opportunities
+            {Object.keys(stats.by_signal_type).length > 0 && (
+              <span className="text-ink-muted">
+                {' ('}
+                {Object.entries(stats.by_signal_type)
+                  .map(([type, n]) => `${n} ${SIGNAL_META[type]?.label ?? type}`)
+                  .join(', ')}
+                {')'}
+              </span>
+            )}
+          </div>
+          <button onClick={() => setStats(null)} className="text-ink-muted hover:text-ink-primary flex-shrink-0">
+            <X size={13} />
+          </button>
+        </div>
+      )}
 
       {/* Standing-rule suggestion banner */}
       {ruleSuggestion && (
@@ -340,7 +388,8 @@ export default function IntelPage() {
 
       {tab === 'open' && (
         <p className="text-[11px] text-ink-muted mb-5 leading-relaxed">
-          Ranked from verified and unverified lease facts using date-based rules only — no AI scoring.
+          Ranked from lease dates and stated tenant requirements using rules only — no AI scoring.
+          Lease timing is scored highest across the 6–9 month pre-expiry window.
           Every accept/reject/defer is recorded with its reason.
         </p>
       )}
@@ -352,7 +401,10 @@ export default function IntelPage() {
           <div className="text-center py-12 text-ink-muted">
             <Sparkles size={32} className="mx-auto mb-3 opacity-30" />
             <p className="text-sm">No open opportunities.</p>
-            <p className="text-xs mt-1 text-ink-muted">Click “Generate Opportunities” after facts have been reviewed.</p>
+            <p className="text-xs mt-1 text-ink-muted">
+              Click “Generate Opportunities” — the summary above will say what was scanned
+              and why nothing surfaced.
+            </p>
           </div>
         ) : (
           <div className="space-y-3">

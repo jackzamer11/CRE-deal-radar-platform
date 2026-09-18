@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
-import { ClipboardCheck, Check, Pencil, FileText, X, Upload, Wand2 } from 'lucide-react'
+import {
+  ClipboardCheck, Check, Pencil, FileText, X, Upload, Wand2, CalendarClock,
+} from 'lucide-react'
 import axios from 'axios'
 import {
   getObservations, verifyObservation, uploadDocument, extractDocument,
-  getActivityMiningStatus, mineActivityLogs,
+  getActivityMiningStatus, mineActivityLogs, requeueFuzzyDates,
 } from '../api/client'
 import type { Observation, ActivityMiningStatus } from '../types'
 
@@ -37,6 +39,13 @@ function ConfidenceBadge({ confidence }: { confidence: number | null }) {
   )
 }
 
+// How coarse the stored text was, in words Jack can act on.
+const PRECISION_HINT: Record<string, string> = {
+  month: 'month only — confirm the day',
+  quarter: 'quarter only — confirm the month and day',
+  year: 'year only — confirm the month and day',
+}
+
 function ReviewRow({
   obs,
   onResolved,
@@ -44,14 +53,29 @@ function ReviewRow({
   obs: Observation
   onResolved: (id: number) => void
 }) {
+  // A hedged date ("~February 2027") arrives with a clean date already worked
+  // out. Pre-fill it so confirming is one tap instead of retyping.
+  const suggested = obs.suggested_value ?? null
   const [editing, setEditing] = useState(false)
-  const [input, setInput] = useState(obs.value ?? '')
+  const [input, setInput] = useState(suggested ?? obs.value ?? '')
   const [busy, setBusy] = useState(false)
 
   const confirm = async () => {
     setBusy(true)
     try {
       await verifyObservation(obs.id)
+      onResolved(obs.id)
+    } catch {
+      setBusy(false)
+    }
+  }
+
+  // Accept the normalized date without opening the editor.
+  const acceptSuggestion = async () => {
+    if (!suggested) return
+    setBusy(true)
+    try {
+      await verifyObservation(obs.id, suggested)
       onResolved(obs.id)
     } catch {
       setBusy(false)
@@ -97,6 +121,22 @@ function ReviewRow({
         </p>
       )}
 
+      {/* Normalized date suggestion — the note said it loosely, this is the
+          machine-usable version. It only ever becomes a fact once confirmed. */}
+      {suggested && (
+        <div className="mt-2.5 flex items-center gap-2 flex-wrap bg-accent-blue/10 border
+                        border-accent-blue/30 rounded-lg px-3 py-2">
+          <CalendarClock size={13} className="text-accent-blue flex-shrink-0" />
+          <span className="text-[11px] text-ink-secondary">Reads as</span>
+          <span className="text-[11px] font-bold text-ink-primary mono">{suggested}</span>
+          {obs.value_precision && PRECISION_HINT[obs.value_precision] && (
+            <span className="text-[10px] text-ink-muted">
+              ({PRECISION_HINT[obs.value_precision]})
+            </span>
+          )}
+        </div>
+      )}
+
       {/* Actions */}
       {editing ? (
         <div className="mt-3 space-y-2">
@@ -125,15 +165,26 @@ function ReviewRow({
           </div>
         </div>
       ) : (
-        <div className="mt-3 flex items-center gap-2">
-          <button
-            onClick={confirm}
-            disabled={busy}
-            className="flex items-center gap-1.5 text-[10px] px-3 py-1.5 rounded-lg bg-accent-blue
-                       hover:bg-accent-blueDim text-white font-semibold disabled:opacity-50"
-          >
-            <Check size={12} /> Confirm
-          </button>
+        <div className="mt-3 flex items-center gap-2 flex-wrap">
+          {suggested ? (
+            <button
+              onClick={acceptSuggestion}
+              disabled={busy}
+              className="flex items-center gap-1.5 text-[10px] px-3 py-1.5 rounded-lg bg-accent-blue
+                         hover:bg-accent-blueDim text-white font-semibold disabled:opacity-50"
+            >
+              <Check size={12} /> Use {suggested}
+            </button>
+          ) : (
+            <button
+              onClick={confirm}
+              disabled={busy}
+              className="flex items-center gap-1.5 text-[10px] px-3 py-1.5 rounded-lg bg-accent-blue
+                         hover:bg-accent-blueDim text-white font-semibold disabled:opacity-50"
+            >
+              <Check size={12} /> Confirm
+            </button>
+          )}
           <button
             onClick={() => setEditing(true)}
             disabled={busy}
@@ -158,6 +209,28 @@ function ActivityMiningPanel({ onMined }: { onMined: () => void }) {
   const [status, setStatus] = useState<ActivityMiningStatus | null>(null)
   const [running, setRunning] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [recheck, setRecheck] = useState<{ busy: boolean; msg: string | null }>(
+    { busy: false, msg: null },
+  )
+
+  // Dates the tenant hedged ("~February 2027") used to clear themselves, so
+  // nothing ever asked Jack to pin them down. This pulls them back into the
+  // queue. Idempotent, and it never touches a fact he verified himself.
+  const recheckDates = async () => {
+    setRecheck({ busy: true, msg: null })
+    try {
+      const res = await requeueFuzzyDates()
+      setRecheck({
+        busy: false,
+        msg: res.requeued > 0
+          ? `${res.requeued} imprecise date${res.requeued === 1 ? '' : 's'} moved back to review.`
+          : 'No imprecise dates left to confirm.',
+      })
+      onMined()
+    } catch {
+      setRecheck({ busy: false, msg: 'Could not re-check dates.' })
+    }
+  }
 
   const refresh = async () => {
     try {
@@ -210,17 +283,32 @@ function ActivityMiningPanel({ onMined }: { onMined: () => void }) {
             structured facts. Your activity logs are never changed.
           </p>
         </div>
-        {!done && (
+        <div className="flex items-center gap-2 flex-shrink-0">
           <button
-            onClick={run}
-            disabled={running}
-            className="flex-shrink-0 text-[10px] px-3 py-1.5 rounded-lg bg-accent-blue
-                       hover:bg-accent-blueDim text-white font-semibold disabled:opacity-50"
+            onClick={recheckDates}
+            disabled={recheck.busy || running}
+            className="text-[10px] px-3 py-1.5 rounded-lg bg-surface-muted hover:bg-surface-hover
+                       text-ink-secondary hover:text-ink-primary font-semibold
+                       border border-surface-border disabled:opacity-50"
           >
-            {running ? 'Mining…' : `Mine ${status.remaining} logs`}
+            {recheck.busy ? 'Checking…' : 'Re-check dates'}
           </button>
-        )}
+          {!done && (
+            <button
+              onClick={run}
+              disabled={running}
+              className="text-[10px] px-3 py-1.5 rounded-lg bg-accent-blue
+                         hover:bg-accent-blueDim text-white font-semibold disabled:opacity-50"
+            >
+              {running ? 'Mining…' : `Mine ${status.remaining} logs`}
+            </button>
+          )}
+        </div>
       </div>
+
+      {recheck.msg && (
+        <p className="mt-2 text-[11px] text-accent-blue">{recheck.msg}</p>
+      )}
 
       {/* Progress */}
       <div className="mt-3">

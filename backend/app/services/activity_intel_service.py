@@ -58,6 +58,25 @@ REQUIREMENT_FIELDS: Dict[str, str] = {
 # not a call note.
 AUTO_APPROVE_FIELDS = set(REQUIREMENT_FIELDS)
 
+# Fields holding a date. A date is what decides WHO gets called and WHEN, so it
+# only clears itself when the note stated it exactly ("lease ends 2027-03-01").
+# Anything the tenant hedged ("~February 2027", "end of next year") is a
+# suggestion, not a fact, and goes to Review with a normalized date to confirm.
+DATE_FIELDS = {"expiration_date"}
+
+
+def _should_auto_approve(field: str, value: Optional[str]) -> bool:
+    """Whether a mined fact can clear itself instead of queueing for review."""
+    if field not in AUTO_APPROVE_FIELDS:
+        return False
+    if field in DATE_FIELDS:
+        # Imported here: the signal engine owns date parsing, and importing at
+        # module scope would make the two services import each other.
+        from app.services.intel_signal_service import parse_expiry
+
+        return parse_expiry(value).precision == "exact"
+    return True
+
 _FIELD_SCHEMA = {
     "type": "object",
     "properties": {
@@ -202,7 +221,7 @@ def mine_activity_log(
         value = row.get("value")
         if value is None:
             continue
-        auto = field in AUTO_APPROVE_FIELDS
+        auto = _should_auto_approve(field, str(value))
         obs = Observation(
             entity_type=entity_type,
             entity_id=entity_id,
@@ -305,12 +324,53 @@ def auto_approve_existing(db: Session) -> Dict[str, int]:
         .all()
     )
     by_field: Dict[str, int] = {}
+    approved = 0
     for obs in rows:
+        # A hedged date is not a fact — leave it queued for Jack to confirm.
+        if not _should_auto_approve(obs.field, obs.value):
+            continue
         obs.human_verified = True
         obs.verified_by = "auto"
+        approved += 1
         by_field[obs.field] = by_field.get(obs.field, 0) + 1
     db.commit()
-    return {"approved": len(rows), **by_field}
+    return {"approved": approved, **by_field}
+
+
+def requeue_fuzzy_dates(db: Session) -> Dict[str, int]:
+    """Send auto-approved but imprecise dates back to the Review queue.
+
+    Backfill for rows written before auto-approval became value-aware: ten real
+    dates like "~February 2027" had cleared themselves, so nothing ever asked
+    Jack to pin them down. Flips ONLY the verification flag — value, snippet,
+    confidence and provenance are untouched, so there is nothing to supersede —
+    and never touches a row a human verified. Idempotent.
+    """
+    from app.services.intel_signal_service import parse_expiry
+
+    rows = (
+        db.query(Observation)
+        .filter(
+            Observation.field.in_(sorted(DATE_FIELDS)),
+            Observation.human_verified.is_(True),
+            Observation.verified_by == "auto",
+            Observation.superseded_by_id.is_(None),
+            Observation.source_doc.like("activity_log:%"),
+        )
+        .all()
+    )
+    requeued = unreadable = 0
+    for obs in rows:
+        parsed = parse_expiry(obs.value)
+        if parsed.precision == "exact":
+            continue
+        if not parsed:
+            unreadable += 1
+        obs.human_verified = False
+        obs.verified_by = None
+        requeued += 1
+    db.commit()
+    return {"requeued": requeued, "unreadable": unreadable, "checked": len(rows)}
 
 
 def mine_all_activity_logs(

@@ -1,6 +1,6 @@
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.database import get_db
 from app.models.opportunity import Opportunity
@@ -31,7 +31,14 @@ def list_opportunities(
     active_only: bool = True,
     db: Session = Depends(get_db),
 ):
-    q = db.query(Opportunity)
+    # Eager-load both relations: the response loop reads opp.property and
+    # opp.company on every row, which lazy-loads one SELECT per distinct
+    # related row (~375 queries for a full list). Both are many-to-one, so
+    # joinedload adds a LEFT JOIN without multiplying rows — one query total.
+    q = db.query(Opportunity).options(
+        joinedload(Opportunity.property),
+        joinedload(Opportunity.company),
+    )
     if active_only:
         q = q.filter(Opportunity.is_active == True)
     if priority:
