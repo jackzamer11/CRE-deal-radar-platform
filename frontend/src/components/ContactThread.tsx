@@ -24,6 +24,7 @@ import {
 import EntryEditor from './EntryEditor'
 import LeaseCard from './LeaseCard'
 import StageChangeDivider from './StageChangeDivider'
+import { formatDate } from '../dates'
 
 const OUTREACH_TYPE_LABELS: Record<string, string> = {
   tenant_match:         'Tenant Match Outreach',
@@ -49,7 +50,7 @@ const STAGE_ACTIVE: Record<ActivityStage, string> = {
 }
 
 const fmtDate = (d: string | null) =>
-  d ? new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '—'
+  d ? formatDate(d, { month: 'short', day: 'numeric', year: 'numeric' }) : '—'
 
 const todayISO = () => new Date().toISOString().slice(0, 10)
 

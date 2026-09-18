@@ -9,6 +9,7 @@ import ContactThread from '../components/ContactThread'
 import CompanyTimelinePanel from '../components/CompanyTimelinePanel'
 import EntryEditor from '../components/EntryEditor'
 import StageChangeDivider from '../components/StageChangeDivider'
+import { formatDate as formatDateOnly } from '../dates'
 
 const ACTION_ICONS: Record<ActionType, React.ElementType> = {
   CALL:          Phone,
@@ -72,7 +73,7 @@ function ActionBadge({ type }: { type: ActionType }) {
 }
 
 function formatDate(dateStr: string): string {
-  return new Date(dateStr).toLocaleDateString('en-US', {
+  return formatDateOnly(dateStr, {
     month: 'short', day: 'numeric', year: 'numeric',
   })
 }

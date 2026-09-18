@@ -7,6 +7,7 @@ import type {
   ActivityStage, Channel, Contact, ContactListRow, ContactType,
 } from '../types'
 import { CLOSED_STAGE, CONTACT_STAGES, CONTACT_TYPE_LABELS, UI_CONTACT_TYPES } from '../types'
+import { formatDate } from '../dates'
 
 const STAGE_PILL: Record<ActivityStage, string> = {
   'Sent':           'bg-blue-500/15 text-blue-300 border-blue-500/40',
@@ -24,7 +25,7 @@ const CHANNEL_ICONS: Partial<Record<Channel, React.ElementType>> = {
 }
 
 const fmtDate = (d: string | null) =>
-  d ? new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '—'
+  d ? formatDate(d, { month: 'short', day: 'numeric' }) : '—'
 
 // ── New-contact form ─────────────────────────────────────────────────────────
 function NewContactForm({

@@ -8,13 +8,14 @@ import {
   rejectPendingUpdate,
 } from '../api/client'
 import type { Channel, CompanyTimelinePage, PendingUpdate } from '../types'
+import { formatDate } from '../dates'
 
 const CHANNEL_ICONS: Partial<Record<Channel, React.ElementType>> = {
   email: Mail, call: Phone, meeting: Users,
 }
 
 const fmtDate = (d: string) =>
-  new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+  formatDate(d, { month: 'short', day: 'numeric', year: 'numeric' })
 
 /**
  * Every entry stamped to a company, interleaved by date across all contacts —
