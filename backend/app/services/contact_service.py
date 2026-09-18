@@ -13,6 +13,7 @@ Design rules enforced here rather than in the routes:
 """
 from datetime import date, datetime, timedelta
 from typing import Dict, List, Optional, Tuple
+from urllib.parse import urlparse
 
 from sqlalchemy import null
 from sqlalchemy.orm import Session
@@ -34,6 +35,9 @@ FREE_MAIL_DOMAINS = {
     "comcast.net", "verizon.net", "att.net", "sbcglobal.net", "cox.net",
     "bellsouth.net", "earthlink.net", "juno.com", "aim.com", "hushmail.com",
     "tutanota.com", "duck.com", "hey.com",
+    # CompuServe — Fred Zamer's personal address. Missing here, it was claimed
+    # as Magnet Forensics' domain (see website_domain below).
+    "cs.com",
 }
 
 
@@ -83,6 +87,34 @@ def email_domain_of(email: Optional[str]) -> Optional[str]:
     if not e or "@" not in e:
         return None
     return e.rsplit("@", 1)[1] or None
+
+
+def website_domain(website: Optional[str]) -> Optional[str]:
+    """The host a company website lives at, lower-cased, without "www.".
+
+    "https://www.magnetforensics.com/about" → "magnetforensics.com". Tolerates a
+    bare "magnetforensics.com/about" with no scheme.
+    """
+    raw = (website or "").strip().lower()
+    if not raw:
+        return None
+    host = urlparse(raw if "//" in raw else f"//{raw}").hostname or ""
+    if host.startswith("www."):
+        host = host[4:]
+    return host or None
+
+
+def domain_matches_website(domain: Optional[str], website: Optional[str]) -> bool:
+    """True when an email domain IS the website's domain, or a subdomain of it.
+
+    Never a substring test: "cs.com" appears inside "magnetforensics.com", and
+    matching on that filed Fred Zamer's CompuServe mail under Magnet Forensics.
+    """
+    site = website_domain(website)
+    d = (domain or "").strip().lower()
+    if not site or not d:
+        return False
+    return d == site or d.endswith("." + site)
 
 
 # ── Addresses Jack owns ─────────────────────────────────────────────────────────
@@ -432,7 +464,8 @@ def resolve_company_for_email(
 
     Resolution order:
       1. email_domain match (a company already claims this domain)
-      2. the domain appears in an existing company's website
+      2. the domain is an existing company's website domain, or a subdomain
+         of it (exact — see domain_matches_website)
       3. the name derived from the domain, matched loosely against existing
          company names — this is what stops a "Mm-Realestate" duplicate of a
          hand-entered "Corcoran McEnearney"
@@ -490,7 +523,8 @@ def resolve_companies_for_emails(
         for domain in unresolved:
             # The domain may already be on record as the company's website.
             by_site = next(
-                (c for c in with_site if domain in (c.website or "").lower()), None,
+                (c for c in with_site if domain_matches_website(domain, c.website)),
+                None,
             )
             if by_site is not None:
                 # Claim the domain so the next lookup is a direct hit.

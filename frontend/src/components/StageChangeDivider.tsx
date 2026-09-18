@@ -1,8 +1,9 @@
 import { ArrowRight } from 'lucide-react'
 import type { ActivityStage } from '../types'
+import { formatDate } from '../dates'
 
 const fmtDate = (d: string | null) =>
-  d ? new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : ''
+  d ? formatDate(d, { month: 'short', day: 'numeric' }) : ''
 
 const STAGE_TEXT: Record<ActivityStage, string> = {
   'Sent':           'text-blue-300',
