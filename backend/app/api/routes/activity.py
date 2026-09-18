@@ -809,6 +809,8 @@ def _deal_specs(payload: ActivityFromEmail) -> List[_DealSpec]:
             ("proposed_company_updates", bool(payload.proposed_company_updates)),
             ("company_override", bool((payload.company_override or "").strip())),
             ("company_override_id", payload.company_override_id is not None),
+            ("contact_email", bool((payload.contact_email or "").strip())),
+            ("contact_name", bool((payload.contact_name or "").strip())),
         ) if present
     ] + [f for f in _DISCOVERY_FIELDS if getattr(payload, f) is not None]
     if stray:
