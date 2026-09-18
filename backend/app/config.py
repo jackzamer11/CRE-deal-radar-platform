@@ -351,6 +351,22 @@ SF_FIT_MAX_POINTS  = 100.0
 SF_FIT_MIN_POINTS  = 60.0
 
 # ---------------------------------------------------------------------------
+# Briefing Section A — Tenant Match Actions
+# ---------------------------------------------------------------------------
+# Section A is hidden in the UI (SHOW_TENANT_MATCH_SECTION in Dashboard.tsx).
+# Building it costs a full properties x companies Match Score sweep — ~110k
+# compute_match() calls, ~650ms of CPU and ~72% of the briefing payload — all
+# of which the frontend discards while the section is hidden. This flag skips
+# that sweep; the briefing still returns tenant_match_actions as an empty list,
+# so the /api/dashboard/briefing contract is unchanged.
+#
+# Nothing about match scoring itself changes: _compute_tenant_actions() and
+# match_scoring.py are untouched and still exercised directly by their tests.
+# Flip this to True together with SHOW_TENANT_MATCH_SECTION to bring the
+# section back. output_engine reads it at call time (never cached at import).
+BRIEFING_TENANT_MATCH_SECTION_ENABLED = False
+
+# ---------------------------------------------------------------------------
 # Vacancy-line citation thresholds for email templates
 # Owner-side: cite submarket vacancy only when vacancy_pct > this value
 # Tenant-side: cite submarket vacancy only when vacancy_pct < this value

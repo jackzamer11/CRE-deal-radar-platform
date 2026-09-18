@@ -1541,11 +1541,11 @@ def refresh_property_signals(property_id: str, db: Session = Depends(get_db)):
 @router.post("/{property_id}/draft-outreach", response_model=OutreachDraft)
 def draft_property_outreach(
     property_id: str,
-    outreach_type: str = Query("tenant_match", regex="^(tenant_match|for_sale_vacancy|listing_rep|acquisition)$"),
+    outreach_type: str = Query("tenant_match", pattern="^(tenant_match|for_sale_vacancy|listing_rep|acquisition)$"),
     tenant_context: Optional[str] = Query(None),
     target_type: Optional[str] = Query(None),
     intel_context_raw: Optional[str] = Query(None),
-    direction: str = Query("property_side", regex="^(property_side|tenant_side)$"),
+    direction: str = Query("property_side", pattern="^(property_side|tenant_side)$"),
     company_id: Optional[str] = Query(None),
     db: Session = Depends(get_db),
 ):
