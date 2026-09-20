@@ -537,10 +537,21 @@ export const createContact = (payload: {
 // Nothing here auto-assigns and nothing creates a placeholder person.
 
 // `company_id` narrows to what one company is holding — its card opened up.
+// `include_archived` is the "show archived" toggle; the company panel always
+// passes it, so opening a card never shows fewer entries than the card counted.
 export const getNeedsContact = (
-  params?: { company_id?: number; limit?: number; offset?: number },
+  params?: {
+    company_id?: number; include_archived?: boolean
+    limit?: number; offset?: number
+  },
 ): Promise<NeedsContactPage> =>
   api.get('/activity/needs-contact', { params }).then(r => r.data)
+
+// Archive or unarchive — one call, both directions.
+export const setActivityArchived = (
+  entryId: number, archived: boolean,
+): Promise<ActivityLog> =>
+  api.patch(`/activity/${entryId}/archived`, { archived }).then(r => r.data)
 
 // Just the badge number — one COUNT, no rows fetched.
 export const getNeedsContactCount = (): Promise<number> =>

@@ -31,7 +31,11 @@ export default function CompanyHeldEntries({
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const page = await getNeedsContact({ company_id: companyId, limit: 500 })
+      // include_archived: a card COUNTS its archived entries, so opening it
+      // must not show fewer than the card promised. They render muted here.
+      const page = await getNeedsContact({
+        company_id: companyId, include_archived: true, limit: 500,
+      })
       setEntries(page.entries)
     } catch {
       setError('Could not load what this company is holding.')
@@ -63,8 +67,14 @@ export default function CompanyHeldEntries({
           <h2 className="text-base font-bold text-ink-primary">{companyName}</h2>
           <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400/90
                            border border-amber-500/20">
-            {entries.length} waiting on a contact
+            {entries.filter(e => !e.archived).length} waiting on a contact
           </span>
+          {entries.some(e => e.archived) && (
+            <span className="text-[9px] px-1.5 py-0.5 rounded bg-surface-muted text-ink-muted
+                             border border-surface-border">
+              {entries.filter(e => e.archived).length} archived
+            </span>
+          )}
         </div>
         <p className="text-[11px] text-ink-muted mt-1.5">
           These entries are stamped to {companyName} but are not on a person.

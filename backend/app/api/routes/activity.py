@@ -25,7 +25,7 @@ from app.services.contact_service import (
 )
 from app.services.contactless_service import (
     company_key_column, contactless_filters, move_company_entries_to_contact,
-    move_entry_to_contact, needs_contact_count,
+    move_entry_to_contact, needs_contact_count, not_archived,
 )
 from app.services.email_ingest_service import (
     StatedValueError, coerce_value, is_own_address, queue_company_update,
@@ -126,6 +126,11 @@ class ActivityOut(BaseModel):
     # weekly roundup rather than direct correspondence. Null otherwise.
     source_note:       Optional[str] = None
 
+    # Out of the Needs a Contact queue, still everywhere else. Optional at the
+    # schema level so a row written before the column existed (NULL) reads back
+    # as False rather than failing validation.
+    archived:          Optional[bool] = False
+
     # Set only on a STAGE_CHANGE row — the transition the divider renders.
     stage_from: Optional[str] = None
     stage_to:   Optional[str] = None
@@ -156,6 +161,7 @@ def _to_out(log: ActivityLog) -> "ActivityOut":
     if not item.stage:
         item.stage = "Sent"
     item.participation = bool(item.participation)
+    item.archived = bool(item.archived)
     if log.property:
         item.property_address = log.property.address
     if log.company:
@@ -433,6 +439,7 @@ class NeedsContactPage(BaseModel):
 @router.get("/needs-contact", response_model=NeedsContactPage)
 def list_needs_contact(
     company_id: Optional[int] = None,
+    include_archived: bool = False,
     limit: int = 200,
     offset: int = 0,
     db: Session = Depends(get_db),
@@ -449,10 +456,20 @@ def list_needs_contact(
     `company_id` narrows to the entries one company is holding — what opening
     its card shows. `total` then means that company's count; with no filter it
     is the badge number, the whole queue rather than this page.
+
+    Archived entries are out by default and come back with
+    `include_archived=true` — the "show archived" toggle. The company panel
+    passes it, because a card counts what the company is holding including the
+    archived ones, and opening the card must not show fewer than the card
+    promised.
     """
     base = db.query(ActivityLog).filter(*contactless_filters())
+    if not include_archived:
+        base = base.filter(not_archived())
     if company_id is not None:
         base = base.filter(company_key_column() == company_id)
+        total = base.count()
+    elif include_archived:
         total = base.count()
     else:
         total = needs_contact_count(db)
@@ -484,8 +501,37 @@ class NeedsContactCount(BaseModel):
 
 @router.get("/needs-contact/count", response_model=NeedsContactCount)
 def count_needs_contact(db: Session = Depends(get_db)):
-    """Just the badge number — one COUNT, no rows fetched."""
+    """Just the badge number — one COUNT, no rows fetched.
+
+    Always excludes archived entries: the badge is "how much is left to do",
+    and an archived entry is by definition not left to do.
+    """
     return NeedsContactCount(total=needs_contact_count(db))
+
+
+class ActivityArchived(BaseModel):
+    archived: bool
+
+
+@router.patch("/{entry_id}/archived", response_model=ActivityOut)
+def set_activity_archived(
+    entry_id: int, payload: ActivityArchived, db: Session = Depends(get_db),
+):
+    """Archive or unarchive an entry — one endpoint, both directions.
+
+    Archiving takes the entry out of the Needs a Contact queue and the badge
+    count and nothing else. It stays in the database, stays searchable through
+    /activity/?q=, stays in All Activity, and stays on its company's card. It
+    is reversible with the same call and `archived: false`, which is why there
+    is no separate unarchive route to forget to keep in step with this one.
+    """
+    log = db.query(ActivityLog).filter(ActivityLog.id == entry_id).first()
+    if not log:
+        raise HTTPException(status_code=404, detail="Activity log entry not found")
+    log.archived = bool(payload.archived)
+    db.commit()
+    db.refresh(log)
+    return _to_out(log)
 
 
 class MoveAllRequest(BaseModel):

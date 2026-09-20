@@ -11,7 +11,7 @@ from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import and_, func, or_
+from sqlalchemy import and_, case, func, or_
 from sqlalchemy.orm import Session, joinedload
 
 from app.database import get_db
@@ -35,7 +35,7 @@ from app.services.contact_service import (
 )
 from app.services.contactless_service import (
     company_key_column, contactless_filters,
-)
+)  # archived entries stay on a card — see contactless_filters()
 from app.services.lease_records import current_lease
 from app.services.lease_storage import lease_file_exists
 from app.services.signal_engine import (
@@ -913,6 +913,11 @@ class CompanyCardRow(BaseModel):
     company_key: Optional[str] = None      # CO-nnn, for the timeline panel
     name: str
     entry_count: int = 0
+    # How many of entry_count are archived. The card still counts them —
+    # archiving changes what is in the QUEUE, not what a company is holding —
+    # but it says so, or the number would disagree with the badge for no
+    # visible reason.
+    archived_count: int = 0
     last_touch: Optional[date] = None
     # 0 means "no contacts yet" — the card says so, because that is the reason
     # there is nobody to put these entries on.
@@ -970,6 +975,9 @@ def list_company_cards(
         db.query(
             cid.label("cid"),
             func.count(ActivityLog.id).label("entry_count"),
+            func.sum(
+                case((ActivityLog.archived.is_(True), 1), else_=0)
+            ).label("archived_count"),
             func.max(ActivityLog.log_date).label("last_touch"),
         )
         .filter(*contactless_filters())
@@ -995,6 +1003,7 @@ def list_company_cards(
         db.query(
             Company,
             counts.c.entry_count,
+            counts.c.archived_count,
             counts.c.last_touch,
             func.coalesce(people.c.contact_count, 0).label("contact_count"),
         )
@@ -1033,6 +1042,7 @@ def list_company_cards(
             company_key=company.company_id,
             name=company.name,
             entry_count=int(entry_count or 0),
+            archived_count=int(archived_count or 0),
             last_touch=last_touch,
             contact_count=int(contact_count or 0),
             triaged=False,
@@ -1043,7 +1053,7 @@ def list_company_cards(
                 latest[company.id].channel if company.id in latest else None
             ),
         )
-        for company, entry_count, last_touch, contact_count in rows
+        for company, entry_count, archived_count, last_touch, contact_count in rows
     ]
 
 

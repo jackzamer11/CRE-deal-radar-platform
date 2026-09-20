@@ -46,11 +46,22 @@ def contactless_filters():
     exclude them: a divider reading "Stage: Sent -> Replied" is not an entry
     that needs a person behind it. There are none contactless today; this keeps
     it that way if one is ever written.
+
+    `archived` is deliberately NOT here. Archiving says "keep this out of my
+    queue", not "this company is no longer holding it" — so a company card
+    still counts an archived entry and opening the card still shows it. Only
+    the queue and its badge filter on it, via not_archived().
     """
     return (
         ActivityLog.contact_id.is_(None),
         ActivityLog.action_type != STAGE_CHANGE_ACTION,
     )
+
+
+def not_archived():
+    """The queue's extra term. `.isnot(True)` rather than `.is_(False)`: it is
+    null-safe for any row written before the column existed."""
+    return ActivityLog.archived.isnot(True)
 
 
 def contactless_query(db: Session):
@@ -147,11 +158,26 @@ def needs_contact_count(db: Session) -> int:
     """How many entries are still waiting on a person — the badge number.
 
     Counts entries with a company and entries without, because both need the
-    same thing from Jack. It reaching zero is the point of the queue.
+    same thing from Jack. It reaching zero is the point of the queue, which is
+    exactly why archived entries are excluded: a hundred entries that will
+    never have a counterparty would put zero out of reach permanently and the
+    number would stop meaning anything.
     """
     return (
         db.query(func.count(ActivityLog.id))
         .filter(*contactless_filters())
+        .filter(not_archived())
+        .scalar()
+    ) or 0
+
+
+def archived_count_for_company(db: Session, company_pk: int) -> int:
+    """How many of a company's held entries are archived — the card's note."""
+    return (
+        db.query(func.count(ActivityLog.id))
+        .filter(*contactless_filters())
+        .filter(company_key_column() == company_pk)
+        .filter(ActivityLog.archived.is_(True))
         .scalar()
     ) or 0
 

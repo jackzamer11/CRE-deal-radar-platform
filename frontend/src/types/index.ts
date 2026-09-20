@@ -377,6 +377,9 @@ export interface ActivityLog {
   // Set only on a STAGE_CHANGE row — the transition the divider shows.
   stage_from: string | null
   stage_to: string | null
+  // Out of the Needs a Contact queue and its badge; still searchable, still in
+  // All Activity, still on its company's card.
+  archived?: boolean
 }
 
 // ── Contact threads ─────────────────────────────────────────────────────────
@@ -459,6 +462,8 @@ export interface CompanyCardRow {
   company_key: string | null      // CO-nnn, for the timeline panel
   name: string
   entry_count: number
+  // How many of entry_count are archived. The card still counts them.
+  archived_count: number
   last_touch: string | null
   // 0 means "no contacts yet" — why there is nobody to put these entries on.
   contact_count: number

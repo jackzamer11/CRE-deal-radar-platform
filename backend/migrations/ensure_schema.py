@@ -293,6 +293,14 @@ def ensure_activity_logs(cur: sqlite3.Cursor) -> int:
     # told apart as a deal entry, and the multi-deal build shipped days earlier.
     added += _add_activity_column(cur, "deal_sourced", "BOOLEAN NOT NULL DEFAULT 0")
 
+    # archived — noise put out of the way of the Needs a Contact queue without
+    # being deleted. Defaults to 0, which is the correct backfill: nothing was
+    # archived before the flag existed, so every existing row stays in the
+    # queue and Jack archives what he wants gone. The entry itself is untouched
+    # by the flag — it stays searchable, in All Activity and on its company's
+    # card either way.
+    added += _add_activity_column(cur, "archived", "BOOLEAN NOT NULL DEFAULT 0")
+
     # Indexes: the contact timeline filters on contact_id, the company timeline
     # on company_stamp_id, and the email automation's dedup on
     # source_message_id — none of which may degrade as entries accumulate.

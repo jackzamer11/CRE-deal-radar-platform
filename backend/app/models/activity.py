@@ -58,12 +58,40 @@ class ActivityLog(Base):
     # row is written.
     source_message_id = Column(String, nullable=True, unique=True, index=True)
 
-    # The address this entry came from, as the mailbox reported it. Recorded so
-    # a correction can teach the resolver: when Jack moves an entry to a
-    # different contact, this is the address that gets mapped to that person
-    # (see models/email_ingest.ContactAddressOverride). Null on anything not
-    # ingested from email.
+    # The COUNTERPARTY's address on this email — the other party, not the
+    # literal sender.
+    #
+    # On an inbound entry those are the same thing and the name reads true. On
+    # an OUTBOUND entry they are not: the literal sender is Jack, and storing
+    # his own address would say nothing, so this holds the person he wrote to
+    # (or the address the thread came from). Entry #389, Jack acknowledging
+    # Ann's chart, is outbound and carries awaller@simpsondev.com.
+    #
+    # So anything reading this as "who sent it" is wrong on every outbound row.
+    # Read it as "the address this entry is about". The behaviour is deliberate
+    # and unchanged; only this comment was wrong.
+    #
+    # Recorded so a correction can teach the resolver: when Jack moves an entry
+    # to a different contact, this is the address that gets mapped to that
+    # person (see models/email_ingest.ContactAddressOverride). Null on anything
+    # not ingested from email.
     sender_email = Column(String, nullable=True, index=True)
+
+    # Noise, put out of the way without being thrown away.
+    #
+    # An archived entry stays in the database, stays searchable, stays in All
+    # Activity and stays on its company's card — it only drops out of the Needs
+    # a Contact queue and the badge count. That queue exists to be drained to
+    # zero, and a hundred entries that will never have a counterparty ("called
+    # Hina, no answer") make zero unreachable, so the number stops meaning
+    # anything and the surface gets abandoned.
+    #
+    # Deliberately NOT part of contactless_filters(): archiving changes what is
+    # in the QUEUE, never what a company is holding. A company card still
+    # counts an archived entry, and opening the card still shows it, flagged.
+    archived = Column(
+        Boolean, nullable=False, default=False, server_default=text("0"),
+    )
 
     # True when this person was only COPIED on the email rather than written to.
     #

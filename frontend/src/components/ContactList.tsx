@@ -240,6 +240,12 @@ function CompanyCard({
       <div className="flex items-center gap-2 mt-1 text-[11px] text-ink-muted flex-wrap">
         <span>
           {row.entry_count} entr{row.entry_count === 1 ? 'y' : 'ies'} waiting on a contact
+          {/* The card counts archived entries too — archiving changes what is
+              in the queue, not what the company is holding. Said out loud so
+              this number never silently disagrees with the badge. */}
+          {row.archived_count > 0 && (
+            <span className="text-ink-muted/70"> ({row.archived_count} archived)</span>
+          )}
         </span>
         <span>·</span>
         <span className="flex items-center gap-1">
