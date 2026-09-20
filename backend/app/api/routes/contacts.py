@@ -30,8 +30,11 @@ from app.services.contact_service import (
     ContactMergeConflict, PrimaryAddressRemoval, active_facts,
     add_contact_address, apply_closed_stage_bookkeeping, contact_addresses,
     create_fact, mark_engaged, merge_contacts, normalize_email,
-    record_stage_change, remove_contact_address, resolve_contact_by_email,
-    set_primary_contact_address, sync_primary_alias,
+    record_stage_change, remove_contact_address, resolve_companies_by_names,
+    resolve_contact_by_email, set_primary_contact_address, sync_primary_alias,
+)
+from app.services.contactless_service import (
+    company_key_column, contactless_filters,
 )
 from app.services.lease_records import current_lease
 from app.services.lease_storage import lease_file_exists
@@ -391,28 +394,39 @@ def pending_conflicts(db: Session, company: Optional[Company]) -> List[ConflictO
 @router.get("/search", response_model=List[ContactOut])
 def search_contacts(
     q: str = Query("", description="Type-ahead over name and email"),
+    company_id: Optional[int] = Query(
+        None, description="Restrict to contacts employed at this company",
+    ),
     limit: int = 20,
     db: Session = Depends(get_db),
 ):
     """Type-ahead on name and email. Untriaged contacts are included — they are
     fully searchable from the moment they exist, they just don't fill the
-    default list."""
+    default list.
+
+    `company_id` narrows the search to one employer, and with no term it lists
+    everyone there. That is what the move-to-contact picker opens onto: moving
+    a company's held entry almost always means one of the people already at
+    that company, so the picker shows them before Jack types anything. An empty
+    term with no company still returns nothing — a type-ahead over every
+    contact in the system is not a useful first screen.
+    """
     term = (q or "").strip()
-    if not term:
+    if not term and company_id is None:
         return []
-    like = f"%{term.lower()}%"
-    rows = (
-        db.query(Contact)
-        .options(joinedload(Contact.company))
-        .filter(or_(
+    rows = db.query(Contact).options(joinedload(Contact.company))
+    if company_id is not None:
+        rows = rows.filter(Contact.company_id == company_id)
+    if term:
+        like = f"%{term.lower()}%"
+        rows = rows.filter(or_(
             func.lower(Contact.name).like(like),
             func.lower(Contact.email).like(like),
         ))
-        .order_by(Contact.name.asc())
-        .limit(max(1, limit))
-        .all()
-    )
-    return [_contact_out(c) for c in rows]
+    return [
+        _contact_out(c) for c in
+        rows.order_by(Contact.name.asc()).limit(max(1, limit)).all()
+    ]
 
 
 class ResolveRequest(BaseModel):
@@ -887,12 +901,164 @@ def list_contacts(
     return out
 
 
+class CompanyCardRow(BaseModel):
+    """One card in the By Contact list for a company holding contactless entries.
+
+    Deliberately shaped like ContactListRow where the two overlap (`kind`,
+    `entry_count`, `triaged`, the latest-entry fields) so the list can render
+    both in one stream without the frontend special-casing every field.
+    """
+    kind: str = "company"
+    id: int                       # Company primary key
+    company_key: Optional[str] = None      # CO-nnn, for the timeline panel
+    name: str
+    entry_count: int = 0
+    last_touch: Optional[date] = None
+    # 0 means "no contacts yet" — the card says so, because that is the reason
+    # there is nobody to put these entries on.
+    contact_count: int = 0
+    # Always False. A company card is work that has not been done: nothing has
+    # been assigned yet, so it can never read as triaged. See the endpoint.
+    triaged: bool = False
+    latest_entry_summary: Optional[str] = None
+    latest_entry_channel: Optional[str] = None
+
+
+@router.get("/company-cards", response_model=List[CompanyCardRow])
+def list_company_cards(
+    contact_type: Optional[str] = None,
+    triaged: Optional[bool] = None,
+    stage: Optional[str] = None,
+    q: Optional[str] = None,
+    limit: int = 500,
+    offset: int = 0,
+    db: Session = Depends(get_db),
+):
+    """Companies holding entries that are not on a person yet.
+
+    One card per company, computed the same way the contact list is: a single
+    aggregated query grouping contactless entries by company, plus one bulk
+    fetch for the latest entry text. No per-company follow-up query.
+
+    **A company card is always untriaged.** Triaged means Jack has engaged with
+    a record; a card exists precisely because entries on it have NOT been dealt
+    with, so `triaged=True` would be a lie and would hide the work in the
+    default list where it would never be looked at again. It therefore appears
+    under "Show untriaged" alongside untriaged contacts, and the needs-a-contact
+    badge is what makes it findable without that toggle.
+
+    The filters are the contact list's filters, applied as they translate:
+
+      * `triaged=True` — no cards, by the rule above.
+      * `stage` — no cards. Stage belongs to a person; a company holding
+        unassigned entries has no position in a pipeline.
+      * `contact_type` — no cards for 'counterparty' or 'owner'. A company
+        record in this platform is the tenant side; filtering to the people
+        across the table is asking for something a company card is not.
+      * `q` — matches the company name, mirroring the contact list, where `q`
+        already reaches company names.
+    """
+    if triaged is True:
+        return []
+    if stage:
+        return []
+    if contact_type and contact_type != "tenant":
+        return []
+
+    cid = company_key_column()
+    counts = (
+        db.query(
+            cid.label("cid"),
+            func.count(ActivityLog.id).label("entry_count"),
+            func.max(ActivityLog.log_date).label("last_touch"),
+        )
+        .filter(*contactless_filters())
+        .filter(cid.isnot(None))
+        .group_by(cid)
+        .subquery()
+    )
+
+    # Contacts already at the company. Not a filter — a company with contacts
+    # still holds its unassigned entries (nothing auto-assigns) — but the card
+    # has to say whether there is anyone to move them to.
+    people = (
+        db.query(
+            Contact.company_id.label("cid"),
+            func.count(Contact.id).label("contact_count"),
+        )
+        .filter(Contact.company_id.isnot(None))
+        .group_by(Contact.company_id)
+        .subquery()
+    )
+
+    rows_q = (
+        db.query(
+            Company,
+            counts.c.entry_count,
+            counts.c.last_touch,
+            func.coalesce(people.c.contact_count, 0).label("contact_count"),
+        )
+        .join(counts, counts.c.cid == Company.id)
+        .outerjoin(people, people.c.cid == Company.id)
+    )
+    if q:
+        rows_q = rows_q.filter(func.lower(Company.name).like(f"%{q.strip().lower()}%"))
+
+    rows = (
+        rows_q
+        # Most recently touched first, matching the contact list's secondary
+        # sort. A company card has no next-touch date to lead with.
+        .order_by(counts.c.last_touch.desc().nullslast(), Company.id.desc())
+        .offset(max(0, offset))
+        .limit(max(1, limit))
+        .all()
+    )
+
+    company_ids = [r[0].id for r in rows]
+    latest: dict = {}
+    if company_ids:
+        cid_expr = company_key_column()
+        for log in (
+            db.query(ActivityLog, cid_expr.label("cid"))
+            .filter(*contactless_filters())
+            .filter(cid_expr.in_(company_ids))
+            .order_by(ActivityLog.log_date.desc(), ActivityLog.id.desc())
+            .all()
+        ):
+            latest.setdefault(log.cid, log[0])
+
+    return [
+        CompanyCardRow(
+            id=company.id,
+            company_key=company.company_id,
+            name=company.name,
+            entry_count=int(entry_count or 0),
+            last_touch=last_touch,
+            contact_count=int(contact_count or 0),
+            triaged=False,
+            latest_entry_summary=(
+                latest[company.id].action_taken if company.id in latest else None
+            ),
+            latest_entry_channel=(
+                latest[company.id].channel if company.id in latest else None
+            ),
+        )
+        for company, entry_count, last_touch, contact_count in rows
+    ]
+
+
 class ContactCreate(BaseModel):
     name: str
     email: Optional[str] = None
     phone: Optional[str] = None
     title: Optional[str] = None
     company_id: Optional[int] = None
+    # A company named rather than picked. Used by the move-to-contact picker
+    # for an entry with no company: Jack types the employer, and an existing
+    # company matched case-insensitively by name is reused before a new one is
+    # created, so typing "Reico" does not fork the record. Ignored when
+    # company_id is given — a picked company is a decision already made.
+    company_name: Optional[str] = None
     contact_type: str = "tenant"
     stage: str = "Sent"
     next_touch_date: Optional[date] = None
@@ -923,15 +1089,26 @@ def create_contact(payload: ContactCreate, db: Session = Depends(get_db)):
             status_code=409,
             detail=f"A contact with email {email} already exists",
         )
-    if payload.company_id is not None:
-        _get_company(db, payload.company_id)
+    # A picked company wins over a typed one. A typed name goes through the same
+    # resolver the email path uses, so "Scott Management LLC" lands on the
+    # existing Scott Management rather than forking it.
+    company_pk = payload.company_id
+    if company_pk is not None:
+        _get_company(db, company_pk)
+    elif (payload.company_name or "").strip():
+        typed = payload.company_name.strip()
+        resolved = resolve_companies_by_names(db, [typed])
+        matched = resolved.get(typed)
+        if matched is not None:
+            db.flush()   # a newly created company needs its id before the FK
+            company_pk = matched[0].id
 
     contact = Contact(
         name=name,
         email=email,
         phone=payload.phone,
         title=payload.title,
-        company_id=payload.company_id,
+        company_id=company_pk,
         contact_type=payload.contact_type,
         stage=payload.stage,
         stage_changed_at=date.today(),

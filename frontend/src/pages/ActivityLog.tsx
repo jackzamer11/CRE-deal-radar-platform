@@ -1,12 +1,14 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { ClipboardList, Plus, X, Phone, Mail, Users, FileText, Search, RefreshCw, Pencil, Trash2 } from 'lucide-react'
-import { getActivity, createActivity, updateActivityNote, updateActivityStage, deleteActivity } from '../api/client'
+import { getActivity, createActivity, updateActivityNote, updateActivityStage, deleteActivity, getNeedsContactCount } from '../api/client'
 import type { ActivityLog, ActionType, ActivityStage } from '../types'
 import { STAGES, REVISIT_STAGES, STAGE_CHANGE_ACTION } from '../types'
 import ContactList from '../components/ContactList'
 import ContactThread from '../components/ContactThread'
 import CompanyTimelinePanel from '../components/CompanyTimelinePanel'
+import CompanyHeldEntries from '../components/CompanyHeldEntries'
+import NeedsContactQueue from '../components/NeedsContactQueue'
 import EntryEditor from '../components/EntryEditor'
 import StageChangeDivider from '../components/StageChangeDivider'
 import { formatDate as formatDateOnly } from '../dates'
@@ -760,18 +762,40 @@ function AllActivityFeed() {
 
 
 // ── The page ─────────────────────────────────────────────────────────────────
-// Two views over the same data. By Contact is the default; All Activity is the
-// original flat feed, kept intact.
-type View = 'contacts' | 'all'
+// Three views over the same data. By Contact is the default; All Activity is
+// the original flat feed, kept intact; Needs a Contact is the queue of entries
+// not yet on a person, which exists to be drained to zero.
+type View = 'contacts' | 'all' | 'needs-contact'
+
+const VIEWS: readonly (readonly [View, string])[] = [
+  ['contacts', 'By Contact'],
+  ['all', 'All Activity'],
+  ['needs-contact', 'Needs a Contact'],
+]
 
 export default function ActivityLogPage() {
   const [searchParams, setSearchParams] = useSearchParams()
 
-  // The view, the open thread and the open company all live in the URL, so a
-  // deep link from the Dashboard or a browser Back lands where it should.
-  const view = (searchParams.get('view') === 'all' ? 'all' : 'contacts') as View
+  // The view, the open thread, the open company and the open held-entries
+  // panel all live in the URL, so a deep link from the Dashboard or a browser
+  // Back lands where it should.
+  const rawView = searchParams.get('view')
+  const view = (rawView === 'all' || rawView === 'needs-contact'
+    ? rawView : 'contacts') as View
   const openContactId = Number(searchParams.get('contact')) || null
   const openCompanyId = searchParams.get('company')
+  // A company card opened from the By Contact list — its held entries, not the
+  // full company timeline (`company`), which is a different panel.
+  const heldCompanyId = Number(searchParams.get('held')) || null
+  const heldCompanyName = searchParams.get('heldName') ?? ''
+
+  // The badge: how many entries are still waiting on a person. Refreshed after
+  // every move so draining the queue is visible as it happens.
+  const [needsCount, setNeedsCount] = useState<number | null>(null)
+  const refreshNeedsCount = useCallback(() => {
+    getNeedsContactCount().then(setNeedsCount).catch(() => setNeedsCount(null))
+  }, [])
+  useEffect(() => { refreshNeedsCount() }, [refreshNeedsCount])
 
   const setParam = useCallback((key: string, value: string | null) => {
     const next = new URLSearchParams(searchParams)
@@ -784,8 +808,24 @@ export default function ActivityLogPage() {
     const next = new URLSearchParams(searchParams)
     next.set('view', v)
     next.delete('contact')
+    next.delete('held')
+    next.delete('heldName')
     setSearchParams(next, { replace: false })
   }
+
+  const openHeldCompany = useCallback((companyId: number, name: string) => {
+    const next = new URLSearchParams(searchParams)
+    next.set('held', String(companyId))
+    next.set('heldName', name)
+    setSearchParams(next, { replace: false })
+  }, [searchParams, setSearchParams])
+
+  const closeHeldCompany = useCallback(() => {
+    const next = new URLSearchParams(searchParams)
+    next.delete('held')
+    next.delete('heldName')
+    setSearchParams(next, { replace: false })
+  }, [searchParams, setSearchParams])
 
   // A ?focus=<entry id> deep link still means the flat feed — that is where
   // entry ids resolve.
@@ -805,15 +845,26 @@ export default function ActivityLogPage() {
           <h1 className="text-xl font-bold text-ink-primary">Activity Log</h1>
         </div>
         <div className="flex items-center gap-1 bg-surface-card border border-surface-border rounded-lg p-0.5">
-          {([['contacts', 'By Contact'], ['all', 'All Activity']] as const).map(([v, label]) => (
+          {VIEWS.map(([v, label]) => (
             <button
               key={v}
               onClick={() => setView(v)}
               className={`text-[11px] px-3 py-1.5 rounded-md font-semibold transition-colors
+                          flex items-center gap-1.5
                 ${view === v ? 'bg-accent-blue text-white'
                              : 'text-ink-muted hover:text-ink-secondary'}`}
             >
               {label}
+              {/* How much is left to put on a person. Shown wherever Jack is on
+                  this page, so the queue cannot be forgotten about — and it
+                  disappears at zero, which is the point. */}
+              {v === 'needs-contact' && !!needsCount && (
+                <span className={`text-[9px] px-1.5 py-0.5 rounded-full font-bold
+                  ${view === v ? 'bg-white/20 text-white'
+                               : 'bg-amber-500/15 text-amber-300 border border-amber-500/40'}`}>
+                  {needsCount}
+                </span>
+              )}
             </button>
           ))}
         </div>
@@ -821,6 +872,15 @@ export default function ActivityLogPage() {
 
       {view === 'all' ? (
         <AllActivityFeed />
+      ) : view === 'needs-contact' ? (
+        <NeedsContactQueue onChanged={refreshNeedsCount} />
+      ) : heldCompanyId ? (
+        <CompanyHeldEntries
+          companyId={heldCompanyId}
+          companyName={heldCompanyName}
+          onBack={closeHeldCompany}
+          onChanged={refreshNeedsCount}
+        />
       ) : openContactId ? (
         <ContactThread
           contactId={openContactId}
@@ -828,7 +888,10 @@ export default function ActivityLogPage() {
           onOpenCompany={businessId => setParam('company', businessId)}
         />
       ) : (
-        <ContactList onOpen={id => setParam('contact', String(id))} />
+        <ContactList
+          onOpen={id => setParam('contact', String(id))}
+          onOpenCompany={openHeldCompany}
+        />
       )}
 
       {openCompanyId && (

@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
-  Copy, History, Mail, Phone, Plus, Search, TriangleAlert, Users, X,
+  Building2, Copy, History, Mail, Phone, Plus, Search, TriangleAlert, Users, X,
 } from 'lucide-react'
-import { createContact, getContacts, searchContacts } from '../api/client'
+import {
+  createContact, getCompanyCards, getContacts, searchContacts,
+} from '../api/client'
 import type {
-  ActivityStage, Channel, Contact, ContactListRow, ContactType,
+  ActivityStage, Channel, CompanyCardRow, Contact, ContactListRow, ContactType,
 } from '../types'
 import { CLOSED_STAGE, CONTACT_STAGES, CONTACT_TYPE_LABELS, UI_CONTACT_TYPES } from '../types'
 import { formatDate } from '../dates'
@@ -201,9 +203,67 @@ function ContactRow({ row, onOpen }: { row: ContactListRow; onOpen: (id: number)
   )
 }
 
+// ── One company card ─────────────────────────────────────────────────────────
+// A company holding entries that are not on a person yet. It sits in the same
+// list as the contact cards because it is the same kind of thing: a record with
+// a thread behind it. What it is missing is the person, and it says so.
+function CompanyCard({
+  row, onOpen,
+}: {
+  row: CompanyCardRow
+  onOpen: (companyId: number, name: string) => void
+}) {
+  const LastIcon = CHANNEL_ICONS[row.latest_entry_channel ?? 'other']
+
+  return (
+    <button
+      onClick={() => onOpen(row.id, row.name)}
+      className="w-full text-left bg-surface-card border border-amber-500/30 rounded-xl p-3
+                 hover:border-accent-blue/50 transition-colors"
+    >
+      <div className="flex items-center gap-2 flex-wrap">
+        <Building2 size={12} className="text-emerald-400 flex-shrink-0" />
+        <span className="text-sm font-bold text-ink-primary">{row.name}</span>
+        {/* The reason this card exists rather than a person's. */}
+        {row.contact_count === 0 ? (
+          <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400/90
+                           border border-amber-500/20">no contacts yet</span>
+        ) : (
+          <span className="text-[9px] px-1.5 py-0.5 rounded bg-surface-muted text-ink-muted
+                           border border-surface-border">
+            {row.contact_count} contact{row.contact_count === 1 ? '' : 's'} — none assigned
+          </span>
+        )}
+        <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400/90
+                         border border-amber-500/20">untriaged</span>
+      </div>
+      <div className="flex items-center gap-2 mt-1 text-[11px] text-ink-muted flex-wrap">
+        <span>
+          {row.entry_count} entr{row.entry_count === 1 ? 'y' : 'ies'} waiting on a contact
+        </span>
+        <span>·</span>
+        <span className="flex items-center gap-1">
+          {LastIcon && <LastIcon size={10} />} last touch {fmtDate(row.last_touch)}
+        </span>
+      </div>
+      {row.latest_entry_summary && (
+        <p className="text-[11px] text-ink-secondary mt-1 truncate">
+          {row.latest_entry_summary}
+        </p>
+      )}
+    </button>
+  )
+}
+
 // ── The list ─────────────────────────────────────────────────────────────────
-export default function ContactList({ onOpen }: { onOpen: (id: number) => void }) {
+export default function ContactList({
+  onOpen, onOpenCompany,
+}: {
+  onOpen: (id: number) => void
+  onOpenCompany: (companyId: number, name: string) => void
+}) {
   const [rows, setRows] = useState<ContactListRow[]>([])
+  const [companyCards, setCompanyCards] = useState<CompanyCardRow[]>([])
   const [loading, setLoading] = useState(true)
   const [typeFilter, setTypeFilter] = useState<'All' | ContactType>('All')
   const [stageFilter, setStageFilter] = useState<'All' | ActivityStage>('All')
@@ -216,13 +276,23 @@ export default function ContactList({ onOpen }: { onOpen: (id: number) => void }
 
   const load = useCallback(async () => {
     setLoading(true)
+    const filters = {
+      contact_type: typeFilter === 'All' ? undefined : typeFilter,
+      stage: stageFilter === 'All' ? undefined : stageFilter,
+      triaged: showUntriaged ? undefined : true,
+      limit: 1000,
+    }
     try {
-      setRows(await getContacts({
-        contact_type: typeFilter === 'All' ? undefined : typeFilter,
-        stage: stageFilter === 'All' ? undefined : stageFilter,
-        triaged: showUntriaged ? undefined : true,
-        limit: 1000,
-      }))
+      // Company cards run through the same filters. They are always untriaged,
+      // so the default (triaged-only) list returns none and they appear the
+      // moment "Show untriaged" is on — which is correct: a card is work that
+      // has not been done.
+      const [contacts, cards] = await Promise.all([
+        getContacts(filters),
+        getCompanyCards(filters),
+      ])
+      setRows(contacts)
+      setCompanyCards(cards)
     } finally {
       setLoading(false)
     }
@@ -386,7 +456,7 @@ export default function ContactList({ onOpen }: { onOpen: (id: number) => void }
 
           {loading ? (
             <div className="text-center py-12 text-ink-muted">Loading…</div>
-          ) : rows.length === 0 ? (
+          ) : rows.length === 0 && companyCards.length === 0 ? (
             <div className="text-center py-12 text-ink-muted">
               <Users size={32} className="mx-auto mb-3 opacity-30" />
               <p className="text-sm">No contacts yet.</p>
@@ -396,6 +466,25 @@ export default function ContactList({ onOpen }: { onOpen: (id: number) => void }
             </div>
           ) : (
             <div className="space-y-2">
+              {/* Companies holding unassigned entries lead, in their own group:
+                  the contact rows below are ordered overdue-first, and a card
+                  with no next-touch date has no place in that ordering. */}
+              {companyCards.length > 0 && (
+                <>
+                  <div className="text-[10px] uppercase tracking-widest text-amber-400/80 pt-1">
+                    Waiting on a contact — {companyCards.length} compan
+                    {companyCards.length === 1 ? 'y' : 'ies'}
+                  </div>
+                  {companyCards.map(card => (
+                    <CompanyCard key={`co-${card.id}`} row={card} onOpen={onOpenCompany} />
+                  ))}
+                  {rows.length > 0 && (
+                    <div className="text-[10px] uppercase tracking-widest text-ink-muted pt-2">
+                      Contacts
+                    </div>
+                  )}
+                </>
+              )}
               {rows.map(row => (
                 <ContactRow key={row.id} row={row} onOpen={onOpen} />
               ))}

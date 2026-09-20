@@ -1,12 +1,13 @@
 import { useEffect, useState } from 'react'
 import {
   ArrowDownLeft, ArrowUpRight, Building2, Check, Mail, Phone, TriangleAlert,
-  Users, X,
+  UserRound, Users, X,
 } from 'lucide-react'
 import {
-  acceptPendingUpdate, getCompanyTimeline, getPendingUpdates,
+  acceptPendingUpdate, assignActivity, getCompanyTimeline, getPendingUpdates,
   rejectPendingUpdate,
 } from '../api/client'
+import MoveToContactPicker from './MoveToContactPicker'
 import type { Channel, CompanyTimelinePage, PendingUpdate } from '../types'
 import { formatDate } from '../dates'
 
@@ -35,6 +36,8 @@ export default function CompanyTimelinePanel({
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [pending, setPending] = useState<PendingUpdate[]>([])
+  // Which contactless entry has its move picker open, if any.
+  const [moving, setMoving] = useState<number | null>(null)
 
   const PAGE = 100
 
@@ -192,6 +195,34 @@ export default function CompanyTimelinePanel({
                       <span className="text-[10px] text-ink-muted italic">no contact</span>
                     )}
                   </div>
+                  {/* Every contactless entry gets the same one action, wherever
+                      it is seen. This panel used to be able to say "no contact"
+                      and offer nothing to do about it. */}
+                  {!e.contact_id && page?.company_id && (
+                    moving === e.id ? (
+                      <MoveToContactPicker
+                        companyId={page.company_id}
+                        companyName={page.company_name}
+                        onCancel={() => setMoving(null)}
+                        onMove={async contact => {
+                          await assignActivity(e.id, { contact_id: contact.id })
+                          setMoving(null)
+                          const fresh = await getCompanyTimeline(companyId, {
+                            limit: PAGE, offset: 0,
+                          })
+                          setPage(fresh)
+                        }}
+                      />
+                    ) : (
+                      <button
+                        onClick={() => setMoving(e.id)}
+                        className="text-[10px] text-accent-blue hover:underline mb-1
+                                   flex items-center gap-1"
+                      >
+                        <UserRound size={10} /> Move to contact
+                      </button>
+                    )
+                  )}
                   <p className="text-xs text-ink-secondary">{e.action_taken}</p>
                   {e.source_note && (
                     /* Arrived in a roundup, not direct correspondence about this deal. */
