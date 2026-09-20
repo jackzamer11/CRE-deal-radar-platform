@@ -26,6 +26,8 @@ import type {
   ActivityMiningStatus,
   Contact,
   ContactListRow,
+  CompanyCardRow,
+  NeedsContactPage,
   ContactFact,
   ThreadHeader,
   TimelinePage,
@@ -494,8 +496,19 @@ export const getContactTimeline = (
 ): Promise<TimelinePage> =>
   api.get(`/contacts/${contactId}/timeline`, { params }).then(r => r.data)
 
-export const searchContacts = (q: string): Promise<Contact[]> =>
-  api.get('/contacts/search', { params: { q } }).then(r => r.data)
+// `companyId` narrows the search to one employer, and with no term it lists
+// everyone there — what the move-to-contact picker opens onto.
+export const searchContacts = (q: string, companyId?: number): Promise<Contact[]> =>
+  api.get('/contacts/search', {
+    params: { q, ...(companyId != null ? { company_id: companyId } : {}) },
+  }).then(r => r.data)
+
+// Companies holding entries that are not on a person yet. Always untriaged —
+// a card exists because the work has NOT been done.
+export const getCompanyCards = (
+  filters?: ContactFilters,
+): Promise<CompanyCardRow[]> =>
+  api.get('/contacts/company-cards', { params: filters }).then(r => r.data)
 
 export const resolveContact = (
   payload: { email?: string; name?: string },
@@ -512,8 +525,35 @@ export const createContact = (payload: {
   stage?: string
   next_touch_date?: string | null
   triaged?: boolean
+  // A company typed rather than picked. Matched against existing companies by
+  // name before a new one is created, so "Scott Management LLC" does not fork
+  // the Scott Management record. Ignored when company_id is given.
+  company_name?: string | null
 }): Promise<Contact> =>
   api.post('/contacts/', payload).then(r => r.data)
+
+// ── Entries waiting on a person ────────────────────────────────────────────
+// Every entry ends up on a contact, and Jack is the one who puts it there.
+// Nothing here auto-assigns and nothing creates a placeholder person.
+
+// `company_id` narrows to what one company is holding — its card opened up.
+export const getNeedsContact = (
+  params?: { company_id?: number; limit?: number; offset?: number },
+): Promise<NeedsContactPage> =>
+  api.get('/activity/needs-contact', { params }).then(r => r.data)
+
+// Just the badge number — one COUNT, no rows fetched.
+export const getNeedsContactCount = (): Promise<number> =>
+  api.get('/activity/needs-contact/count').then(r => r.data.total)
+
+// The whole company card in one action: every entry it holds, plus the facts
+// sourced to them, onto one contact.
+export const moveAllToContact = (
+  companyId: number, contactId: number,
+): Promise<{ moved: number; facts_moved: number }> =>
+  api.post('/activity/move-all-to-contact', {
+    company_id: companyId, contact_id: contactId,
+  }).then(r => r.data)
 
 export const updateContact = (
   contactId: number,

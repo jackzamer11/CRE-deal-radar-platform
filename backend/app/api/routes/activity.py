@@ -23,6 +23,10 @@ from app.services.contact_service import (
     email_domain_of, mark_engaged, normalize_email, resolve_companies_by_names,
     resolve_company_for_email, resolve_or_create_contact,
 )
+from app.services.contactless_service import (
+    company_key_column, contactless_filters, move_company_entries_to_contact,
+    move_entry_to_contact, needs_contact_count,
+)
 from app.services.email_ingest_service import (
     StatedValueError, coerce_value, is_own_address, queue_company_update,
     name_key, record_address_override, resolve_contact_for_address,
@@ -402,6 +406,124 @@ def list_message_ids(
     if since:
         q = q.filter(ActivityLog.log_date >= since)
     return [row[0] for row in q.all()]
+
+
+# ── Needs a contact ──────────────────────────────────────────────────────────
+# Everything still waiting on a person. Declared above the /{entry_id} routes —
+# entry_id is an int, so a static path below them would parse as an id and 422.
+
+class NeedsContactEntry(ActivityOut):
+    """A queue row: the entry plus enough company context to move it.
+
+    `effective_company_*` is the stamp falling back to the legacy free link —
+    the same COALESCE the company cards group on, surfaced so the picker can
+    open on the right company without the frontend re-deriving it.
+    """
+    effective_company_id: Optional[int] = None
+    effective_company_name: Optional[str] = None
+
+
+class NeedsContactPage(BaseModel):
+    total: int
+    limit: int
+    offset: int
+    entries: List[NeedsContactEntry]
+
+
+@router.get("/needs-contact", response_model=NeedsContactPage)
+def list_needs_contact(
+    company_id: Optional[int] = None,
+    limit: int = 200,
+    offset: int = 0,
+    db: Session = Depends(get_db),
+):
+    """Every entry with no contact on it, oldest first — the queue to drain.
+
+    Entries with a company and entries without are in the same list on purpose:
+    both need exactly one thing from Jack, and splitting them would make the
+    badge count something other than "how much is left".
+
+    Oldest first because the oldest is the one most likely to be forgotten, and
+    because working forwards means the queue visibly shortens from the top.
+
+    `company_id` narrows to the entries one company is holding — what opening
+    its card shows. `total` then means that company's count; with no filter it
+    is the badge number, the whole queue rather than this page.
+    """
+    base = db.query(ActivityLog).filter(*contactless_filters())
+    if company_id is not None:
+        base = base.filter(company_key_column() == company_id)
+        total = base.count()
+    else:
+        total = needs_contact_count(db)
+    rows = (
+        base.options(*_eager())
+        .order_by(ActivityLog.log_date.asc(), ActivityLog.id.asc())
+        .offset(max(0, offset))
+        .limit(max(1, limit))
+        .all()
+    )
+
+    entries: List[NeedsContactEntry] = []
+    for log in rows:
+        item = NeedsContactEntry.model_validate(_to_out(log).model_dump())
+        item.effective_company_id = log.company_stamp_id or log.company_id
+        # _to_out already denormalized both names; pick the stamp's first, to
+        # match which id was chosen above.
+        item.effective_company_name = item.company_stamp_name or item.company_name
+        entries.append(item)
+
+    return NeedsContactPage(
+        total=total, limit=limit, offset=offset, entries=entries,
+    )
+
+
+class NeedsContactCount(BaseModel):
+    total: int
+
+
+@router.get("/needs-contact/count", response_model=NeedsContactCount)
+def count_needs_contact(db: Session = Depends(get_db)):
+    """Just the badge number — one COUNT, no rows fetched."""
+    return NeedsContactCount(total=needs_contact_count(db))
+
+
+class MoveAllRequest(BaseModel):
+    company_id: int
+    contact_id: int
+
+
+class MoveAllResult(BaseModel):
+    moved: int
+    facts_moved: int
+    company_id: int
+    contact_id: int
+
+
+@router.post("/move-all-to-contact", response_model=MoveAllResult)
+def move_all_to_contact(payload: MoveAllRequest, db: Session = Depends(get_db)):
+    """Move every contactless entry a company holds onto one contact.
+
+    The company card in one action, which is the common case: a company holding
+    unassigned entries usually has exactly one person behind all of them.
+
+    Teaches the resolver nothing, and cannot: every entry moved here had no
+    contact, and moving an entry off nobody says where it belongs, never who an
+    address belongs to. See _reassignment_corrects_identity.
+    """
+    company = db.query(Company).filter(Company.id == payload.company_id).first()
+    if not company:
+        raise HTTPException(status_code=404, detail="Company not found")
+    contact = db.query(Contact).filter(Contact.id == payload.contact_id).first()
+    if not contact:
+        raise HTTPException(status_code=404, detail="Contact not found")
+
+    moved, facts_moved = move_company_entries_to_contact(db, company.id, contact)
+    db.commit()
+    return MoveAllResult(
+        moved=moved, facts_moved=facts_moved,
+        company_id=company.id, contact_id=contact.id,
+    )
 
 
 class EmailRecipient(BaseModel):
@@ -1684,12 +1806,17 @@ def assign_activity(
 ):
     """Attach an existing entry to a contact.
 
-    Serves both retroactive assignment (a March voicemail attached to Dana once
-    you learn her name) and manual correction of a wrong attachment.
+    Serves three things: retroactive assignment (a March voicemail attached to
+    Dana once you learn her name), manual correction of a wrong attachment, and
+    "Move to contact" on an entry that has never been on anyone.
 
     company_stamp_id is set here only if the entry does not already have one:
     the stamp records what the conversation was about at the time, so assigning
     an old entry to a contact who has since changed jobs must not rewrite it.
+
+    Facts sourced to the entry follow it, but only when the entry was
+    contactless — see move_entry_to_contact. Moving an entry between two people
+    leaves their facts where they are, exactly as before.
     """
     log = db.query(ActivityLog).filter(ActivityLog.id == entry_id).first()
     if not log:
@@ -1705,15 +1832,17 @@ def assign_activity(
     # address belongs to, or only of where this entry sits?
     teaches = _reassignment_corrects_identity(db, log)
 
-    log.contact_id = payload.contact_id
-    if log.company_stamp_id is None:
-        log.company_stamp_id = (
-            payload.company_stamp_id
-            or log.company_id
-            or (contact.company_id if contact else None)
-        )
     if contact is not None:
-        mark_engaged(db, contact)
+        move_entry_to_contact(
+            db, log, contact,
+            fallback_company_stamp_id=payload.company_stamp_id,
+        )
+    else:
+        # Detaching. Nothing to stamp from and nobody to engage.
+        log.contact_id = None
+        if log.company_stamp_id is None:
+            log.company_stamp_id = payload.company_stamp_id or log.company_id
+    if contact is not None:
         # The correction teaches the resolver. The address that produced the
         # wrong answer is mapped to the right person, and the next email from it
         # resolves there before any domain matching runs — so Jack never has to

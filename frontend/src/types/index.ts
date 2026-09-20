@@ -450,6 +450,39 @@ export interface ContactListRow {
   latest_entry_channel: Channel | null
 }
 
+// One card in the By Contact list for a company holding entries that are not
+// on a person yet. Shaped like ContactListRow where the two overlap so the
+// list can render both in one stream.
+export interface CompanyCardRow {
+  kind: 'company'
+  id: number                      // Company primary key
+  company_key: string | null      // CO-nnn, for the timeline panel
+  name: string
+  entry_count: number
+  last_touch: string | null
+  // 0 means "no contacts yet" — why there is nobody to put these entries on.
+  contact_count: number
+  // Always false. A card exists because the work has NOT been done.
+  triaged: false
+  latest_entry_summary: string | null
+  latest_entry_channel: Channel | null
+}
+
+// A row in the needs-a-contact queue: the entry, plus enough company context
+// to open the picker on the right company.
+export interface NeedsContactEntry extends ActivityLog {
+  effective_company_id: number | null
+  effective_company_name: string | null
+}
+
+export interface NeedsContactPage {
+  // How much is LEFT, not how much this page shows — the badge number.
+  total: number
+  limit: number
+  offset: number
+  entries: NeedsContactEntry[]
+}
+
 export interface ContactFact {
   id: number
   contact_id: number
