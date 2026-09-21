@@ -390,6 +390,12 @@ def ensure_contacts(cur: sqlite3.Cursor) -> int:
             "closed_at":        "DATE",
             "is_past_client":   "BOOLEAN DEFAULT 0",
             "next_touch_date":  "DATE",
+            # One line Jack writes himself about where this person stands, with
+            # the date he last wrote it. Both nullable: an unset status falls
+            # back to the latest entry summary on the card, so every existing
+            # row migrates with no backfill and reads exactly as it did.
+            "current_status":            "TEXT",
+            "current_status_updated_at": "DATE",
             "responded":        "BOOLEAN DEFAULT 0",
             "triaged":          "BOOLEAN DEFAULT 0",
             "auto_created":     "BOOLEAN DEFAULT 0",
