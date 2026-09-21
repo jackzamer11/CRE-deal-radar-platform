@@ -1,8 +1,9 @@
 import { useState } from 'react'
 import {
-  ArrowDownLeft, ArrowUpRight, Building2, Mail, Phone, UserRound, Users,
+  Archive, ArchiveRestore, ArrowDownLeft, ArrowUpRight, Building2, Mail, Phone,
+  UserRound, Users,
 } from 'lucide-react'
-import { assignActivity } from '../api/client'
+import { assignActivity, setActivityArchived } from '../api/client'
 import MoveToContactPicker from './MoveToContactPicker'
 import type { ActivityLog, Channel } from '../types'
 import { formatDate } from '../dates'
@@ -33,14 +34,30 @@ export default function HeldEntryCard({
   onMoved: () => void
 }) {
   const [picking, setPicking] = useState(false)
+  const [busy, setBusy] = useState(false)
   const inbound = entry.direction === 'inbound'
   const Icon = CHANNEL_ICONS[entry.channel ?? 'other']
+  const archived = !!entry.archived
+
+  const toggleArchived = async () => {
+    setBusy(true)
+    try {
+      await setActivityArchived(entry.id, !archived)
+      onMoved()
+    } finally {
+      setBusy(false)
+    }
+  }
 
   return (
     <div
       className={`border rounded-xl p-3 border-surface-border
-        ${inbound ? 'bg-violet-500/5 border-l-2 border-l-violet-500/60'
-                  : 'bg-surface-card border-l-2 border-l-blue-500/40'}`}
+        ${archived
+          /* Set back and muted: still here, still readable, visibly not in the
+             queue any more. */
+          ? 'bg-surface-card/40 border-dashed opacity-70'
+          : inbound ? 'bg-violet-500/5 border-l-2 border-l-violet-500/60'
+                    : 'bg-surface-card border-l-2 border-l-blue-500/40'}`}
     >
       <div className="flex items-center gap-2 flex-wrap mb-1">
         <span className={`text-[9px] px-1.5 py-0.5 rounded font-bold uppercase
@@ -66,6 +83,13 @@ export default function HeldEntryCard({
                          border border-amber-500/20">
           no contact
         </span>
+        {archived && (
+          <span className="text-[9px] px-1.5 py-0.5 rounded bg-surface-muted text-ink-muted
+                           border border-surface-border flex items-center gap-1"
+                title="Out of the queue and the badge. Still searchable, still on this company's card.">
+            <Archive size={9} /> archived
+          </span>
+        )}
       </div>
 
       <p className="text-xs text-ink-secondary">{entry.action_taken}</p>
@@ -87,12 +111,27 @@ export default function HeldEntryCard({
           }}
         />
       ) : (
-        <button
-          onClick={() => setPicking(true)}
-          className="mt-2 text-[10px] text-accent-blue hover:underline flex items-center gap-1"
-        >
-          <UserRound size={10} /> Move to contact
-        </button>
+        <div className="mt-2 flex items-center gap-3 flex-wrap">
+          <button
+            onClick={() => setPicking(true)}
+            className="text-[10px] text-accent-blue hover:underline flex items-center gap-1"
+          >
+            <UserRound size={10} /> Move to contact
+          </button>
+          <button
+            onClick={toggleArchived}
+            disabled={busy}
+            className="text-[10px] text-ink-muted hover:text-ink-primary flex items-center gap-1
+                       disabled:opacity-50"
+            title={archived
+              ? 'Put this back in the Needs a Contact queue.'
+              : 'Take this out of the queue and the badge. It stays in the database, searchable, and on this company’s card.'}
+          >
+            {archived
+              ? <><ArchiveRestore size={10} /> Unarchive</>
+              : <><Archive size={10} /> Archive</>}
+          </button>
+        </div>
       )}
     </div>
   )

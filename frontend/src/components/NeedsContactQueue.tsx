@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { CheckCircle2, Inbox } from 'lucide-react'
+import { Archive, CheckCircle2, Inbox } from 'lucide-react'
 import { getNeedsContact } from '../api/client'
 import HeldEntryCard from './HeldEntryCard'
 import type { NeedsContactEntry } from '../types'
@@ -23,12 +23,16 @@ export default function NeedsContactQueue({
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  // Archived entries are out of the queue by default and come back on demand.
+  const [showArchived, setShowArchived] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
     setError(null)
     try {
-      const page = await getNeedsContact({ limit: PAGE })
+      const page = await getNeedsContact({
+        limit: PAGE, include_archived: showArchived,
+      })
       setEntries(page.entries)
       setTotal(page.total)
     } catch {
@@ -36,12 +40,14 @@ export default function NeedsContactQueue({
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [showArchived])
 
   useEffect(() => { void load() }, [load])
 
   const loadMore = async () => {
-    const next = await getNeedsContact({ limit: PAGE, offset: entries.length })
+    const next = await getNeedsContact({
+      limit: PAGE, offset: entries.length, include_archived: showArchived,
+    })
     setEntries([...entries, ...next.entries])
     setTotal(next.total)
   }
@@ -69,6 +75,16 @@ export default function NeedsContactQueue({
           without. Move them one at a time here, or a whole company at once from
           its card in the list. Nothing auto-assigns.
         </p>
+        <button
+          onClick={() => setShowArchived(v => !v)}
+          className={`mt-2.5 text-[10px] px-2.5 py-1 rounded-full border font-semibold
+                      transition-colors flex items-center gap-1
+            ${showArchived ? 'bg-surface-muted text-ink-secondary border-ink-muted/40'
+                           : 'bg-surface-card text-ink-muted border-surface-border hover:text-ink-secondary'}`}
+        >
+          <Archive size={10} />
+          {showArchived ? 'Hiding nothing — archived shown' : 'Show archived'}
+        </button>
       </div>
 
       {loading ? (
@@ -78,7 +94,11 @@ export default function NeedsContactQueue({
       ) : entries.length === 0 ? (
         <div className="text-center py-12 text-ink-muted">
           <CheckCircle2 size={32} className="mx-auto mb-3 opacity-40 text-emerald-400" />
-          <p className="text-sm">Nothing waiting. Every entry is on a contact.</p>
+          <p className="text-sm">
+            {showArchived
+              ? 'Nothing here, archived included.'
+              : 'Nothing waiting. Every entry is on a contact or archived.'}
+          </p>
         </div>
       ) : (
         <div className="space-y-2">
