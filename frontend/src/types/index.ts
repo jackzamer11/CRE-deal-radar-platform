@@ -412,6 +412,9 @@ export interface Contact {
   // Set when the stage moves to Closed, cleared when it moves off.
   closed_at: string | null
   next_touch_date: string | null
+  // Jack's own line about where this person stands, and when he wrote it.
+  current_status: string | null
+  current_status_updated_at: string | null
   responded: boolean
   // True once Jack has placed this tenant — permanent, never cleared by moving
   // off Closed.
@@ -433,6 +436,10 @@ export interface ContactListRow {
   days_in_stage: number | null
   next_touch_date: string | null
   overdue: boolean
+  // Shown on the card IN PLACE OF latest_entry_summary when set; the card
+  // falls back to latest_entry_summary when this is empty.
+  current_status: string | null
+  current_status_updated_at: string | null
   responded: boolean
   triaged: boolean
   auto_created: boolean

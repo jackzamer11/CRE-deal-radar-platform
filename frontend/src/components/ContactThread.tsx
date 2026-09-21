@@ -22,6 +22,7 @@ import {
   LEASE_SOURCE, MANUAL_SOURCE, STAGE_CHANGE_ACTION, UI_CONTACT_TYPES,
 } from '../types'
 import EntryEditor from './EntryEditor'
+import StatusLine from './StatusLine'
 import LeaseCard from './LeaseCard'
 import StageChangeDivider from './StageChangeDivider'
 import { formatDate } from '../dates'
@@ -623,11 +624,12 @@ function DeleteContactDialog({
 // ── Slot 1 — Where we are ────────────────────────────────────────────────────
 // Largest and top: on a call this is what Jack needs first.
 function WhereWeAre({
-  header, onStage, onNextTouch,
+  header, onStage, onNextTouch, onStatusSaved,
 }: {
   header: ThreadHeader
   onStage: (stage: ActivityStage) => void
   onNextTouch: (date: string | null) => void
+  onStatusSaved: () => void
 }) {
   const c = header.contact
   const stage = (c.stage ?? 'Sent') as ActivityStage
@@ -678,6 +680,19 @@ function WhereWeAre({
             {header.copied_count} copied
           </span>
         )}
+      </div>
+
+      {/* Where things STAND, in Jack's words — distinct from the open loop
+          below, which is the newest entry's follow-up. Editable here and on
+          the list card, the same component in both places. */}
+      <div className="mb-3">
+        <p className="text-[10px] uppercase tracking-widest text-ink-muted">Current status</p>
+        <StatusLine
+          contactId={c.id}
+          status={c.current_status}
+          updatedAt={c.current_status_updated_at}
+          onSaved={onStatusSaved}
+        />
       </div>
 
       {/* A placed tenant whose lease has come back around. This is the line
@@ -1698,7 +1713,12 @@ export default function ContactThread({
 
       {/* Header: where we are, relationship, deal — in that order, deliberately. */}
       <div className="space-y-3 mb-5">
-        <WhereWeAre header={header} onStage={handleStage} onNextTouch={handleNextTouch} />
+        <WhereWeAre
+          header={header}
+          onStage={handleStage}
+          onNextTouch={handleNextTouch}
+          onStatusSaved={() => void load(false)}
+        />
         <RelationshipContext
           header={header}
           onJumpToEntry={jumpToEntry}

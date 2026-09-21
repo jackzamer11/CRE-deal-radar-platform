@@ -81,6 +81,9 @@ class ContactOut(BaseModel):
     # Set when the stage moves to Closed, cleared when it moves off.
     closed_at: Optional[date] = None
     next_touch_date: Optional[date] = None
+    # Jack's own line about where this person stands, and when he wrote it.
+    current_status: Optional[str] = None
+    current_status_updated_at: Optional[date] = None
     responded: bool = False
     # True once Jack has placed this tenant, permanently. Never cleared by
     # moving off Closed.
@@ -121,6 +124,11 @@ class ContactListRow(BaseModel):
     days_in_stage: Optional[int] = None
     next_touch_date: Optional[date] = None
     overdue: bool = False
+    # Shown on the card IN PLACE OF latest_entry_summary when set, falling back
+    # to it when empty. Both are sent: the fallback is the frontend's to make,
+    # and a card that had one field blanked server-side could not render it.
+    current_status: Optional[str] = None
+    current_status_updated_at: Optional[date] = None
     responded: bool = False
     triaged: bool = False
     auto_created: bool = False
@@ -883,6 +891,8 @@ def list_contacts(
             days_in_stage=_days_between(contact.stage_changed_at),
             next_touch_date=ntd,
             overdue=bool(ntd and ntd <= today),
+            current_status=contact.current_status,
+            current_status_updated_at=contact.current_status_updated_at,
             responded=bool(contact.responded),
             triaged=bool(contact.triaged),
             auto_created=bool(contact.auto_created),
@@ -1363,6 +1373,60 @@ def update_contact(
     if payload.triaged is not False:
         mark_engaged(db, contact)
 
+    db.commit()
+    db.refresh(contact)
+    return _contact_out(contact)
+
+
+class ContactStatusUpdate(BaseModel):
+    """The one line, or nothing. Blank and null both mean "clear it"."""
+    current_status: Optional[str] = None
+
+
+@router.patch("/{contact_id}/status", response_model=ContactOut)
+def update_contact_status(
+    contact_id: int, payload: ContactStatusUpdate, db: Session = Depends(get_db),
+):
+    """Set or clear a contact's current status line.
+
+    Its own endpoint rather than a field on ContactPatch, deliberately.
+    update_contact() shares a code path with record_stage_change() and the
+    Closed-stage bookkeeping; putting status through it would leave "editing a
+    status must not move a stage" one missed condition away from being false.
+    Here it is true by construction: this function cannot reach a stage writer.
+
+    What it does NOT do, all of it load-bearing:
+
+      * no activity entry — a status is Jack's summary of where things stand,
+        not a thing that happened. Writing one is not an interaction.
+      * no stage change, and no stage_changed_at bump.
+      * no effect on last touch or entry count, both of which are derived from
+        activity entries and cannot be reached from here at all.
+
+    It does triage the contact, like every other manual edit: Jack typing a
+    status is Jack working this record, and mark_engaged only sets `triaged`.
+
+    Blank or whitespace-only clears the line AND its date, so a cleared status
+    falls back to the latest entry summary rather than leaving a stale date
+    attached to nothing.
+    """
+    contact = _get_contact(db, contact_id)
+
+    text_value = (payload.current_status or "").strip()
+    if text_value:
+        # The date moves only when the line actually changes. Re-saving the
+        # same sentence is not news, and bumping the date for it would make a
+        # stale status look freshly confirmed — which is the one thing a dated
+        # status must never do.
+        if text_value != (contact.current_status or ""):
+            contact.current_status = text_value
+            contact.current_status_updated_at = date.today()
+    else:
+        contact.current_status = None
+        contact.current_status_updated_at = None
+
+    contact.updated_at = datetime.utcnow()
+    mark_engaged(db, contact)
     db.commit()
     db.refresh(contact)
     return _contact_out(contact)

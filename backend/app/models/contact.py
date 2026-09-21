@@ -73,6 +73,26 @@ class Contact(Base):
 
     next_touch_date = Column(Date, nullable=True, index=True)
 
+    # ── Current status ───────────────────────────────────────────────────────
+    # One line, in Jack's words, about where this person actually stands —
+    # "waiting on their board, said call back after the 15th". The card
+    # otherwise shows the latest entry's summary, which is what HAPPENED, not
+    # where things STAND; the two are often different, and after a long thread
+    # the newest entry is frequently the least informative line available.
+    #
+    # Shown in place of that summary when set, falling back to it when empty,
+    # so a contact Jack has never written a status for is unchanged.
+    #
+    # Writing it is NOT an interaction: it creates no activity entry, moves no
+    # stage and does not touch last touch, which stays derived from entries.
+    # Hence its own endpoint (PATCH /contacts/{id}/status) rather than a field
+    # on ContactPatch, which shares a code path with the stage-change writer.
+    current_status = Column(Text, nullable=True)
+    # When Jack last wrote that line. Distinct from updated_at, which any edit
+    # bumps: this one dates the sentence, so a status can be read as current or
+    # stale on sight.
+    current_status_updated_at = Column(Date, nullable=True)
+
     # Set True the first time the stage moves to Closed, and NEVER cleared:
     # moving off Closed (a renewal falls through, the deal reopens) does not undo
     # the fact that Jack placed this tenant once. It is what lets the contact

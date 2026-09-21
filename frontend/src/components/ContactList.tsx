@@ -10,6 +10,7 @@ import type {
 } from '../types'
 import { CLOSED_STAGE, CONTACT_STAGES, CONTACT_TYPE_LABELS, UI_CONTACT_TYPES } from '../types'
 import { formatDate } from '../dates'
+import StatusLine from './StatusLine'
 
 const STAGE_PILL: Record<ActivityStage, string> = {
   'Sent':           'bg-blue-500/15 text-blue-300 border-blue-500/40',
@@ -110,15 +111,32 @@ function NewContactForm({
 }
 
 // ── One contact row ──────────────────────────────────────────────────────────
-function ContactRow({ row, onOpen }: { row: ContactListRow; onOpen: (id: number) => void }) {
+function ContactRow({
+  row, onOpen, onChanged,
+}: {
+  row: ContactListRow
+  onOpen: (id: number) => void
+  onChanged: () => void
+}) {
   const LastIcon = CHANNEL_ICONS[row.latest_entry_channel ?? 'other']
   const stage = (row.stage ?? 'Sent') as ActivityStage
 
+  // Was a <button>. The status line is editable in place, and an input inside
+  // a button is invalid HTML — every keystroke would also open the thread. A
+  // div with role/tabIndex/Enter-Space keeps the card keyboard-reachable while
+  // letting the editor stop clicks from bubbling.
   return (
-    <button
+    <div
+      role="button"
+      tabIndex={0}
       onClick={() => onOpen(row.id)}
+      onKeyDown={e => {
+        if (e.target !== e.currentTarget) return
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen(row.id) }
+      }}
       className="w-full text-left bg-surface-card border border-surface-border rounded-xl p-3
-                 hover:border-accent-blue/50 transition-colors"
+                 hover:border-accent-blue/50 transition-colors cursor-pointer
+                 focus:outline-none focus:border-accent-blue"
     >
       <div className="flex items-start gap-3">
         <div className="flex-1 min-w-0">
@@ -184,11 +202,16 @@ function ContactRow({ row, onOpen }: { row: ContactListRow; onOpen: (id: number)
             <span className="uppercase tracking-wider">{row.contact_type}</span>
           </div>
 
-          {row.latest_entry_summary && (
-            <p className="text-[11px] text-ink-secondary mt-1 truncate">
-              {row.latest_entry_summary}
-            </p>
-          )}
+          {/* Jack's own line about where things stand, when he has written
+              one; the latest entry summary keeps this slot when he has not. */}
+          <StatusLine
+            compact
+            contactId={row.id}
+            status={row.current_status}
+            updatedAt={row.current_status_updated_at}
+            fallback={row.latest_entry_summary}
+            onSaved={onChanged}
+          />
         </div>
 
         {row.next_touch_date && (
@@ -199,7 +222,7 @@ function ContactRow({ row, onOpen }: { row: ContactListRow; onOpen: (id: number)
           </span>
         )}
       </div>
-    </button>
+    </div>
   )
 }
 
@@ -492,7 +515,7 @@ export default function ContactList({
                 </>
               )}
               {rows.map(row => (
-                <ContactRow key={row.id} row={row} onOpen={onOpen} />
+                <ContactRow key={row.id} row={row} onOpen={onOpen} onChanged={load} />
               ))}
             </div>
           )}

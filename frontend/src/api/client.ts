@@ -510,6 +510,15 @@ export const getCompanyCards = (
 ): Promise<CompanyCardRow[]> =>
   api.get('/contacts/company-cards', { params: filters }).then(r => r.data)
 
+// Set or clear a contact's current status line. Its own endpoint: writing a
+// status creates no activity entry, moves no stage and does not touch last
+// touch. Blank clears the line and its date.
+export const setContactStatus = (
+  contactId: number, currentStatus: string | null,
+): Promise<Contact> =>
+  api.patch(`/contacts/${contactId}/status`, { current_status: currentStatus })
+     .then(r => r.data)
+
 export const resolveContact = (
   payload: { email?: string; name?: string },
 ): Promise<{ found: boolean; contact: Contact | null }> =>
