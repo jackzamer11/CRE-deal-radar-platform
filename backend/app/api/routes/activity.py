@@ -1,8 +1,12 @@
+import base64
+import binascii
+import os
 import re
 from typing import List, Optional, Tuple
 from datetime import date
 
 from fastapi import APIRouter, Depends, Query, HTTPException
+from fastapi.responses import FileResponse
 from sqlalchemy import func, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, aliased, joinedload
@@ -16,7 +20,10 @@ from app.models.email_ingest import (
     ActivityAttachment, PENDING_UPDATE_FIELDS,
 )
 from app.services.attachment_storage import (
-    attachment_file_exists, store_attachment,
+    NO_FILE, OVERSIZE, STORED, attachment_file_exists, max_attachment_bytes,
+    relative_stored_path, resolve_attachment_path, resolve_stored_path,
+    sanitize_file_name, store_attachment, store_attachment_bytes,
+    stored_path_exists,
 )
 from app.services.contact_service import (
     STAGE_CHANGE_ACTION, apply_inbound_stage_rules, create_contact, create_fact,
@@ -820,6 +827,10 @@ class ActivityFromEmailResult(ActivityOut):
     company_values_written: List[str] = []
     attachments_saved: int = 0
     attachments_missing: List[str] = []
+    # Recorded but deliberately not written: over settings.MAX_ATTACHMENT_BYTES.
+    # Separate from attachments_missing because they are different problems —
+    # one is a file that should be there, the other never could be.
+    attachments_oversize: List[str] = []
     # One entry per additional participant: the other To recipients (direct) and
     # every Cc recipient (participation).
     participant_entry_ids: List[int] = []
@@ -1105,6 +1116,7 @@ def create_activity_from_email(
     result_written: List[str] = []
     result_attached = 0
     result_missing: List[str] = []
+    result_oversize: List[str] = []
     extra_direct: List[int] = []
     extra_participation: List[int] = []
     # Per primary entry, in deal order: (log, EmailEntryResult counts).
@@ -1415,23 +1427,53 @@ def create_activity_from_email(
         # lease flow.
         for attachment in payload.attachments:
             if attachment.inline:
-                continue   # signature images and embedded screenshots
+                # Signature images and embedded screenshots. Dropped entirely
+                # on THIS path, not merely left unwritten — locked by
+                # test_inline_images_are_excluded. The upload endpoint below
+                # records a row instead, because there the caller has already
+                # decided the file is worth sending.
+                continue
             name = (attachment.filename or "").strip()
             if not name:
                 continue
-            stored_name, year, stored = store_attachment(
-                name, attachment.stored_path, saved_on=log_date,
-            )
+
+            # Too large to file. The row is still written, marked oversize, and
+            # the ceiling is reported — one outsized video must not cost Jack
+            # the record of the whole email.
+            too_big = False
+            if attachment.stored_path:
+                try:
+                    too_big = os.path.getsize(attachment.stored_path) > max_attachment_bytes()
+                except OSError:
+                    too_big = False
+
+            if too_big:
+                stored_name = sanitize_file_name(name)
+                year = (log_date or date.today()).year
+                stored_rel = None
+            else:
+                stored_name, year, stored = store_attachment(
+                    name, attachment.stored_path, saved_on=log_date,
+                )
+                # store_attachment() writes to <folder>/<year>/<stored_name>,
+                # so the relative path is those two joined — the absolute one
+                # it used is never recorded.
+                stored_rel = relative_stored_path(year, stored_name) if stored else None
+
             for deal_log in deal_logs:
                 db.add(ActivityAttachment(
                     activity_log_id=deal_log.id,
                     file_name=stored_name,
                     stored_year=year,
+                    stored_path=stored_rel,
+                    oversize=too_big,
                     description=(attachment.description or None),
                     saved_date=deal_log.log_date or date.today(),
                 ))
             result_attached += 1
-            if not stored:
+            if too_big:
+                result_oversize.append(stored_name)
+            elif not stored_rel:
                 result_missing.append(stored_name)
 
         db.commit()
@@ -1466,6 +1508,7 @@ def create_activity_from_email(
     out.company_values_written = result_written
     out.attachments_saved = result_attached
     out.attachments_missing = result_missing
+    out.attachments_oversize = result_oversize
     out.participant_entry_ids = extra_direct
     out.participation_entry_ids = extra_participation
     out.skipped_own_addresses = skipped_own
@@ -1906,3 +1949,253 @@ def assign_activity(
     db.commit()
     db.refresh(log)
     return _to_out(log)
+
+
+# ══ Attachment files ══════════════════════════════════════════════════════════
+# The ingestion task has an attachment's BYTES, not a file on Jack's disk, which
+# is why every row written before this endpoint existed resolved to nothing and
+# the interface said "(file missing)" for all of them. These three endpoints
+# close that: bytes in, a file on disk, a link that opens it, and a check that
+# says which rows have lost their file.
+
+
+class AttachmentUploadRequest(BaseModel):
+    """An attachment's bytes, base64-encoded, against the entry it arrived on.
+
+    Base64 rather than multipart because the caller is a mailbox task holding
+    bytes in memory, not a browser posting a form.
+    """
+    entry_id: int
+    filename: str
+    # Standard base64. A data-URL prefix ("data:...;base64,") is tolerated —
+    # the caller should not have to know which one it produced.
+    content_base64: str
+    year: Optional[int] = None
+    description: Optional[str] = None
+    # A signature image or embedded screenshot: recorded, never written.
+    inline: bool = False
+
+
+class AttachmentUploadResult(BaseModel):
+    """What became of one attachment. Never an error for a file that failed.
+
+    `status` is "stored", "oversize", "inline" or "no_file". The row exists in
+    every one of them; only "stored" wrote a file. The caller reports oversize
+    to Jack rather than retrying, because a retry would hit the same ceiling.
+    """
+    id: int
+    entry_id: int
+    file_name: str
+    stored_year: int
+    status: str
+    stored: bool
+    oversize: bool
+    missing: bool
+    # Present only when a file was written. Relative to the documents folder —
+    # the absolute path is never returned, for the same reason it is never
+    # stored.
+    stored_path: Optional[str] = None
+    size_bytes: Optional[int] = None
+    max_bytes: int
+    detail: Optional[str] = None
+
+
+@router.post("/attachments/upload", response_model=AttachmentUploadResult)
+def upload_attachment(
+    payload: AttachmentUploadRequest, db: Session = Depends(get_db),
+):
+    """Write an attachment's bytes to disk and record it against an entry.
+
+    A bad entry id is the one genuine 404 here: there is nothing to attach to,
+    and silently inventing a row would hide the caller's bug. Everything else —
+    a file too large, an inline image, a write that fails — records the row and
+    reports what happened, because the entry must survive its attachments.
+    """
+    entry = db.query(ActivityLog).filter(ActivityLog.id == payload.entry_id).first()
+    if entry is None:
+        raise HTTPException(status_code=404, detail="Entry not found")
+
+    name = (payload.filename or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="filename is required")
+
+    saved_on = entry.log_date or date.today()
+    year = payload.year if payload.year else saved_on.year
+
+    # An inline image is recorded and never written — see AttachmentUploadRequest.
+    if payload.inline:
+        row = ActivityAttachment(
+            activity_log_id=entry.id,
+            file_name=sanitize_file_name(name),
+            stored_year=int(year),
+            stored_path=None,
+            oversize=False,
+            description=(payload.description or None),
+            saved_date=saved_on,
+        )
+        db.add(row)
+        db.commit()
+        db.refresh(row)
+        return AttachmentUploadResult(
+            id=row.id, entry_id=entry.id, file_name=row.file_name,
+            stored_year=row.stored_year, status="inline", stored=False,
+            oversize=False, missing=True, stored_path=None, size_bytes=None,
+            max_bytes=max_attachment_bytes(),
+            detail="Inline image recorded; the file was not saved.",
+        )
+
+    raw = (payload.content_base64 or "").strip()
+    if raw[:5].lower() == "data:" and "," in raw:
+        raw = raw.split(",", 1)[1]
+    try:
+        contents = base64.b64decode(raw, validate=False)
+    except (binascii.Error, ValueError):
+        raise HTTPException(status_code=400, detail="content_base64 is not valid base64")
+
+    display, stored_rel, resolved_year, status = store_attachment_bytes(
+        entry.id, name, contents, year=year, saved_on=saved_on,
+    )
+
+    row = ActivityAttachment(
+        activity_log_id=entry.id,
+        file_name=display,
+        stored_year=resolved_year,
+        stored_path=stored_rel,
+        oversize=(status == OVERSIZE),
+        description=(payload.description or None),
+        saved_date=saved_on,
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+
+    detail = None
+    if status == OVERSIZE:
+        detail = (
+            f"{display} is {len(contents)} bytes, over the "
+            f"{max_attachment_bytes()}-byte limit. Recorded without the file."
+        )
+    elif status == NO_FILE:
+        detail = f"{display} could not be written. Recorded without the file."
+
+    return AttachmentUploadResult(
+        id=row.id,
+        entry_id=entry.id,
+        file_name=row.file_name,
+        stored_year=row.stored_year,
+        status=status,
+        stored=(status == STORED),
+        oversize=(status == OVERSIZE),
+        missing=not stored_path_exists(row.stored_path),
+        stored_path=row.stored_path,
+        size_bytes=len(contents),
+        max_bytes=max_attachment_bytes(),
+        detail=detail,
+    )
+
+
+@router.get("/attachments/{attachment_id}/file")
+def get_attachment_file(attachment_id: int, db: Session = Depends(get_db)):
+    """Open a stored attachment. 404 when there is no file behind the row.
+
+    A row with no file is not an error in the data — an inline image and an
+    oversize file are both recorded on purpose — so the detail says which it is
+    rather than implying something is broken.
+    """
+    row = (
+        db.query(ActivityAttachment)
+        .filter(ActivityAttachment.id == attachment_id)
+        .first()
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Attachment not found")
+
+    if row.oversize:
+        raise HTTPException(
+            status_code=404,
+            detail=f"{row.file_name} was too large to store, so there is no file to open.",
+        )
+
+    path = resolve_stored_path(row.stored_path)
+    # Rows written before stored_path existed still resolve the old way, so
+    # anything already filed under <folder>/<year>/<file_name> keeps opening.
+    if not path or not os.path.isfile(path):
+        path = resolve_attachment_path(row.file_name, row.stored_year)
+    if not path or not os.path.isfile(path):
+        raise HTTPException(
+            status_code=404,
+            detail=f"{row.file_name} is recorded, but the file is not in the documents folder.",
+        )
+
+    return FileResponse(path, filename=row.file_name)
+
+
+class MissingAttachment(BaseModel):
+    id: int
+    entry_id: int
+    file_name: str
+    stored_year: int
+    stored_path: Optional[str] = None
+    oversize: bool = False
+    # Why there is no file, in the terms Jack would use: a file that was
+    # written and has since gone, versus one that was never written at all.
+    reason: str
+
+
+class MissingAttachmentReport(BaseModel):
+    checked: int
+    missing: int
+    attachments: List[MissingAttachment] = []
+
+
+@router.get("/attachments/missing-files", response_model=MissingAttachmentReport)
+def report_missing_attachment_files(
+    db: Session = Depends(get_db),
+    include_never_stored: bool = Query(
+        False,
+        description=(
+            "Also report rows that never had a file (inline images, oversize "
+            "files, rows predating stored_path). Off by default: those are not "
+            "breakage, and burying the real losses among them helps nobody."
+        ),
+    ),
+):
+    """Report every attachment row whose stored file is no longer on disk.
+
+    The question this answers is "what have I lost?", so by default it reports
+    only rows that HAD a file — a stored_path that no longer resolves. That is
+    a document that went missing, which is worth acting on; an inline image
+    with no file is working as intended.
+    """
+    rows = db.query(ActivityAttachment).order_by(ActivityAttachment.id.asc()).all()
+    missing: List[MissingAttachment] = []
+
+    for row in rows:
+        if row.stored_path:
+            if stored_path_exists(row.stored_path):
+                continue
+            reason = "stored file is no longer on disk"
+        else:
+            if not include_never_stored:
+                continue
+            if row.oversize:
+                reason = "too large to store; recorded without a file"
+            elif attachment_file_exists(row.file_name, row.stored_year):
+                # Filed the old way, before stored_path. Not missing.
+                continue
+            else:
+                reason = "no file was ever stored for this row"
+
+        missing.append(MissingAttachment(
+            id=row.id,
+            entry_id=row.activity_log_id,
+            file_name=row.file_name,
+            stored_year=row.stored_year,
+            stored_path=row.stored_path,
+            oversize=bool(row.oversize),
+            reason=reason,
+        ))
+
+    return MissingAttachmentReport(
+        checked=len(rows), missing=len(missing), attachments=missing,
+    )

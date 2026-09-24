@@ -1312,11 +1312,38 @@ function ThreadEntry({
                 <div key={att.id} className="flex items-start gap-1.5 text-[10px]">
                   <Paperclip size={10} className="text-ink-muted mt-0.5 shrink-0" />
                   <span className="text-ink-secondary">
-                    {att.file_name}
+                    {/* A link only when there is a file behind it. An
+                        attachment that cannot open must not look like one that
+                        can — the whole point of the missing/oversize markers
+                        is that Jack knows before he clicks. */}
+                    {att.missing ? (
+                      att.file_name
+                    ) : (
+                      <a
+                        href={`/api/activity/attachments/${att.id}/file`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-accent-blue hover:underline"
+                        title="Open this file"
+                      >
+                        {att.file_name}
+                      </a>
+                    )}
                     {att.description && (
                       <span className="text-ink-muted"> — {att.description}</span>
                     )}
-                    {att.missing && (
+                    {/* Two different problems, two different sentences: a file
+                        that should be there and is not, versus one that was
+                        never stored because it was too big to keep. */}
+                    {att.missing && att.oversize && (
+                      <span
+                        className="ml-1.5 text-amber-400"
+                        title="Recorded, but too large to store, so there is no file to open."
+                      >
+                        (too large to store)
+                      </span>
+                    )}
+                    {att.missing && !att.oversize && (
                       <span
                         className="ml-1.5 text-amber-400"
                         title="Recorded, but the file is not in the documents folder."

@@ -285,6 +285,24 @@ function CompanyCard({
 }
 
 // ── The list ─────────────────────────────────────────────────────────────────
+// Contacts and company cards render in one stream ordered by the same sort
+// key, so `date` and `entryId` are lifted off whichever row each item carries.
+type ListItem =
+  | {
+      kind: 'contact'
+      key: string
+      date: string | null
+      entryId: number | null
+      row: ContactListRow
+    }
+  | {
+      kind: 'company'
+      key: string
+      date: string | null
+      entryId: number | null
+      row: CompanyCardRow
+    }
+
 export default function ContactList({
   onOpen, onOpenCompany,
 }: {
@@ -345,6 +363,41 @@ export default function ContactList({
     () => rows.filter(r => !r.triaged).length,
     [rows],
   )
+
+  // One list, one order. A company card is a thread like any other — what it
+  // is missing is the person — so it sorts by the same key the contact rows
+  // do instead of being pinned above them, where a month-old card outranked
+  // an email that landed this morning.
+  const items = useMemo<ListItem[]>(() => {
+    const merged: ListItem[] = [
+      ...rows.map(row => ({
+        kind: 'contact' as const,
+        key: `c-${row.id}`,
+        date: row.latest_entry_date,
+        entryId: row.latest_entry_id,
+        row,
+      })),
+      ...companyCards.map(row => ({
+        kind: 'company' as const,
+        key: `co-${row.id}`,
+        date: row.last_touch,
+        entryId: row.latest_entry_id,
+        row,
+      })),
+    ]
+    // Stable sort, deliberately: rows that tie on both keys keep the order the
+    // server sent them in. That is where overdue-first still lives — among the
+    // contacts with no entries at all, which have no date to sort on and sit
+    // at the bottom.
+    return merged.sort((a, b) => {
+      if (a.date !== b.date) {
+        if (!a.date) return 1
+        if (!b.date) return -1
+        return a.date < b.date ? 1 : -1
+      }
+      return (b.entryId ?? -1) - (a.entryId ?? -1)
+    })
+  }, [rows, companyCards])
 
   return (
     <div>
@@ -463,6 +516,15 @@ export default function ContactList({
           <div className="flex items-center justify-between mb-3">
             <span className="text-[11px] text-ink-muted">
               {rows.length} contact{rows.length === 1 ? '' : 's'}
+              {/* The company cards sit inline in the list now, so this is the
+                  only place that says how many are waiting on a person. It
+                  has to stay, or the group header's job goes undone. */}
+              {companyCards.length > 0 && (
+                <span className="text-amber-400/80">
+                  {' '}· {companyCards.length} compan
+                  {companyCards.length === 1 ? 'y' : 'ies'} waiting on a contact
+                </span>
+              )}
               {/* Say it out loud rather than letting placed deals vanish
                   silently. Past clients back in the window are still here. */}
               {stageFilter === 'All' && (
@@ -495,27 +557,16 @@ export default function ContactList({
             </div>
           ) : (
             <div className="space-y-2">
-              {/* Companies holding unassigned entries lead, in their own group:
-                  the contact rows below are ordered overdue-first, and a card
-                  with no next-touch date has no place in that ordering. */}
-              {companyCards.length > 0 && (
-                <>
-                  <div className="text-[10px] uppercase tracking-widest text-amber-400/80 pt-1">
-                    Waiting on a contact — {companyCards.length} compan
-                    {companyCards.length === 1 ? 'y' : 'ies'}
-                  </div>
-                  {companyCards.map(card => (
-                    <CompanyCard key={`co-${card.id}`} row={card} onOpen={onOpenCompany} />
-                  ))}
-                  {rows.length > 0 && (
-                    <div className="text-[10px] uppercase tracking-widest text-ink-muted pt-2">
-                      Contacts
-                    </div>
-                  )}
-                </>
-              )}
-              {rows.map(row => (
-                <ContactRow key={row.id} row={row} onOpen={onOpen} onChanged={load} />
+              {/* Companies holding unassigned entries no longer lead in their
+                  own group. Both kinds of card are threads, both sort by when
+                  something last happened on them, so they interleave — which
+                  is the only way a card can say "this arrived this morning"
+                  and be believed. The amber border still marks the company
+                  cards out, and the count above says how many there are. */}
+              {items.map(item => (
+                item.kind === 'company'
+                  ? <CompanyCard key={item.key} row={item.row} onOpen={onOpenCompany} />
+                  : <ContactRow key={item.key} row={item.row} onOpen={onOpen} onChanged={load} />
               ))}
             </div>
           )}

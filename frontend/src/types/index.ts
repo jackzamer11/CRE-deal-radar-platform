@@ -455,7 +455,11 @@ export interface ContactListRow {
   entry_count: number
   copied_count: number
   copied_only: boolean
+  // The list's sort key: newest entry date first, entry id breaking same-day
+  // ties. Both halves come from the server so the merged list (contacts plus
+  // company cards) orders by one rule.
   latest_entry_date: string | null
+  latest_entry_id: number | null
   latest_entry_summary: string | null
   latest_entry_channel: Channel | null
 }
@@ -476,6 +480,10 @@ export interface CompanyCardRow {
   contact_count: number
   // Always false. A card exists because the work has NOT been done.
   triaged: false
+  // last_touch is this card's latest_entry_date; latest_entry_id is the same
+  // tie-break the contact rows carry. Together they let a card sort into the
+  // contact list rather than sitting in a group above it.
+  latest_entry_id: number | null
   latest_entry_summary: string | null
   latest_entry_channel: Channel | null
 }
@@ -538,12 +546,17 @@ export interface TimelineEntry {
   attachments: TimelineAttachment[]
 }
 
-// A file that arrived on an ingested email. The database holds the filename and
-// the year it was filed under; the folder is a setting joined at read time.
+// A file that arrived on an ingested email. file_name is the name it arrived
+// under and what is shown; stored_path is where the copy went, relative to the
+// documents folder, which is a setting joined at read time.
 export interface TimelineAttachment {
   id: number
   file_name: string
   stored_year: number
+  stored_path: string | null
+  // Recorded but never written — over the size ceiling. Distinct from
+  // `missing`: there is nothing to go looking for.
+  oversize: boolean
   description: string | null
   saved_date: string | null
   missing: boolean
