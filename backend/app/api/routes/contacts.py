@@ -148,7 +148,12 @@ class ContactListRow(BaseModel):
     entry_count: int = 0
     copied_count: int = 0
     copied_only: bool = False
+    # The list's sort key, both halves of it. latest_entry_date orders the
+    # cards; latest_entry_id breaks the ties same-day entries produce, and is
+    # sent so the frontend can merge company cards into this same order without
+    # inventing a second rule.
     latest_entry_date: Optional[date] = None
+    latest_entry_id: Optional[int] = None
     latest_entry_summary: Optional[str] = None
     latest_entry_channel: Optional[str] = None
 
@@ -737,8 +742,19 @@ def list_contacts(
     Adding the stage and past-client filters kept that shape: both are WHERE
     clauses on the same query.
 
-    Default sort: overdue next-touch first (soonest due first), then most
-    recent activity. Paginated with no hard ceiling.
+    Default sort: **most recent activity first.** Whatever landed on a contact
+    last — the 7pm email task, a manually logged call, an entry moved onto them
+    from a company card — puts them at the top of the list, because the thing
+    that just happened is the thing Jack is about to act on. Ties on the date
+    break on entry id, newest first, so two entries logged the same day still
+    order by which one actually arrived last.
+
+    Next-touch ordering did not go away; it moved underneath. A contact with
+    entries can never tie another on entry id (ids are unique), so the
+    next-touch keys decide the order of exactly the contacts they still mean
+    something for: the ones with no activity at all, sitting at the bottom of
+    the list, where overdue-first is the only signal available. Paginated with
+    no hard ceiling.
 
     Closed contacts are excluded by default — a placed deal is not work in the
     queue — and come back three ways: `stage=Closed`, `include_closed=true`, or
@@ -773,6 +789,31 @@ def list_contacts(
         .subquery()
     )
 
+    # The tie-break: the id of the NEWEST entry, not the largest id on the
+    # contact. Those differ whenever an entry is backdated — a contact whose
+    # newest entry is id 5 dated Feb 1 may also hold id 10 dated Jan 1, and
+    # sorting on the larger id would rank them by a conversation that is not
+    # their latest. Restricting to rows at the contact's max log_date is what
+    # makes this the real "last thing that happened". Still a subquery in the
+    # same statement, so the endpoint's query count does not move.
+    latest_ids = (
+        db.query(
+            ActivityLog.contact_id.label("cid"),
+            func.max(ActivityLog.id).label("latest_id"),
+        )
+        .select_from(ActivityLog)
+        .join(counts, and_(
+            counts.c.cid == ActivityLog.contact_id,
+            counts.c.latest_date == ActivityLog.log_date,
+        ))
+        .filter(
+            ActivityLog.action_type != STAGE_CHANGE_ACTION,
+            ActivityLog.participation.isnot(True),
+        )
+        .group_by(ActivityLog.contact_id)
+        .subquery()
+    )
+
     copied = (
         db.query(
             ActivityLog.contact_id.label("cid"),
@@ -797,10 +838,12 @@ def list_contacts(
             Company.lease_expiry_months.label("company_lease_expiry_months"),
             func.coalesce(counts.c.entry_count, 0).label("entry_count"),
             counts.c.latest_date.label("latest_date"),
+            latest_ids.c.latest_id.label("latest_id"),
             func.coalesce(copied.c.copied_count, 0).label("copied_count"),
         )
         .outerjoin(Company, Company.id == Contact.company_id)
         .outerjoin(counts, counts.c.cid == Contact.id)
+        .outerjoin(latest_ids, latest_ids.c.cid == Contact.id)
         .outerjoin(copied, copied.c.cid == Contact.id)
     )
 
@@ -838,12 +881,15 @@ def list_contacts(
     today = date.today()
     rows = (
         q_rows
-        # Overdue first (due date not null and <= today), soonest first; then
-        # the most recent activity. NULLs sort last in both keys.
+        # Newest activity first, ties broken by which entry arrived last.
+        # A contact with no entries has neither key and sorts to the bottom,
+        # where the next-touch keys below order them: overdue first (due date
+        # not null and <= today), soonest first.
         .order_by(
+            counts.c.latest_date.desc().nullslast(),
+            latest_ids.c.latest_id.desc().nullslast(),
             (Contact.next_touch_date.is_(None)) | (Contact.next_touch_date > today),
             Contact.next_touch_date.asc(),
-            counts.c.latest_date.desc().nullslast(),
             Contact.id.desc(),
         )
         .offset(max(0, offset))
@@ -871,7 +917,7 @@ def list_contacts(
     out: List[ContactListRow] = []
     for (
         contact, company_name, expiry_date, expiry_months, entry_count, latest_date,
-        copied_count,
+        latest_id, copied_count,
     ) in rows:
         latest = latest_text.get(contact.id)
         ntd = contact.next_touch_date
@@ -905,6 +951,7 @@ def list_contacts(
             copied_count=int(copied_count or 0),
             copied_only=bool(copied_count) and not int(entry_count or 0),
             latest_entry_date=latest_date,
+            latest_entry_id=latest_id,
             latest_entry_summary=(latest.action_taken if latest else None),
             latest_entry_channel=(latest.channel if latest else None),
         ))
@@ -935,6 +982,10 @@ class CompanyCardRow(BaseModel):
     # Always False. A company card is work that has not been done: nothing has
     # been assigned yet, so it can never read as triaged. See the endpoint.
     triaged: bool = False
+    # The same sort key the contact rows carry, under the name a company card
+    # uses for it (last_touch). Sent so the By Contact list can order cards and
+    # contacts against each other by one rule instead of two.
+    latest_entry_id: Optional[int] = None
     latest_entry_summary: Optional[str] = None
     latest_entry_channel: Optional[str] = None
 
@@ -996,6 +1047,25 @@ def list_company_cards(
         .subquery()
     )
 
+    # The id of the newest held entry, for the tie-break — restricted to rows
+    # at the company's last_touch date for the same reason the contact list
+    # does it: the largest id on a company is not its latest entry once
+    # anything has been backdated. See list_contacts().
+    latest_ids = (
+        db.query(
+            cid.label("cid"),
+            func.max(ActivityLog.id).label("latest_id"),
+        )
+        .select_from(ActivityLog)
+        .join(counts, and_(
+            counts.c.cid == cid,
+            counts.c.last_touch == ActivityLog.log_date,
+        ))
+        .filter(*contactless_filters())
+        .group_by(cid)
+        .subquery()
+    )
+
     # Contacts already at the company. Not a filter — a company with contacts
     # still holds its unassigned entries (nothing auto-assigns) — but the card
     # has to say whether there is anyone to move them to.
@@ -1015,9 +1085,11 @@ def list_company_cards(
             counts.c.entry_count,
             counts.c.archived_count,
             counts.c.last_touch,
+            latest_ids.c.latest_id,
             func.coalesce(people.c.contact_count, 0).label("contact_count"),
         )
         .join(counts, counts.c.cid == Company.id)
+        .outerjoin(latest_ids, latest_ids.c.cid == Company.id)
         .outerjoin(people, people.c.cid == Company.id)
     )
     if q:
@@ -1025,9 +1097,14 @@ def list_company_cards(
 
     rows = (
         rows_q
-        # Most recently touched first, matching the contact list's secondary
-        # sort. A company card has no next-touch date to lead with.
-        .order_by(counts.c.last_touch.desc().nullslast(), Company.id.desc())
+        # Most recently touched first, ties on entry id — the contact list's
+        # sort exactly, because the two streams merge into one list and a card
+        # ordered by a different rule would land in an arbitrary place in it.
+        .order_by(
+            counts.c.last_touch.desc().nullslast(),
+            latest_ids.c.latest_id.desc().nullslast(),
+            Company.id.desc(),
+        )
         .offset(max(0, offset))
         .limit(max(1, limit))
         .all()
@@ -1056,6 +1133,7 @@ def list_company_cards(
             last_touch=last_touch,
             contact_count=int(contact_count or 0),
             triaged=False,
+            latest_entry_id=latest_id,
             latest_entry_summary=(
                 latest[company.id].action_taken if company.id in latest else None
             ),
@@ -1063,7 +1141,10 @@ def list_company_cards(
                 latest[company.id].channel if company.id in latest else None
             ),
         )
-        for company, entry_count, archived_count, last_touch, contact_count in rows
+        for (
+            company, entry_count, archived_count, last_touch, latest_id,
+            contact_count,
+        ) in rows
     ]
 
 

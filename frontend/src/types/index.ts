@@ -455,7 +455,11 @@ export interface ContactListRow {
   entry_count: number
   copied_count: number
   copied_only: boolean
+  // The list's sort key: newest entry date first, entry id breaking same-day
+  // ties. Both halves come from the server so the merged list (contacts plus
+  // company cards) orders by one rule.
   latest_entry_date: string | null
+  latest_entry_id: number | null
   latest_entry_summary: string | null
   latest_entry_channel: Channel | null
 }
@@ -476,6 +480,10 @@ export interface CompanyCardRow {
   contact_count: number
   // Always false. A card exists because the work has NOT been done.
   triaged: false
+  // last_touch is this card's latest_entry_date; latest_entry_id is the same
+  // tie-break the contact rows carry. Together they let a card sort into the
+  // contact list rather than sitting in a group above it.
+  latest_entry_id: number | null
   latest_entry_summary: string | null
   latest_entry_channel: Channel | null
 }
