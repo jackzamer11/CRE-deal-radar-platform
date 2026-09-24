@@ -88,9 +88,11 @@ class PendingCompanyUpdate(Base):
 class ActivityAttachment(Base):
     """A file that arrived on an ingested email.
 
-    file_name is a BARE FILENAME and stored_year is the folder it was filed
-    under; the two join to settings.DOCUMENTS_FOLDER at read time. Nothing
-    machine- or user-specific is written into a data column.
+    file_name is the BARE FILENAME it arrived under and stored_year is the
+    folder it was filed under; stored_path is where the copy actually landed,
+    relative to settings.DOCUMENTS_FOLDER. Every one of them is joined to the
+    folder at read time, so nothing machine- or user-specific is written into a
+    data column and moving the folder stays a one-setting change.
 
     Attachments deliberately do NOT route into the lease flow. Leases get
     traded back and forth in draft and the ingestion task cannot tell draft
@@ -106,10 +108,27 @@ class ActivityAttachment(Base):
     activity_log_id = Column(
         Integer, ForeignKey("activity_logs.id"), nullable=False, index=True,
     )
+    # The name the file arrived under. This is what the interface shows, and it
+    # is NOT what is on disk: two tenants send "Floor Plan.pdf" in the same
+    # week, so the stored copy is renamed and this one is left alone.
     file_name = Column(String, nullable=False)
     # The year subfolder. Integer, not a path fragment — resolve_attachment_path
     # builds "<folder>/<year>/<file_name>" and refuses anything else.
     stored_year = Column(Integer, nullable=False)
+    # Where the file actually is, RELATIVE to settings.DOCUMENTS_FOLDER —
+    # "2026/41-Floor Plan.pdf", never an absolute path. Relative is the whole
+    # point: the folder stays a deployment setting joined at read time, so
+    # moving it re-points every row with no data change, and no machine- or
+    # user-specific value reaches a column. NULL means no file was written —
+    # an inline image, an oversize file, or a row from before files were saved.
+    stored_path = Column(String, nullable=True)
+    # The file was too large to store (settings.MAX_ATTACHMENT_BYTES). The row
+    # is kept so Jack can still see what arrived; the entry is never failed
+    # over it, and the interface says "too large" rather than "file missing",
+    # because those are different problems with different answers.
+    oversize = Column(
+        Boolean, nullable=False, default=False, server_default=text("0"),
+    )
     description = Column(Text, nullable=True)
     saved_date = Column(Date, nullable=False, default=date.today)
     created_at = Column(DateTime, default=datetime.utcnow)

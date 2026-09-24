@@ -47,18 +47,28 @@ class Settings(BaseSettings):
 
     # ── Email attachments ────────────────────────────────────────────────
     # The ONE place the attachments folder is written down, exactly as
-    # LEASES_FOLDER above. ActivityAttachment stores a bare filename plus the
-    # year it was filed under; services/attachment_storage.py joins
-    # folder/<year>/<filename> at read time. Moving the folder is a one-setting
-    # change (or the DOCUMENTS_FOLDER env var), never a migration over stored
-    # rows — no absolute, machine-specific or user-specific path is ever
-    # written into a data column.
+    # LEASES_FOLDER above. ActivityAttachment stores the name the file arrived
+    # under plus a stored_path RELATIVE to this folder ("2026/41-Plan.pdf");
+    # services/attachment_storage.py joins the two at read time. Moving the
+    # folder is a one-setting change (or the DOCUMENTS_FOLDER env var), never a
+    # migration over stored rows — no absolute, machine-specific or
+    # user-specific path is ever written into a data column.
     #
     # Deliberately NOT the leases folder: a lease reaches Deal Radar only when
     # Jack uploads the executed copy himself. An emailed attachment is draft
     # eleven as often as it is the signed document, and the ingestion task
     # cannot tell them apart — see services/attachment_storage.py.
-    DOCUMENTS_FOLDER: str = r"C:\Users\Jackz\OneDrive\Documents\Deal Radar\Attachments"
+    DOCUMENTS_FOLDER: str = r"C:\Users\Jackz\CRE-deal-radar-platform\attachments"
+
+    # Ceiling on one saved attachment, in bytes. A file over this is RECORDED
+    # and not written: the row is kept with oversize=1 and no stored_path, the
+    # upload response says so, and the entry survives. Losing the record of
+    # what arrived — because one 80MB video came with it — would be the worse
+    # outcome; the filename and the description are the part Jack reads.
+    #
+    # Read at call time like every other setting here, so raising the ceiling
+    # needs no service edit.
+    MAX_ATTACHMENT_BYTES: int = 50 * 1024 * 1024   # 50 MB
 
     # ── Addresses Jack owns ──────────────────────────────────────────────
     # An email ingested from Jack's own mailbox always has Jack on one side of

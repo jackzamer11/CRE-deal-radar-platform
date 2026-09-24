@@ -992,9 +992,11 @@ def ensure_email_ingest_tables(cur: sqlite3.Cursor) -> int:
 
       pending_company_updates   — a value an email STATED about a company,
                                   queued for Jack rather than written.
-      activity_attachments      — file_name + the YEAR it was filed under. Never
-                                  a path: settings.DOCUMENTS_FOLDER is joined at
-                                  read time, exactly as leases work, so nothing
+      activity_attachments      — the name the file arrived under, the YEAR it
+                                  was filed under, and stored_path RELATIVE to
+                                  the folder. Never an absolute path:
+                                  settings.DOCUMENTS_FOLDER is joined at read
+                                  time, exactly as leases work, so nothing
                                   machine- or user-specific reaches a column.
       contact_address_overrides — an address Jack has taught the resolver to
                                   file under a particular contact.
@@ -1058,6 +1060,8 @@ def ensure_email_ingest_tables(cur: sqlite3.Cursor) -> int:
                 activity_log_id INTEGER NOT NULL REFERENCES activity_logs(id),
                 file_name       TEXT    NOT NULL,
                 stored_year     INTEGER NOT NULL,
+                stored_path     TEXT,
+                oversize        INTEGER NOT NULL DEFAULT 0,
                 description     TEXT,
                 saved_date      DATE    NOT NULL,
                 created_at      DATETIME
@@ -1069,6 +1073,12 @@ def ensure_email_ingest_tables(cur: sqlite3.Cursor) -> int:
         for col, col_def in (
             ("description", "TEXT"),
             ("created_at",  "DATETIME"),
+            # Where the file landed, RELATIVE to settings.DOCUMENTS_FOLDER.
+            # Nullable on purpose: rows written before files were saved, inline
+            # images and oversize files all legitimately have no file.
+            ("stored_path", "TEXT"),
+            # Recorded but deliberately not written — too large to store.
+            ("oversize",    "INTEGER NOT NULL DEFAULT 0"),
         ):
             try:
                 added += _add_column(cur, "activity_attachments", col, col_def)

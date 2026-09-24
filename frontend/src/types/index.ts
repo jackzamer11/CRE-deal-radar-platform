@@ -546,12 +546,17 @@ export interface TimelineEntry {
   attachments: TimelineAttachment[]
 }
 
-// A file that arrived on an ingested email. The database holds the filename and
-// the year it was filed under; the folder is a setting joined at read time.
+// A file that arrived on an ingested email. file_name is the name it arrived
+// under and what is shown; stored_path is where the copy went, relative to the
+// documents folder, which is a setting joined at read time.
 export interface TimelineAttachment {
   id: number
   file_name: string
   stored_year: number
+  stored_path: string | null
+  // Recorded but never written — over the size ceiling. Distinct from
+  // `missing`: there is nothing to go looking for.
+  oversize: boolean
   description: string | null
   saved_date: string | null
   missing: boolean

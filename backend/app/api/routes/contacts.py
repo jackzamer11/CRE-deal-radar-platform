@@ -21,7 +21,9 @@ from app.models.contact import (
     Contact, ContactFact, CLOSED_STAGE, CONTACT_STAGES, CONTACT_TYPES,
 )
 from app.models.email_ingest import ActivityAttachment, ContactAddressOverride
-from app.services.attachment_storage import attachment_file_exists
+from app.services.attachment_storage import (
+    attachment_file_exists, stored_path_exists,
+)
 from app.api.routes.pending_updates import pending_updates_for_company
 from app.schemas.company import months_until_lease_expiry
 from app.schemas.pending_update import PendingUpdateOut
@@ -182,6 +184,11 @@ class TimelineAttachment(BaseModel):
     id: int
     file_name: str
     stored_year: int
+    # Where the copy went, RELATIVE to settings.DOCUMENTS_FOLDER.
+    stored_path: Optional[str] = None
+    # Recorded but never written - over the size ceiling. Distinct from
+    # `missing`: there was never a file to go looking for.
+    oversize: bool = False
     description: Optional[str] = None
     saved_date: Optional[date] = None
     missing: bool = False
@@ -1669,7 +1676,13 @@ def contact_timeline(
             .all()
         ):
             item = TimelineAttachment.model_validate(att)
-            item.missing = not attachment_file_exists(att.file_name, att.stored_year)
+            # A stored copy first, then the pre-stored_path layout, so rows
+            # filed before files were saved keep resolving. A row with no file
+            # at all - inline or oversize - is missing by definition.
+            item.missing = not (
+                stored_path_exists(att.stored_path)
+                or attachment_file_exists(att.file_name, att.stored_year)
+            )
             attachments_by_entry.setdefault(att.activity_log_id, []).append(item)
 
     entries = []
