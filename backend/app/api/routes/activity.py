@@ -1996,6 +1996,11 @@ class AttachmentUploadResult(BaseModel):
     # stored.
     stored_path: Optional[str] = None
     size_bytes: Optional[int] = None
+    # False when this upload repaired a row that already existed. The nightly
+    # task uses it to tell "filled in the row I just wrote" apart from "found
+    # nothing and added one", which is the difference between working and
+    # quietly duplicating.
+    created: bool = True
     max_bytes: int
     detail: Optional[str] = None
 
@@ -2004,7 +2009,15 @@ class AttachmentUploadResult(BaseModel):
 def upload_attachment(
     payload: AttachmentUploadRequest, db: Session = Depends(get_db),
 ):
-    """Write an attachment's bytes to disk and record it against an entry.
+    """Store an attachment's bytes and REPAIR the row that already describes it.
+
+    The row usually exists before the file does. The nightly task writes the
+    entry and its attachment rows through /from-email first, then comes back
+    with the bytes — so an upload that always inserted would put a second,
+    working row beside every "(file missing)" one and show Jack each attachment
+    twice. An entry plus a sanitized filename identifies the attachment, so
+    that pair is matched first and updated in place; a row is inserted only
+    when nothing matches. Re-sending the same file is therefore idempotent.
 
     A bad entry id is the one genuine 404 here: there is nothing to attach to,
     and silently inventing a row would hide the caller's bug. Everything else —
@@ -2021,25 +2034,52 @@ def upload_attachment(
 
     saved_on = entry.log_date or date.today()
     year = payload.year if payload.year else saved_on.year
+    display = sanitize_file_name(name)
+
+    # The row this upload is the file FOR. Matched on the sanitized name,
+    # because that is what the column holds — the caller sends the name as it
+    # arrived and should not have to know how it was cleaned. Oldest first, so
+    # a repeat repairs the original row rather than the newest stray.
+    existing = (
+        db.query(ActivityAttachment)
+        .filter(
+            ActivityAttachment.activity_log_id == entry.id,
+            ActivityAttachment.file_name == display,
+        )
+        .order_by(ActivityAttachment.id.asc())
+        .first()
+    )
 
     # An inline image is recorded and never written — see AttachmentUploadRequest.
     if payload.inline:
-        row = ActivityAttachment(
-            activity_log_id=entry.id,
-            file_name=sanitize_file_name(name),
-            stored_year=int(year),
-            stored_path=None,
-            oversize=False,
-            description=(payload.description or None),
-            saved_date=saved_on,
-        )
-        db.add(row)
+        if existing is not None:
+            row = existing
+            # oversize is corrected; stored_path deliberately is NOT cleared.
+            # If a file was already stored for this attachment, an inline
+            # re-send is not a reason to throw the link away.
+            row.oversize = False
+            if payload.description:
+                row.description = payload.description
+        else:
+            row = ActivityAttachment(
+                activity_log_id=entry.id,
+                file_name=display,
+                stored_year=int(year),
+                stored_path=None,
+                oversize=False,
+                description=(payload.description or None),
+                saved_date=saved_on,
+            )
+            db.add(row)
+        inline_created = existing is None
         db.commit()
         db.refresh(row)
         return AttachmentUploadResult(
             id=row.id, entry_id=entry.id, file_name=row.file_name,
             stored_year=row.stored_year, status="inline", stored=False,
-            oversize=False, missing=True, stored_path=None, size_bytes=None,
+            oversize=False, missing=not stored_path_exists(row.stored_path),
+            stored_path=row.stored_path, size_bytes=None,
+            created=inline_created,
             max_bytes=max_attachment_bytes(),
             detail="Inline image recorded; the file was not saved.",
         )
@@ -2054,18 +2094,34 @@ def upload_attachment(
 
     display, stored_rel, resolved_year, status = store_attachment_bytes(
         entry.id, name, contents, year=year, saved_on=saved_on,
+        # Overwrite the copy this row already points at rather than filing a
+        # second one beside it and orphaning the first.
+        reuse_path=(existing.stored_path if existing is not None else None),
     )
 
-    row = ActivityAttachment(
-        activity_log_id=entry.id,
-        file_name=display,
-        stored_year=resolved_year,
-        stored_path=stored_rel,
-        oversize=(status == OVERSIZE),
-        description=(payload.description or None),
-        saved_date=saved_on,
-    )
-    db.add(row)
+    if existing is not None:
+        row = existing
+        row.oversize = (status == OVERSIZE)
+        # Only a real write moves the pointer. An oversize or failed upload
+        # must not blank out a file that is sitting there perfectly readable.
+        if status == STORED:
+            row.stored_path = stored_rel
+            row.stored_year = resolved_year
+        if payload.description:
+            row.description = payload.description
+    else:
+        row = ActivityAttachment(
+            activity_log_id=entry.id,
+            file_name=display,
+            stored_year=resolved_year,
+            stored_path=stored_rel,
+            oversize=(status == OVERSIZE),
+            description=(payload.description or None),
+            saved_date=saved_on,
+        )
+        db.add(row)
+
+    was_created = existing is None
     db.commit()
     db.refresh(row)
 
@@ -2089,6 +2145,7 @@ def upload_attachment(
         missing=not stored_path_exists(row.stored_path),
         stored_path=row.stored_path,
         size_bytes=len(contents),
+        created=was_created,
         max_bytes=max_attachment_bytes(),
         detail=detail,
     )

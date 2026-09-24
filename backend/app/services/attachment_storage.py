@@ -171,6 +171,7 @@ def store_attachment_bytes(
     year: Optional[int] = None,
     saved_on: Optional[date] = None,
     folder: Optional[str] = None,
+    reuse_path: Optional[str] = None,
 ) -> Tuple[str, Optional[str], int, str]:
     """Write attachment bytes under <folder>/<year>. Never raises.
 
@@ -184,6 +185,13 @@ def store_attachment_bytes(
     the entry. A write that fails for any other reason (a full disk, a locked
     folder) is treated the same way: the metadata survives, the file does not.
 
+    `reuse_path` is the relative path a row ALREADY points at. When given, the
+    bytes overwrite that exact file rather than being filed under a fresh name.
+    That is what makes a repeated upload of the same attachment idempotent: the
+    same entry and the same filename mean the same document, so re-sending it
+    replaces its copy instead of leaving an orphan beside the row that no
+    longer points at it. A first upload passes nothing and gets a unique name.
+
     The year folder is created when it does not exist.
     """
     resolved_year = year if _is_valid_year(year) else (saved_on or date.today()).year
@@ -192,6 +200,16 @@ def store_attachment_bytes(
 
     if contents is not None and len(contents) > max_attachment_bytes():
         return display, None, resolved_year, OVERSIZE
+
+    reuse_abs = resolve_stored_path(reuse_path, folder=folder) if reuse_path else None
+    if reuse_abs:
+        try:
+            os.makedirs(os.path.dirname(reuse_abs), exist_ok=True)
+            with open(reuse_abs, "wb") as handle:
+                handle.write(contents or b"")
+            return display, str(reuse_path), resolved_year, STORED
+        except OSError:
+            return display, None, resolved_year, NO_FILE
 
     target_folder = year_folder(resolved_year, folder)
     if not target_folder:

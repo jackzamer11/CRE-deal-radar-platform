@@ -6,7 +6,8 @@ nothing was ever written and every attachment on every entry rendered
 "(file missing)". These lock the behaviour that fixes it:
 
   - a file saves and its RELATIVE path is stored (never an absolute one)
-  - a duplicate filename does not overwrite the first file
+  - an entry plus a filename is ONE attachment: a re-send repairs the row
+    and its file rather than adding a second of either
   - an oversize file records a row with no file and does not fail the entry
   - an inline image records a row with no file
   - an entry with no attachments is unaffected
@@ -185,36 +186,151 @@ def test_moving_the_documents_folder_repoints_a_stored_row(
     )
 
 
-# ── 2. A duplicate filename does not overwrite ────────────────────────────────
+# ── 2. One attachment, one row: repair in place ────────────────────────────────
 
-def test_a_duplicate_filename_does_not_overwrite(
+def test_uploading_the_same_file_twice_leaves_exactly_one_row(
     db_session, client, entry, docs_folder,
 ):
-    """Two files named the same must both survive.
+    """An entry plus a filename identifies ONE attachment, so a re-send repairs
+    it rather than adding a second.
 
-    Tenants send "Proposal.docx" over and over, and three revisions of one
-    document all arriving as the same name is the ordinary case, not the odd
-    one. Silently replacing the first would destroy a document.
+    This replaces an earlier contract where two uploads of one name produced
+    two rows. That was wrong for the way the file actually arrives: the
+    nightly task writes the row first and the bytes second, so "same entry,
+    same name" means "the file for that row", and inserting again would show
+    Jack the attachment twice — once dead, once live. Collision safety still
+    holds where it matters, between entries, which
+    test_the_same_name_on_two_entries_does_not_collide covers.
     """
     first = _upload(client, entry.id, "Proposal.docx", contents=b"revision one")
     second = _upload(client, entry.id, "Proposal.docx", contents=b"revision two")
 
     assert first["stored"] and second["stored"]
-    assert first["stored_path"] != second["stored_path"]
+    assert first["created"] is True
+    assert second["created"] is False
+    # The same row, repaired — not a new one.
+    assert second["id"] == first["id"]
+    assert second["stored_path"] == first["stored_path"]
 
-    # Both rows still show the name the file arrived under.
-    rows = db_session.query(ActivityAttachment).order_by(ActivityAttachment.id).all()
-    assert [r.file_name for r in rows] == ["Proposal.docx", "Proposal.docx"]
+    rows = db_session.query(ActivityAttachment).all()
+    assert len(rows) == 1
+    assert rows[0].file_name == "Proposal.docx"
 
-    # And both sets of bytes are on disk, unharmed.
-    path_one = attachment_storage.resolve_stored_path(rows[0].stored_path)
-    path_two = attachment_storage.resolve_stored_path(rows[1].stored_path)
-    assert open(path_one, "rb").read() == b"revision one"
-    assert open(path_two, "rb").read() == b"revision two"
+    # The copy on disk is the latest bytes, and there is only one of it.
+    path = attachment_storage.resolve_stored_path(rows[0].stored_path)
+    assert open(path, "rb").read() == b"revision two"
+    assert len(list((docs_folder / "2026").iterdir())) == 1
 
-    # Each opens its own file through the entry.
-    assert client.get(f"/api/activity/attachments/{rows[0].id}/file").content == b"revision one"
-    assert client.get(f"/api/activity/attachments/{rows[1].id}/file").content == b"revision two"
+    assert client.get(f"/api/activity/attachments/{rows[0].id}/file").content == b"revision two"
+
+
+def test_uploading_for_an_existing_row_updates_it_and_creates_nothing(
+    db_session, client, entry, docs_folder,
+):
+    """The case that happens every night: the row exists, the file does not.
+
+    /from-email writes the entry and its attachment rows with no file, then the
+    task returns with the bytes. That upload must fill in the row it finds.
+    """
+    # The row as /from-email leaves it: recorded, no file, renders "(missing)".
+    placeholder = ActivityAttachment(
+        activity_log_id=entry.id,
+        file_name="Floor Plan.pdf",
+        stored_year=2026,
+        stored_path=None,
+        oversize=False,
+        description="Suite 400 test fit",
+        saved_date=date(2026, 4, 2),
+    )
+    db_session.add(placeholder)
+    db_session.commit()
+    placeholder_id = placeholder.id
+
+    body = _upload(client, entry.id, "Floor Plan.pdf", contents=b"%PDF-1.4 real")
+
+    assert body["created"] is False
+    assert body["id"] == placeholder_id
+    assert body["stored"] is True
+    assert body["missing"] is False
+
+    # Still exactly one row, and it is the original.
+    rows = db_session.query(ActivityAttachment).all()
+    assert len(rows) == 1
+    assert rows[0].id == placeholder_id
+
+    db_session.refresh(rows[0])
+    assert rows[0].stored_path is not None
+    # The description written when the row was created survives an upload that
+    # does not carry one.
+    assert rows[0].description == "Suite 400 test fit"
+    assert open(attachment_storage.resolve_stored_path(rows[0].stored_path), "rb").read() == b"%PDF-1.4 real"
+
+    # And it now opens from the entry.
+    assert client.get(f"/api/activity/attachments/{placeholder_id}/file").status_code == 200
+
+
+def test_uploading_with_no_matching_row_inserts_one(
+    db_session, client, entry, docs_folder,
+):
+    """A file with no row waiting for it is still stored, not refused.
+
+    The row is written first in the ordinary flow, but an upload that arrives
+    on its own must not be dropped on the floor.
+    """
+    assert db_session.query(ActivityAttachment).count() == 0
+
+    body = _upload(client, entry.id, "Unannounced.pdf", contents=b"bytes")
+
+    assert body["created"] is True
+    assert body["stored"] is True
+
+    rows = db_session.query(ActivityAttachment).all()
+    assert len(rows) == 1
+    assert rows[0].file_name == "Unannounced.pdf"
+    assert rows[0].stored_path is not None
+
+
+def test_a_matching_row_is_found_on_the_sanitized_name(
+    db_session, client, entry, docs_folder,
+):
+    """The caller sends the name as it arrived; the column holds it cleaned.
+
+    Outlook's "4,562SF.jpg" is stored as "4_562SF.jpg", so matching on the raw
+    name would miss the row and duplicate it — which is exactly the bug this
+    endpoint exists to avoid.
+    """
+    placeholder = ActivityAttachment(
+        activity_log_id=entry.id,
+        file_name=attachment_storage.sanitize_file_name("4,562SF.jpg"),
+        stored_year=2026,
+        stored_path=None,
+        oversize=False,
+        saved_date=date(2026, 4, 2),
+    )
+    db_session.add(placeholder)
+    db_session.commit()
+
+    body = _upload(client, entry.id, "4,562SF.jpg", contents=b"jpegbytes")
+
+    assert body["created"] is False
+    assert db_session.query(ActivityAttachment).count() == 1
+
+
+def test_repairing_a_row_does_not_orphan_its_previous_file(
+    db_session, client, entry, docs_folder,
+):
+    """A replaced copy overwrites the one the row points at.
+
+    Writing a fresh name each time would leave the superseded file sitting in
+    the folder with nothing referring to it, which the missing-file check
+    cannot see and nobody would ever clean up.
+    """
+    _upload(client, entry.id, "Plan.pdf", contents=b"one")
+    _upload(client, entry.id, "Plan.pdf", contents=b"two")
+    _upload(client, entry.id, "Plan.pdf", contents=b"three")
+
+    assert db_session.query(ActivityAttachment).count() == 1
+    assert len(list((docs_folder / "2026").iterdir())) == 1
 
 
 def test_the_same_name_on_two_entries_does_not_collide(
@@ -235,6 +351,56 @@ def test_the_same_name_on_two_entries_does_not_collide(
     assert a["stored_path"] != b["stored_path"]
     assert str(entry.id) in a["stored_path"]
     assert str(other.id) in b["stored_path"]
+
+
+def test_from_email_then_upload_leaves_one_working_row(
+    db_session, client, entry, docs_folder,
+):
+    """The nightly sequence, end to end: row first, bytes second.
+
+    This is the shape of the 7pm task. /from-email records what arrived with
+    no file (it is handed no readable local path), and the upload that follows
+    must fill THAT row in. If it inserted instead, every attachment would show
+    twice on the entry from tonight onwards.
+    """
+    posted = client.post("/api/activity/from-email", json={
+        "direction": "inbound",
+        "from_email": "dana@collaborative-av.com",
+        "from_name": "Dana Reid",
+        "to_email": "jzamer@z-reg.com",
+        "subject": "Suite 400",
+        "action_taken": "Dana sent the floor plan.",
+        "sent_at": "2026-04-02",
+        "source_message_id": "<msg-e2e-1@mail>",
+        "attachments": [{"filename": "Floor Plan.pdf", "description": "Test fit"}],
+    })
+    assert posted.status_code == 200, posted.text
+    body = posted.json()
+    log_id = body["id"]
+
+    # One row, recorded with no file — exactly what renders "(file missing)".
+    rows = db_session.query(ActivityAttachment).all()
+    assert len(rows) == 1
+    assert rows[0].stored_path is None
+    row_id = rows[0].id
+
+    # The task comes back with the bytes.
+    uploaded = _upload(client, log_id, "Floor Plan.pdf", contents=b"%PDF-1.4 plan")
+    assert uploaded["created"] is False
+    assert uploaded["id"] == row_id
+    assert uploaded["stored"] is True
+
+    # Still one row, now with a file behind it.
+    rows = db_session.query(ActivityAttachment).all()
+    assert len(rows) == 1
+    db_session.refresh(rows[0])
+    assert rows[0].stored_path is not None
+    assert rows[0].description == "Test fit"
+
+    assert client.get(f"/api/activity/attachments/{row_id}/file").content == b"%PDF-1.4 plan"
+
+    # And the entry itself was neither duplicated nor altered.
+    assert db_session.query(ActivityLog).filter(ActivityLog.id == log_id).count() == 1
 
 
 # ── 3. An oversize file records a row with no file ────────────────────────────
@@ -281,6 +447,36 @@ def test_an_oversize_file_records_a_row_and_does_not_fail_the_entry(
     opened = client.get(f"/api/activity/attachments/{row.id}/file")
     assert opened.status_code == 404
     assert "too large" in opened.json()["detail"]
+
+
+def test_an_oversize_resend_does_not_blank_out_a_stored_file(
+    db_session, client, entry, docs_folder, monkeypatch,
+):
+    """A good file already on disk survives a later oversize upload of it.
+
+    Only a real write moves the pointer. Clearing stored_path here would turn
+    a working attachment into "(file missing)" over an upload that never had
+    any chance of replacing it.
+    """
+    _upload(client, entry.id, "Plan.pdf", contents=b"the good copy")
+    row = db_session.query(ActivityAttachment).one()
+    good_path = row.stored_path
+    assert good_path is not None
+
+    monkeypatch.setattr(
+        attachment_storage.settings, "MAX_ATTACHMENT_BYTES", 8, raising=False,
+    )
+    body = _upload(client, entry.id, "Plan.pdf", contents=b"x" * 500)
+
+    assert body["created"] is False
+    assert body["oversize"] is True
+
+    db_session.refresh(row)
+    assert db_session.query(ActivityAttachment).count() == 1
+    assert row.oversize is True
+    # The file, and the link to it, are untouched.
+    assert row.stored_path == good_path
+    assert open(attachment_storage.resolve_stored_path(good_path), "rb").read() == b"the good copy"
 
 
 def test_an_oversize_file_does_not_stop_the_next_attachment(
