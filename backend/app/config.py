@@ -70,6 +70,26 @@ class Settings(BaseSettings):
     # needs no service edit.
     MAX_ATTACHMENT_BYTES: int = 50 * 1024 * 1024   # 50 MB
 
+    # ── Microsoft Graph (attachment bytes) ───────────────────────────────
+    # The Outlook MCP connector can read an email and SEE its attachments,
+    # but it returns a PDF as extracted text and an image as a picture —
+    # never the original bytes. Graph is the only route to the file itself
+    # (GET /users/{mailbox}/messages/{id}/attachments/{id}/$value).
+    #
+    # Real values live in backend/.env (gitignored), never here. See
+    # .env.example for the four keys and what each one is.
+    #
+    # App-only client-credentials flow, so there is no signed-in user and no
+    # "/me": GRAPH_MAILBOX names whose mailbox to read. That also means the
+    # app registration needs the APPLICATION permission Mail.Read with admin
+    # consent — a delegated Mail.Read grant will authenticate fine and then
+    # 403 on every message.
+    GRAPH_CLIENT_ID: Optional[str] = None
+    GRAPH_TENANT_ID: Optional[str] = None
+    GRAPH_CLIENT_SECRET: Optional[str] = None
+    # The mailbox to read, e.g. "jzamer@z-reg.com".
+    GRAPH_MAILBOX: Optional[str] = None
+
     # ── Addresses Jack owns ──────────────────────────────────────────────
     # An email ingested from Jack's own mailbox always has Jack on one side of
     # it. He is not a contact in his own CRM, so these never resolve to one and
