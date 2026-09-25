@@ -25,6 +25,7 @@ from app.services.attachment_storage import (
     sanitize_file_name, store_attachment, store_attachment_bytes,
     stored_path_exists,
 )
+from app.services import graph_client
 from app.services.contact_service import (
     STAGE_CHANGE_ACTION, apply_inbound_stage_rules, create_contact, create_fact,
     email_domain_of, mark_engaged, normalize_email, resolve_companies_by_names,
@@ -2032,8 +2033,49 @@ def upload_attachment(
     if not name:
         raise HTTPException(status_code=400, detail="filename is required")
 
+    raw = (payload.content_base64 or "").strip()
+    if raw[:5].lower() == "data:" and "," in raw:
+        raw = raw.split(",", 1)[1]
+    try:
+        contents = base64.b64decode(raw, validate=False)
+    except (binascii.Error, ValueError):
+        raise HTTPException(status_code=400, detail="content_base64 is not valid base64")
+
+    return _store_or_repair_attachment(
+        db, entry, name, contents,
+        year=payload.year,
+        description=payload.description,
+        inline=payload.inline,
+    )
+
+
+def _store_or_repair_attachment(
+    db: Session,
+    entry: ActivityLog,
+    file_name: str,
+    contents: Optional[bytes],
+    *,
+    year: Optional[int] = None,
+    description: Optional[str] = None,
+    inline: bool = False,
+) -> "AttachmentUploadResult":
+    """Store bytes against an entry, repairing the row that already describes it.
+
+    Shared by the base64 upload and the Graph fetch so the two cannot drift:
+    the rules about what counts as the same attachment, what an oversize file
+    does, and what an inline one does are decided in exactly one place.
+
+    The row usually exists before the file does. The nightly task writes the
+    entry and its attachment rows through /from-email first, then comes back
+    with the bytes — so an upload that always inserted would put a second,
+    working row beside every "(file missing)" one and show Jack each attachment
+    twice. An entry plus a sanitized filename identifies the attachment, so
+    that pair is matched first and updated in place; a row is inserted only
+    when nothing matches. Re-sending the same file is therefore idempotent.
+    """
+    name = (file_name or "").strip()
     saved_on = entry.log_date or date.today()
-    year = payload.year if payload.year else saved_on.year
+    year = year if year else saved_on.year
     display = sanitize_file_name(name)
 
     # The row this upload is the file FOR. Matched on the sanitized name,
@@ -2051,15 +2093,15 @@ def upload_attachment(
     )
 
     # An inline image is recorded and never written — see AttachmentUploadRequest.
-    if payload.inline:
+    if inline:
         if existing is not None:
             row = existing
             # oversize is corrected; stored_path deliberately is NOT cleared.
             # If a file was already stored for this attachment, an inline
             # re-send is not a reason to throw the link away.
             row.oversize = False
-            if payload.description:
-                row.description = payload.description
+            if description:
+                row.description = description
         else:
             row = ActivityAttachment(
                 activity_log_id=entry.id,
@@ -2067,7 +2109,7 @@ def upload_attachment(
                 stored_year=int(year),
                 stored_path=None,
                 oversize=False,
-                description=(payload.description or None),
+                description=(description or None),
                 saved_date=saved_on,
             )
             db.add(row)
@@ -2084,14 +2126,7 @@ def upload_attachment(
             detail="Inline image recorded; the file was not saved.",
         )
 
-    raw = (payload.content_base64 or "").strip()
-    if raw[:5].lower() == "data:" and "," in raw:
-        raw = raw.split(",", 1)[1]
-    try:
-        contents = base64.b64decode(raw, validate=False)
-    except (binascii.Error, ValueError):
-        raise HTTPException(status_code=400, detail="content_base64 is not valid base64")
-
+    contents = contents or b""
     display, stored_rel, resolved_year, status = store_attachment_bytes(
         entry.id, name, contents, year=year, saved_on=saved_on,
         # Overwrite the copy this row already points at rather than filing a
@@ -2107,8 +2142,8 @@ def upload_attachment(
         if status == STORED:
             row.stored_path = stored_rel
             row.stored_year = resolved_year
-        if payload.description:
-            row.description = payload.description
+        if description:
+            row.description = description
     else:
         row = ActivityAttachment(
             activity_log_id=entry.id,
@@ -2116,7 +2151,7 @@ def upload_attachment(
             stored_year=resolved_year,
             stored_path=stored_rel,
             oversize=(status == OVERSIZE),
-            description=(payload.description or None),
+            description=(description or None),
             saved_date=saved_on,
         )
         db.add(row)
@@ -2256,3 +2291,189 @@ def report_missing_attachment_files(
     return MissingAttachmentReport(
         checked=len(rows), missing=len(missing), attachments=missing,
     )
+
+
+class GraphFetchRequest(BaseModel):
+    """Pull one email's attachments out of Graph and store them on an entry.
+
+    `message_id` accepts either form, because the caller holds different ones
+    at different times: the internet message id the database stores
+    ("<abc@host>", including the "#d2" suffix a split entry carries), or a raw
+    Graph id. An internet id is resolved through a $filter first.
+    """
+    entry_id: int
+    message_id: str
+    # Off by default: an inline signature image is recorded, not stored, and
+    # fetching its bytes would be wasted work. On, it still only records them.
+    include_inline: bool = False
+
+
+class GraphFetchedAttachment(BaseModel):
+    file_name: str
+    status: str
+    stored: bool
+    oversize: bool
+    created: Optional[bool] = None
+    stored_path: Optional[str] = None
+    size_bytes: Optional[int] = None
+    attachment_id: Optional[int] = None
+    detail: Optional[str] = None
+
+
+class GraphFetchResult(BaseModel):
+    """What happened to every attachment on the message.
+
+    Counted rather than raised: one attachment that cannot be fetched must not
+    cost the other three on the same email, and none of them may cost the
+    entry.
+    """
+    entry_id: int
+    message_id: str
+    resolved_message_id: Optional[str] = None
+    attachments_found: int = 0
+    stored: int = 0
+    repaired: int = 0
+    inserted: int = 0
+    oversize: int = 0
+    inline_skipped: int = 0
+    failed: int = 0
+    attachments: List[GraphFetchedAttachment] = []
+    detail: Optional[str] = None
+
+
+@router.post("/attachments/fetch-from-graph", response_model=GraphFetchResult)
+def fetch_attachments_from_graph(
+    payload: GraphFetchRequest, db: Session = Depends(get_db),
+):
+    """Fetch an email's attachment bytes from Graph and store them on an entry.
+
+    This exists because the Outlook connector cannot hand over a file. It can
+    find the message and list what came with it, but it returns a PDF as
+    extracted text and an image as a picture — write either to disk and you get
+    a corrupt document behind a link that looks like it works. Graph's /$value
+    returns the real bytes.
+
+    Storing goes through the same store-or-repair path as the base64 upload, so
+    a row written earlier by /from-email is filled in rather than duplicated,
+    and the size ceiling and inline rules are the ones already in force.
+
+    No activity entry is created, modified or deleted here.
+    """
+    entry = db.query(ActivityLog).filter(ActivityLog.id == payload.entry_id).first()
+    if entry is None:
+        raise HTTPException(status_code=404, detail="Entry not found")
+
+    if not graph_client.is_configured():
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Microsoft Graph is not configured; missing "
+                + ", ".join(graph_client.missing_settings())
+                + ". Add them to backend/.env (see .env.example)."
+            ),
+        )
+
+    out = GraphFetchResult(entry_id=entry.id, message_id=payload.message_id)
+
+    # Listing is the one step whose failure means there is nothing to do at
+    # all — a missing message, bad credentials, a permissions problem. It is
+    # reported as an error because the caller cannot proceed; a failure on ONE
+    # attachment below is counted instead.
+    try:
+        graph_id, items = graph_client.list_attachments(payload.message_id)
+    except graph_client.GraphError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc))
+
+    out.resolved_message_id = graph_id
+    out.attachments_found = len(items)
+
+    for item in items:
+        name = (item.get("name") or "").strip()
+        if not name:
+            continue
+
+        if item.get("inline") and not payload.include_inline:
+            out.inline_skipped += 1
+            out.attachments.append(GraphFetchedAttachment(
+                file_name=sanitize_file_name(name), status="inline",
+                stored=False, oversize=False,
+                detail="Inline image; recorded by the email task, not stored.",
+            ))
+            continue
+
+        # An item or reference attachment (a forwarded mail, a OneDrive link)
+        # has no bytes behind /$value. Recorded as skipped rather than failed:
+        # nothing is broken, there is simply no file.
+        odata = (item.get("odata_type") or "").lower()
+        if "fileattachment" not in odata and odata:
+            out.failed += 1
+            out.attachments.append(GraphFetchedAttachment(
+                file_name=sanitize_file_name(name), status="not_a_file",
+                stored=False, oversize=False,
+                detail=f"{item.get('odata_type')} has no downloadable file.",
+            ))
+            continue
+
+        # Skip the download when Graph already says it is over the ceiling —
+        # the row is still recorded as oversize, and pulling 80MB to throw it
+        # away would be the one avoidable cost here.
+        declared = int(item.get("size") or 0)
+        if declared > max_attachment_bytes():
+            result = _store_or_repair_attachment(
+                db, entry, name, b"\0" * (max_attachment_bytes() + 1),
+                description=None, inline=False,
+            )
+            out.oversize += 1
+            out.attachments.append(GraphFetchedAttachment(
+                file_name=result.file_name, status=result.status,
+                stored=False, oversize=True, created=result.created,
+                attachment_id=result.id, size_bytes=declared,
+                detail=(
+                    f"{declared} bytes, over the {max_attachment_bytes()}-byte "
+                    "limit. Recorded without the file."
+                ),
+            ))
+            continue
+
+        try:
+            contents = graph_client.fetch_attachment_bytes(graph_id, item["id"])
+        except graph_client.GraphError as exc:
+            # One attachment that will not download must not cost the others.
+            out.failed += 1
+            out.attachments.append(GraphFetchedAttachment(
+                file_name=sanitize_file_name(name), status="fetch_failed",
+                stored=False, oversize=False, detail=str(exc),
+            ))
+            continue
+
+        result = _store_or_repair_attachment(
+            db, entry, name, contents,
+            description=None, inline=bool(item.get("inline")),
+        )
+        if result.status == STORED:
+            out.stored += 1
+        elif result.status == OVERSIZE:
+            out.oversize += 1
+        if result.created:
+            out.inserted += 1
+        else:
+            out.repaired += 1
+
+        out.attachments.append(GraphFetchedAttachment(
+            file_name=result.file_name,
+            status=result.status,
+            stored=result.stored,
+            oversize=result.oversize,
+            created=result.created,
+            stored_path=result.stored_path,
+            size_bytes=result.size_bytes,
+            attachment_id=result.id,
+            detail=result.detail,
+        ))
+
+    out.detail = (
+        f"{out.stored} stored ({out.repaired} repaired, {out.inserted} inserted), "
+        f"{out.oversize} oversize, {out.inline_skipped} inline skipped, "
+        f"{out.failed} failed."
+    )
+    return out
