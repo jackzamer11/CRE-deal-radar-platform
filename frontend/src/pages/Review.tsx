@@ -8,6 +8,7 @@ import {
   getActivityMiningStatus, mineActivityLogs, requeueFuzzyDates,
 } from '../api/client'
 import type { Observation, ActivityMiningStatus } from '../types'
+import HeldRequirements from '../components/HeldRequirements'
 
 // Turn a raw field name (e.g. "base_rent_annual") into a readable label.
 function fieldLabel(field: string): string {
@@ -279,8 +280,9 @@ function ActivityMiningPanel({ onMined }: { onMined: () => void }) {
             Activity log intelligence
           </div>
           <p className="text-[11px] text-ink-muted mt-0.5 leading-relaxed">
-            Reads your call and email notes and turns what tenants actually said into
-            structured facts. Your activity logs are never changed.
+            Reads your call and email notes and turns what tenants said into structured
+            facts — and keeps what brokers tell you on the broker. Copies of an email are
+            read once. Your activity logs are never changed.
           </p>
         </div>
         <div className="flex items-center gap-2 flex-shrink-0">
@@ -344,8 +346,11 @@ export default function ReviewPage() {
   const [loading, setLoading] = useState(true)
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>('all')
   const [visible, setVisible] = useState(PAGE_SIZE)
+  // Bumped on every load so the holding list re-reads after a mining run.
+  const [heldKey, setHeldKey] = useState(0)
 
   const load = async () => {
+    setHeldKey(k => k + 1)
     setLoading(true)
     try {
       // Unverified only, sorted by confidence ascending (server-side).
@@ -439,6 +444,8 @@ export default function ReviewPage() {
       </div>
 
       <ActivityMiningPanel onMined={load} />
+
+      <HeldRequirements refreshKey={heldKey} />
 
       {uploadMsg && (
         <div

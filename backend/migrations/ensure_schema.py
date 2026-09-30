@@ -501,6 +501,13 @@ def ensure_observations(cur: sqlite3.Cursor) -> int:
             "superseded_by_id": "INTEGER",
             "created_at": "DATETIME NOT NULL",
             "verified_by": "TEXT",
+            # Who a mined fact is about — see models/observation.py. All
+            # nullable: an existing fact reads as "the entry's company", which
+            # is exactly how it was filed before.
+            "about": "TEXT",
+            "about_name": "TEXT",
+            "assigned_company_id": "INTEGER",
+            "assigned_contact_id": "INTEGER",
         }.items():
             added += _add_column(cur, "observations", col, col_def)
         return added
@@ -520,6 +527,10 @@ def ensure_observations(cur: sqlite3.Cursor) -> int:
             verified_by TEXT,
             superseded_by_id INTEGER,
             created_at DATETIME NOT NULL,
+            about TEXT,
+            about_name TEXT,
+            assigned_company_id INTEGER,
+            assigned_contact_id INTEGER,
             FOREIGN KEY(superseded_by_id) REFERENCES observations(id)
         )
     """)
@@ -566,7 +577,10 @@ def ensure_intel_tables(cur: sqlite3.Cursor) -> int:
                 signals_json TEXT,
                 surfaced_at DATETIME NOT NULL,
                 status TEXT NOT NULL DEFAULT 'open',
-                dedup_key TEXT
+                dedup_key TEXT,
+                cycle TEXT,
+                evidence_date DATE,
+                resurface_at DATE
             )
         """)
         cur.execute("CREATE INDEX IF NOT EXISTS ix_intel_opportunities_dedup ON intel_opportunities(dedup_key)")
@@ -574,6 +588,19 @@ def ensure_intel_tables(cur: sqlite3.Cursor) -> int:
         added += 1
     else:
         added += _add_column(cur, "intel_opportunities", "dedup_key", "TEXT")
+        # Decisions scoped in time: the lease cycle a card is about, the newest
+        # note behind it, and when a deferral comes back. All nullable — an
+        # existing row with none of them reads as it always did, and the
+        # generator derives a legacy card's cycle from its stored value.
+        for _col, _def in (
+            ("cycle", "TEXT"),
+            ("evidence_date", "DATE"),
+            ("resurface_at", "DATE"),
+        ):
+            try:
+                added += _add_column(cur, "intel_opportunities", _col, _def)
+            except sqlite3.OperationalError as exc:
+                print(f"  ! intel_opportunities.{_col} add skipped: {exc}")
 
     cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='intel_feedback'")
     if not cur.fetchone():
@@ -584,12 +611,18 @@ def ensure_intel_tables(cur: sqlite3.Cursor) -> int:
                 disposition TEXT NOT NULL,
                 reason_category TEXT,
                 reason_text TEXT,
+                resurface_at DATE,
                 created_at DATETIME NOT NULL
             )
         """)
         cur.execute("CREATE INDEX IF NOT EXISTS ix_intel_feedback_opp ON intel_feedback(opportunity_id)")
         print("  + created table intel_feedback")
         added += 1
+    else:
+        try:
+            added += _add_column(cur, "intel_feedback", "resurface_at", "DATE")
+        except sqlite3.OperationalError as exc:
+            print(f"  ! intel_feedback.resurface_at add skipped: {exc}")
 
     cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='intel_activity_extractions'")
     if not cur.fetchone():
