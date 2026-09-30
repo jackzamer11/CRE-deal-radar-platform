@@ -24,7 +24,7 @@ import os
 from typing import Callable, Dict, List, Optional
 
 from sqlalchemy import or_
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, object_session
 
 from app.models.activity import ActivityLog
 from app.models.intel import IntelActivityExtraction
@@ -237,7 +237,53 @@ def build_log_text(log: ActivityLog) -> str:
         parts.append(f"Notes: {log.notes}")
     if log.follow_up_action:
         parts.append(f"Follow-up: {log.follow_up_action}")
+
+    # What the email check recorded from the FULL email. The entry's own text
+    # is a one-line summary; the email check read the whole message, signature
+    # and all, and wrote down facts ("Fatimah Wilson is representing One Life
+    # One Love, looking for 2,000-2,500 SF by December") and discovery values.
+    # Reading them here is how Intel sees what the email said, rather than
+    # only what the summary kept.
+    discovery = [
+        (label, getattr(log, col)) for col, label in _DISCOVERY_LABELS.items()
+        if getattr(log, col, None) not in (None, "")
+    ]
+    if discovery:
+        parts.append("Recorded from the email: " + "; ".join(
+            f"{label}: {value}" for label, value in discovery
+        ))
+    for text in _entry_fact_texts(log):
+        parts.append(f"Fact recorded from the email: {text}")
     return "\n".join(parts)
+
+
+# ActivityLog discovery columns, as the extractor reads them.
+_DISCOVERY_LABELS = {
+    "disc_current_sf": "current SF",
+    "disc_current_rent_psf": "current rent $/SF",
+    "disc_lease_expiry": "current lease expiry",
+    "disc_decision_timeline": "decision timeline",
+    "disc_buildout_needs": "buildout needs",
+    "disc_decision_maker": "decision maker",
+}
+
+
+def _entry_fact_texts(log: ActivityLog) -> List[str]:
+    """Active contact facts the email check wrote from this entry. Read
+    through the entry's own session; a log with none attached has none."""
+    session = object_session(log)
+    if session is None or log.id is None:
+        return []
+    from app.models.contact import ContactFact
+
+    return [
+        text for (text,) in
+        session.query(ContactFact.fact_text)
+        .filter(ContactFact.source_entry_id == log.id, ContactFact.is_active.is_(True))
+        .order_by(ContactFact.id.asc())
+        .all()
+        if text
+    ]
 
 
 def _extract_facts_via_llm(text: str, client=None) -> Dict[str, Dict[str, object]]:

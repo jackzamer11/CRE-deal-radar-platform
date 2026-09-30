@@ -140,6 +140,30 @@ def test_the_note_text_says_who_the_person_is_and_which_way_it_went(db):
     assert "Entry is filed under company: Next Realty Mid-Atlantic" in text
 
 
+def test_the_extractor_reads_what_the_email_check_recorded_from_the_full_email(db):
+    """The entry is a one-line summary; the email check read the whole email
+    and wrote facts and discovery values. The extractor sees them too."""
+    from app.models.contact import ContactFact
+
+    tartan = _company(db, "Tartan Properties")
+    fatimah = _contact(db, "Fatimah Wilson", tartan, contact_type="counterparty")
+    log = _entry(db, company=tartan, contact=fatimah, direction="inbound",
+                 text="Fatimah replied about a therapy office")
+    log.disc_decision_timeline = "by end of December 2026"
+    db.add(ContactFact(contact_id=fatimah.id, source_entry_id=log.id,
+                       learned_date=TODAY, fact_text=(
+                           "Fatimah Wilson is representing One Life One Love, a therapy "
+                           "office looking to occupy about 2,000 to 2,500 square feet.")))
+    db.add(ContactFact(contact_id=fatimah.id, source_entry_id=log.id, learned_date=TODAY,
+                       fact_text="An old, replaced fact.", is_active=False))
+    db.commit()
+
+    text = build_log_text(log)
+    assert "representing One Life One Love" in text
+    assert "decision timeline: by end of December 2026" in text
+    assert "An old, replaced fact." not in text
+
+
 # ══ 2. A client's requirement never lands on the brokerage ════════════════════
 
 def test_a_requirement_is_never_filed_under_the_brokerage(db):
