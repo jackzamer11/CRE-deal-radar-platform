@@ -1021,6 +1021,13 @@ export interface IntelSignalRef {
   /** stated_requirement only: which requirement fields the tenant actually stated */
   stated_fields?: string[]
   days_since_touch?: number | null
+  // Lease cards: which source the date came from, and every source that
+  // disagrees with it by more than 45 days.
+  expiry_source?: string | null
+  expiry_date?: string | null
+  conflicts?: { source: string; date: string }[]
+  // The person on the entry behind the card, when there is one.
+  contact_name?: string | null
 }
 
 export interface IntelOpportunity {
@@ -1033,6 +1040,10 @@ export interface IntelOpportunity {
   signals: IntelSignalRef[]
   surfaced_at: string
   status: string
+  // The lease cycle a lease card is about ("2027-08"): a decision covers this
+  // cycle only. resurface_at: the day a deferred card comes back.
+  cycle: string | null
+  resurface_at: string | null
 }
 
 export type IntelDisposition = 'accepted' | 'rejected' | 'deferred'

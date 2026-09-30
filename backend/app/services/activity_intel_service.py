@@ -11,11 +11,19 @@ Two hard rules:
      or deletes an activity log. Facts are written to `observations` only.
   2. **Only STATED facts.** The prompt forbids inferring or guessing; a field the
      note doesn't state comes back null and is simply not recorded.
+
+And one about whose facts they are. Jack's notes are not all conversations with
+tenants — a lot of what he learns comes from brokers and landlords. The
+extractor is told who the person on the entry is, and says who each
+requirement belongs to (the entry's company, a tenant the note names, or a
+client it does not). Nothing a broker said is thrown away, and none of it is
+filed as if the brokerage were the tenant: see services/requirement_subject.py.
 """
 
 import os
 from typing import Callable, Dict, List, Optional
 
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.models.activity import ActivityLog
@@ -25,6 +33,17 @@ from app.services.document_extraction_service import (
     EXTRACTION_MODEL,
     MissingAPIKeyError,
 )
+from app.services.requirement_subject import (
+    ABOUT_MARKET,
+    REQUIREMENT_KINDS,
+    entry_company,
+    subject_for,
+)
+
+# Rows that carry no conversation of their own. Kept in step with
+# contact_service.STAGE_CHANGE_ACTION — not imported, because that module pulls
+# in the email-ingest layer and this one must stay importable on its own.
+STAGE_CHANGE_ACTION = "STAGE_CHANGE"
 
 # Tenant-requirement fields we mine from conversation notes. These are STATED
 # requirements (the tenant said them), never inferred from headcount math —
@@ -46,6 +65,22 @@ REQUIREMENT_FIELDS: Dict[str, str] = {
     "contact_email": "Email address of the tenant-side contact.",
 }
 
+# What a broker or landlord said about space and the market. Stored against the
+# person who said it (about="market") and shown on their thread. Deliberately
+# inert: it drives no Intel card, no scoring, and never reaches outreach copy —
+# a broker's asking rent is an unverified figure, and the property side is
+# dormant. It is kept so nothing Jack is told is lost.
+MARKET_FIELDS: Dict[str, str] = {
+    "mkt_property": "A building, address or suite the note is about (as written).",
+    "mkt_available_sf": "Space available at that property, as stated (SF or range).",
+    "mkt_asking_rent": "Asking rent quoted for that space, as stated.",
+    "mkt_concessions": "Concessions or landlord terms stated (free rent, TI offered, etc.).",
+    "mkt_notes": "Anything else a broker or landlord said about the space or market.",
+}
+
+# Everything the extractor is asked for.
+EXTRACTED_FIELDS: Dict[str, str] = {**REQUIREMENT_FIELDS, **MARKET_FIELDS}
+
 # Fields cleared automatically instead of queueing for human review.
 # These are basic facts read straight out of Jack's own notes — contact details,
 # stated SF, submarket, timing — so they are cheap to spot-check and low-stakes
@@ -56,7 +91,7 @@ REQUIREMENT_FIELDS: Dict[str, str] = {
 # extracted from lease PDFs always go to the Review queue, even where the field
 # name overlaps (e.g. expiration_date) — a lease abstract is a legal document,
 # not a call note.
-AUTO_APPROVE_FIELDS = set(REQUIREMENT_FIELDS)
+AUTO_APPROVE_FIELDS = set(REQUIREMENT_FIELDS) | set(MARKET_FIELDS)
 
 # Fields holding a date. A date is what decides WHO gets called and WHEN, so it
 # only clears itself when the note stated it exactly ("lease ends 2027-03-01").
@@ -90,38 +125,108 @@ _FIELD_SCHEMA = {
     "additionalProperties": False,
 }
 
+_REQUIREMENT_FOR_SCHEMA = {
+    "type": "object",
+    "description": "Whose requirement the req_*, expiration and contact fields describe.",
+    "properties": {
+        "kind": {
+            "type": "string",
+            "enum": list(REQUIREMENT_KINDS),
+            "description": (
+                "entry_company: the company this entry is filed under is the "
+                "tenant. named_tenant: a tenant the note names (give tenant_name). "
+                "unnamed_client: a tenant the note refers to without naming it "
+                "('a tenant', 'my client')."
+            ),
+        },
+        "tenant_name": {
+            "type": ["string", "null"],
+            "description": "The tenant's name as the note gives it, for named_tenant.",
+        },
+    },
+    "required": ["kind", "tenant_name"],
+    "additionalProperties": False,
+}
+
 _TOOL = {
     "name": "record_tenant_facts",
-    "description": "Record tenant requirements stated in a broker's activity note.",
+    "description": (
+        "Record tenant requirements and market information stated in a "
+        "broker's activity note."
+    ),
     "input_schema": {
         "type": "object",
-        "properties": {f: _FIELD_SCHEMA for f in REQUIREMENT_FIELDS},
-        "required": list(REQUIREMENT_FIELDS),
+        "properties": {
+            "requirement_for": _REQUIREMENT_FOR_SCHEMA,
+            **{f: _FIELD_SCHEMA for f in EXTRACTED_FIELDS},
+        },
+        "required": ["requirement_for", *EXTRACTED_FIELDS],
         "additionalProperties": False,
     },
 }
 
 _SYSTEM_PROMPT = (
-    "You extract commercial-real-estate tenant requirements from a broker's "
-    "shorthand activity notes. The notes are messy, abbreviated, and written for "
-    "the broker's own memory.\n"
+    "You extract commercial-real-estate facts from the shorthand activity notes "
+    "of Jack Zamer, a TENANT-REPRESENTATION broker in Northern Virginia. The "
+    "notes are messy, abbreviated, and written for his own memory. Each note "
+    "comes with context: who the other person is and which side of the table "
+    "they sit on.\n"
     "CRITICAL RULE: Record ONLY what the note explicitly states. If a field is "
     "not stated, return null for it. Never infer, estimate, calculate, or guess "
     "— a missing value is normal and expected.\n"
-    "Only record a requirement if it describes what the TENANT wants or said. Do "
-    "not record the broker's own actions, opinions, or internal reminders as "
-    "tenant requirements.\n"
+    "The req_* fields, expiration_date and contact_* fields describe a TENANT: "
+    "what a tenant wants or said. Do not record Jack's own actions, opinions or "
+    "reminders as requirements.\n"
+    "Say whose requirement it is in requirement_for. A COUNTERPARTY (landlord "
+    "broker, landlord, property manager) is never the tenant: when Jack writes "
+    "to one about 'a tenant seeking 500-600 sqft', that is his client's "
+    "requirement — unnamed_client, or named_tenant if the note names the "
+    "client. A roundup entry about one deal is filed under that deal's company, "
+    "so there the entry's company is the tenant.\n"
+    "The mkt_* fields hold what a broker or landlord said about SPACE and the "
+    "MARKET: a building, available space, asking rent, concessions. Never put a "
+    "tenant's requirement in mkt_* fields, or market information in req_* "
+    "fields.\n"
     "For each field you find, give a confidence 0-1 and a short verbatim snippet "
     "quoting the note. For null values, set confidence and snippet to null."
 )
 
+_SIDE_LABEL = {
+    "tenant": "TENANT",
+    "counterparty": "COUNTERPARTY (landlord broker, landlord or property manager)",
+    "unconfirmed": "UNCONFIRMED (not yet known whether tenant or counterparty)",
+    "owner": "OWNER",
+}
+
 
 def build_log_text(log: ActivityLog) -> str:
-    """Assemble the readable text of an activity log (read-only)."""
+    """Assemble the readable text of an activity log (read-only).
+
+    Context first: who the entry is with and which side they sit on, which way
+    the email went, the note's date (so "in 8 months" resolves against when it
+    was said, not when it is read), and where a roundup entry came from.
+    """
     parts = [
         f"Type: {log.action_type}",
         f"Date: {log.log_date}",
     ]
+    if log.direction:
+        parts.append(
+            "Direction: " + (
+                "inbound (they wrote to Jack)" if log.direction == "inbound"
+                else "outbound (Jack wrote to them)"
+            )
+        )
+    contact = log.contact
+    if contact is not None:
+        side = _SIDE_LABEL.get(contact.contact_type or "", contact.contact_type or "unknown")
+        works_at = f" at {contact.company.name}" if contact.company is not None else ""
+        parts.append(f"Person on this entry: {contact.name}{works_at} — {side}")
+    company = entry_company(log)
+    if company is not None:
+        parts.append(f"Entry is filed under company: {company.name}")
+    if log.source_note:
+        parts.append(f"Source: {log.source_note}")
     if log.subject:
         parts.append(f"Subject: {log.subject}")
     if log.action_taken:
@@ -148,10 +253,11 @@ def _extract_facts_via_llm(text: str, client=None) -> Dict[str, Dict[str, object
 
         client = anthropic.Anthropic(api_key=api_key)
 
-    guide = "\n".join(f"- {f}: {d}" for f, d in REQUIREMENT_FIELDS.items())
+    guide = "\n".join(f"- {f}: {d}" for f, d in EXTRACTED_FIELDS.items())
     response = client.messages.create(
         model=EXTRACTION_MODEL,
-        max_tokens=1500,
+        # 19 fields plus requirement_for; 1500 was sized for 14.
+        max_tokens=2500,
         system=_SYSTEM_PROMPT,
         tools=[_TOOL],
         tool_choice={"type": "tool", "name": "record_tenant_facts"},
@@ -159,8 +265,9 @@ def _extract_facts_via_llm(text: str, client=None) -> Dict[str, Dict[str, object
             "role": "user",
             "content": (
                 f"Fields:\n{guide}\n\n"
-                "Extract the tenant facts stated in this broker note. Return null "
-                "for anything not explicitly stated.\n\n"
+                "Extract the tenant facts and market information stated in this "
+                "broker note, and say whose requirement it is. Return null for "
+                "anything not explicitly stated.\n\n"
                 f"--- BROKER NOTE ---\n{text}"
             ),
         }],
@@ -177,9 +284,18 @@ def _extract_facts_via_llm(text: str, client=None) -> Dict[str, Dict[str, object
 
 
 def _normalize(raw: Dict[str, object]) -> Dict[str, Dict[str, object]]:
-    """Blank/"null"/"none" strings become real None so nothing fabricated is stored."""
+    """Blank/"null"/"none" strings become real None so nothing fabricated is stored.
+
+    requirement_for comes back under its own key, as {"kind", "tenant_name"}.
+    """
     out: Dict[str, Dict[str, object]] = {}
-    for field in REQUIREMENT_FIELDS:
+    subject = raw.get("requirement_for")
+    if isinstance(subject, dict):
+        out["requirement_for"] = {
+            "kind": subject.get("kind"),
+            "tenant_name": subject.get("tenant_name"),
+        }
+    for field in EXTRACTED_FIELDS:
         entry = raw.get(field) or {}
         if not isinstance(entry, dict):
             entry = {}
@@ -209,19 +325,31 @@ def mine_activity_log(
     parsed = fn(build_log_text(log))
 
     # Attach to the company when the log is linked to one, so facts enrich the
-    # company record; otherwise keep them addressable by the log itself.
+    # company record; otherwise keep them addressable by the log itself. Where
+    # a fact finally belongs is decided when Intel runs — the entry's stamp at
+    # that moment, or `about` below — so this is only where it is stored.
     if log.company_id:
         entity_type, entity_id = "company", log.company_id
     else:
         entity_type, entity_id = "activity_log", log.id
 
+    # Whose requirement the note states. Absent (an extractor that predates it)
+    # means the entry's company, exactly as before — and subject_for still
+    # refuses to file it under a counterparty's own firm.
+    subject = parsed.get("requirement_for") or {}
+    kind = subject.get("kind")
+    about, about_name = subject_for(
+        log, kind if kind in REQUIREMENT_KINDS else None, subject.get("tenant_name"),
+    )
+
     created: List[Observation] = []
-    for field in REQUIREMENT_FIELDS:
+    for field in EXTRACTED_FIELDS:
         row = parsed.get(field) or {}
         value = row.get("value")
         if value is None:
             continue
         auto = _should_auto_approve(field, str(value))
+        is_market = field in MARKET_FIELDS
         obs = Observation(
             entity_type=entity_type,
             entity_id=entity_id,
@@ -233,6 +361,8 @@ def mine_activity_log(
             source_snippet=row.get("snippet"),
             human_verified=auto,
             verified_by="auto" if auto else None,
+            about=ABOUT_MARKET if is_market else about,
+            about_name=None if is_market else about_name,
         )
         db.add(obs)
         created.append(obs)
@@ -373,6 +503,108 @@ def requeue_fuzzy_dates(db: Session) -> Dict[str, int]:
     return {"requeued": requeued, "unreadable": unreadable, "checked": len(rows)}
 
 
+def is_copy(log: ActivityLog) -> bool:
+    """A row that repeats a conversation logged elsewhere, or is not one.
+
+    A stage-change divider has no text of its own. One email writes a row per
+    participant: the first carries the bare message id and is the one mined;
+    every other direct recipient's row ("<id>#p12") and every Cc copy
+    (participation) holds the same words. Mining those tripled the facts.
+    """
+    if log.action_type == STAGE_CHANGE_ACTION or log.participation:
+        return True
+    return "#p" in (log.source_message_id or "")
+
+
+def is_mineable(log: ActivityLog) -> bool:
+    """Whether a mining run should read this entry now.
+
+    Archived entries wait rather than being marked done: unarchiving one puts
+    it straight back in line.
+    """
+    return not log.archived and not is_copy(log)
+
+
+def mineable_filters():
+    """is_mineable() as SQL, for counts that must not load every row."""
+    return (
+        ActivityLog.archived.isnot(True),
+        ActivityLog.participation.isnot(True),
+        ActivityLog.action_type != STAGE_CHANGE_ACTION,
+        or_(ActivityLog.source_message_id.is_(None),
+            ~ActivityLog.source_message_id.contains("#p")),
+    )
+
+
+def _drop_machine_facts(db: Session, log_id: int) -> int:
+    """Delete the machine-derived facts sourced to one entry. Facts Jack
+    verified, corrected, attached or dismissed are his and are kept."""
+    return (
+        db.query(Observation)
+        .filter(
+            Observation.source_doc == f"activity_log:{log_id}",
+            or_(Observation.verified_by.is_(None), Observation.verified_by != "human"),
+        )
+        .delete(synchronize_session=False)
+    )
+
+
+def sweep_copies(db: Session) -> Dict[str, int]:
+    """Clear facts mined from copies before copies were skipped, and mark every
+    copy as handled so it never counts as waiting.
+
+    Idempotent. Facts Jack touched are kept.
+    """
+    done = {
+        lid for (lid,) in
+        db.query(IntelActivityExtraction.activity_log_id)
+        .filter(IntelActivityExtraction.status == "skipped")
+        .all()
+    }
+    purged = marked = 0
+    for log in db.query(ActivityLog).all():
+        if not is_copy(log) or log.id in done:
+            continue
+        purged += _drop_machine_facts(db, log.id)
+        db.query(IntelActivityExtraction).filter(
+            IntelActivityExtraction.activity_log_id == log.id,
+        ).delete(synchronize_session=False)
+        db.add(IntelActivityExtraction(activity_log_id=log.id, status="skipped", fields_found=0))
+        marked += 1
+    db.commit()
+    return {"facts_purged": purged, "copies_marked": marked}
+
+
+def queue_remine(db: Session, *, contact_ids=(), company_ids=()) -> int:
+    """Put entries back in line for the next mining run.
+
+    Called when Jack changes who someone is. Whose requirement a note states
+    depends on whether the person on it is a tenant or a counterparty, so their
+    entries are read again — the next run replaces the machine facts and keeps
+    whatever Jack verified. Only the "already mined" marker is removed here; no
+    API call happens until he presses Mine. Does not commit.
+    """
+    contact_ids, company_ids = list(contact_ids), list(company_ids)
+    if not contact_ids and not company_ids:
+        return 0
+    conditions = []
+    if contact_ids:
+        conditions.append(ActivityLog.contact_id.in_(contact_ids))
+    if company_ids:
+        conditions.append(ActivityLog.company_stamp_id.in_(company_ids))
+    log_ids = [lid for (lid,) in db.query(ActivityLog.id).filter(or_(*conditions)).all()]
+    if not log_ids:
+        return 0
+    return (
+        db.query(IntelActivityExtraction)
+        .filter(
+            IntelActivityExtraction.activity_log_id.in_(log_ids),
+            IntelActivityExtraction.status != "skipped",
+        )
+        .delete(synchronize_session=False)
+    )
+
+
 def mine_all_activity_logs(
     db: Session,
     limit: Optional[int] = None,
@@ -382,8 +614,14 @@ def mine_all_activity_logs(
 ) -> Dict[str, int]:
     """Mine every not-yet-processed activity log. Idempotent by default.
 
+    Copies and dividers are never read (see is_copy); archived entries wait.
+    An entry read before — queued again because its text changed or its
+    person was reclassified — has its old machine facts replaced, not doubled.
+
     Returns counts: {processed, facts, skipped, failed}.
     """
+    sweep_copies(db)
+
     # Only logs that actually succeeded are "done". Failed ones (e.g. a transient
     # API error or an exhausted credit balance) must be retried on the next run,
     # otherwise a temporary outage would permanently skip them.
@@ -397,7 +635,7 @@ def mine_all_activity_logs(
         }
 
     query = db.query(ActivityLog).order_by(ActivityLog.id.asc())
-    logs = [l for l in query.all() if l.id not in done_ids]
+    logs = [l for l in query.all() if l.id not in done_ids and is_mineable(l)]
     skipped = len(done_ids)
     if limit is not None:
         logs = logs[:limit]
@@ -406,6 +644,7 @@ def mine_all_activity_logs(
     total = len(logs)
     for idx, log in enumerate(logs, start=1):
         try:
+            _drop_machine_facts(db, log.id)
             created = mine_activity_log(log, db, extractor=extractor)
             # Clear any earlier failed attempt so counts reflect reality.
             db.query(IntelActivityExtraction).filter(

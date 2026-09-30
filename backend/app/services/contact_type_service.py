@@ -144,6 +144,47 @@ def record_type_guess(contact: Optional[Contact], guess: Optional[str]) -> bool:
     return True
 
 
+def mark_firm(db: Session, company: Company, new_type: str) -> int:
+    """Set a firm's type, and give it to everyone there still unconfirmed.
+
+    Returns how many contacts changed. Anyone Jack already classified keeps
+    their type — a firm-wide decision never overwrites one made about a
+    person. Future contacts at the firm start with this type (initial_type_for).
+
+    Does not commit — the caller owns the transaction.
+    """
+    if new_type not in CONFIRMABLE_TYPES:
+        raise ValueError(f"firm type must be one of: {', '.join(CONFIRMABLE_TYPES)}")
+    company.company_type = new_type
+    # Sessions here run with autoflush off: without this, a contact the caller
+    # just confirmed still reads as unconfirmed and is counted as a change.
+    db.flush()
+    others = (
+        db.query(Contact)
+        .filter(
+            Contact.company_id == company.id,
+            Contact.contact_type == UNCONFIRMED_TYPE,
+        )
+        .all()
+    )
+    for other in others:
+        other.contact_type = new_type
+        other.suggested_type = None
+    # Whose requirements the firm's notes state depends on which side it is
+    # on, so those notes are read again on the next mining run.
+    _requeue(db, contact_ids=[o.id for o in others], company_ids=[company.id])
+    return len(others)
+
+
+def _requeue(db: Session, **kw) -> None:
+    """Put entries back in line for mining — see activity_intel_service."""
+    # Imported here: the miner imports the extraction stack, and this module
+    # is imported by contact_service, which everything imports.
+    from app.services.activity_intel_service import queue_remine
+
+    queue_remine(db, **kw)
+
+
 def confirm_type(
     db: Session, contact: Contact, new_type: str, *, apply_to_firm: bool = False,
 ) -> Dict[str, object]:
@@ -160,28 +201,18 @@ def confirm_type(
     if new_type not in CONFIRMABLE_TYPES:
         raise ValueError(f"contact_type must be one of: {', '.join(CONFIRMABLE_TYPES)}")
 
+    changed = contact.contact_type != new_type
     contact.contact_type = new_type
     contact.suggested_type = None
+    if changed:
+        _requeue(db, contact_ids=[contact.id])
 
     firm_updated = 0
     company = contact.company
     if apply_to_firm:
         if company is None:
             raise ValueError("This contact has no company to apply the type to.")
-        company.company_type = new_type
-        others = (
-            db.query(Contact)
-            .filter(
-                Contact.company_id == company.id,
-                Contact.id != contact.id,
-                Contact.contact_type == UNCONFIRMED_TYPE,
-            )
-            .all()
-        )
-        for other in others:
-            other.contact_type = new_type
-            other.suggested_type = None
-        firm_updated = len(others)
+        firm_updated = mark_firm(db, company, new_type)
 
     # What is left for the "apply to everyone at X?" offer. Only asked when
     # there is someone left to apply it to.

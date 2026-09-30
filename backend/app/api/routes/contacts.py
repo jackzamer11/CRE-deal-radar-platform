@@ -1460,10 +1460,18 @@ def update_contact(
         # writer, in the service, so the asymmetry is not re-derived per route.
         apply_closed_stage_bookkeeping(contact, payload.stage)
 
+    type_changed = (
+        payload.contact_type is not None and payload.contact_type != contact.contact_type
+    )
     for field in ("name", "phone", "title", "company_id", "contact_type", "responded"):
         value = getattr(payload, field)
         if value is not None:
             setattr(contact, field, value)
+    if type_changed:
+        # Whose requirements this person's notes state depends on which side
+        # they are on — read them again on the next mining run.
+        from app.services.activity_intel_service import queue_remine
+        queue_remine(db, contact_ids=[contact.id])
 
     if payload.clear_next_touch:
         contact.next_touch_date = None

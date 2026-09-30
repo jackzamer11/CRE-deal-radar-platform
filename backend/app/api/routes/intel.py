@@ -1,17 +1,24 @@
 import json
+from datetime import date
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models.activity import ActivityLog
+from app.models.company import Company
+from app.models.contact import Contact
 from app.models.intel import (
     IntelActivityExtraction, IntelCriterion, IntelFeedback, IntelOpportunity,
 )
+from app.models.observation import Observation
 from app.services.activity_intel_service import (
+    REQUIREMENT_FIELDS,
     mine_all_activity_logs,
+    mineable_filters,
     requeue_fuzzy_dates,
 )
 from app.services.document_extraction_service import MissingAPIKeyError
@@ -21,8 +28,29 @@ from app.services.intel_feedback_service import (
     save_criterion,
 )
 from app.services.intel_signal_service import generate_with_stats
+from app.services.requirement_subject import (
+    ABOUT_DISMISSED, ABOUT_MARKET, ABOUT_NAMED, ABOUT_UNASSIGNED, NameResolver,
+    counterparty_side_log_ids,
+)
 
 router = APIRouter(prefix="/intel", tags=["intel"])
+
+# How a held or market fact reads on screen.
+REQUIREMENT_LABELS = {
+    "req_sf_min": "Min SF", "req_sf_max": "Max SF", "req_submarkets": "Submarkets",
+    "req_budget_max_psf": "Budget", "req_lease_term_years": "Term",
+    "req_must_haves": "Must-haves", "req_access_needs": "Access",
+    "req_buildout_willingness": "Buildout", "req_ti_expectation": "TI",
+    "req_timing": "Timing", "req_space_type": "Space type",
+    "expiration_date": "Lease expires", "contact_name": "Contact",
+    "contact_email": "Email",
+}
+CONTACT_ONLY_FIELDS = {"contact_name", "contact_email"}
+MARKET_LABELS = {
+    "mkt_property": "Property", "mkt_available_sf": "Available",
+    "mkt_asking_rent": "Asking rent", "mkt_concessions": "Concessions",
+    "mkt_notes": "Note",
+}
 
 
 class IntelOpportunityOut(BaseModel):
@@ -35,6 +63,10 @@ class IntelOpportunityOut(BaseModel):
     signals: list = []
     surfaced_at: str
     status: str
+    # The lease cycle a lease card is about ("2027-08"), and for a deferred
+    # card, the day it comes back.
+    cycle: Optional[str] = None
+    resurface_at: Optional[date] = None
 
     class Config:
         from_attributes = True
@@ -55,6 +87,8 @@ def _to_out(opp: IntelOpportunity) -> IntelOpportunityOut:
         signals=signals,
         surfaced_at=opp.surfaced_at.isoformat() if opp.surfaced_at else "",
         status=opp.status,
+        cycle=opp.cycle,
+        resurface_at=opp.resurface_at,
     )
 
 
@@ -107,6 +141,8 @@ class DispositionIn(BaseModel):
     disposition: str                       # accepted / rejected / deferred
     reason_category: Optional[str] = None  # required for reject/defer
     reason_text: Optional[str] = None
+    # Deferrals only: the day the card comes back. Defaults to 30 days out.
+    resurface_at: Optional[date] = None
 
 
 class DispositionOut(BaseModel):
@@ -144,6 +180,7 @@ def disposition(opportunity_id: int, payload: DispositionIn, db: Session = Depen
         opp, suggested = disposition_opportunity(
             db, opportunity_id, payload.disposition,
             payload.reason_category, payload.reason_text,
+            resurface_at=payload.resurface_at,
         )
     except FeedbackError as exc:
         # "Opportunity not found" → 404; validation problems → 400.
@@ -233,10 +270,21 @@ def requeue_dates(db: Session = Depends(get_db)):
 
 @router.get("/activity/status", response_model=ActivityStatusOut)
 def activity_status(db: Session = Depends(get_db)):
-    """How much of the activity log has been turned into structured facts."""
-    total = db.query(ActivityLog).count()
-    rows = db.query(IntelActivityExtraction).all()
+    """How much of the activity log has been turned into structured facts.
+
+    Counts only entries a run would read: copies of an email, stage dividers
+    and archived entries are not waiting for anything, and counting them kept
+    "Mine 95 logs" on screen forever.
+    """
+    mineable_ids = {
+        lid for (lid,) in db.query(ActivityLog.id).filter(*mineable_filters()).all()
+    }
+    rows = [
+        r for r in db.query(IntelActivityExtraction).all()
+        if r.activity_log_id in mineable_ids
+    ]
     mined = len({r.activity_log_id for r in rows})
+    total = len(mineable_ids)
     return ActivityStatusOut(
         total_logs=total,
         mined=mined,
@@ -244,6 +292,284 @@ def activity_status(db: Session = Depends(get_db)):
         facts_extracted=sum(r.fields_found for r in rows),
         failed=sum(1 for r in rows if r.status == "failed"),
     )
+
+
+# ── Requirements waiting for a tenant ────────────────────────────────────────
+# A note can state a client's requirement without saying which client — Jack
+# asking a landlord's broker about "a tenant seeking 500-600 sqft". Those facts
+# are kept, not filed under the brokerage, and wait here until Jack says whose
+# they are. See services/requirement_subject.py.
+
+class HeldFactOut(BaseModel):
+    id: int
+    field: str
+    label: str
+    value: Optional[str] = None
+    snippet: Optional[str] = None
+
+
+class HeldRequirementOut(BaseModel):
+    """Everything one entry said about a client it did not name."""
+    entry_id: int
+    log_date: Optional[date] = None
+    direction: Optional[str] = None
+    summary: str
+    contact_name: Optional[str] = None
+    contact_company: Optional[str] = None
+    # The name the note gave, when it gave one no single company matches.
+    said_name: Optional[str] = None
+    facts: List[HeldFactOut]
+
+
+class AssignIn(BaseModel):
+    """Exactly one: a company (a tenant) or a person (anyone — a counterparty,
+    an investor, a tenant contact)."""
+    company_id: Optional[int] = None
+    contact_id: Optional[int] = None
+
+
+def _entry_id(obs: Observation) -> Optional[int]:
+    try:
+        return int(str(obs.source_doc).split(":", 1)[1])
+    except (ValueError, IndexError):
+        return None
+
+
+def _held_facts(db: Session, entry_id: Optional[int] = None) -> List[Observation]:
+    """Unattached requirement facts waiting for a tenant.
+
+    Marked unassigned or named by the miner — or mined before it said, and
+    from an entry filed under a counterparty's own firm (the same rule Intel
+    applies to those; see counterparty_side_log_ids).
+    """
+    query = (
+        db.query(Observation)
+        .filter(
+            Observation.superseded_by_id.is_(None),
+            Observation.assigned_company_id.is_(None),
+            Observation.assigned_contact_id.is_(None),
+            or_(Observation.about.in_((ABOUT_UNASSIGNED, ABOUT_NAMED)),
+                Observation.about.is_(None)),
+            Observation.source_doc.like("activity_log:%"),
+            Observation.field.in_(list(REQUIREMENT_FIELDS)),
+        )
+    )
+    if entry_id is not None:
+        query = query.filter(Observation.source_doc == f"activity_log:{entry_id}")
+    rows = query.all()
+    legacy = counterparty_side_log_ids(
+        db, [eid for eid in (_entry_id(o) for o in rows if o.about is None) if eid]
+    )
+    return [o for o in rows if o.about is not None or _entry_id(o) in legacy]
+
+
+def _entry_facts(db: Session, entry_id: int) -> List[Observation]:
+    return _held_facts(db, entry_id)
+
+
+@router.get("/unassigned-requirements", response_model=List[HeldRequirementOut])
+def unassigned_requirements(db: Session = Depends(get_db)):
+    """Requirements waiting for Jack to say which tenant they belong to,
+    grouped by the entry that stated them, newest first.
+
+    A fact naming a tenant is held only while no single company matches the
+    name — the same resolver Intel uses, so a fact is never both on a card and
+    in this list.
+    """
+    resolver = NameResolver(db)
+    by_entry: dict = {}
+    for obs in _held_facts(db):
+        if obs.about == ABOUT_NAMED and resolver.resolve(obs.about_name) is not None:
+            continue
+        entry_id = _entry_id(obs)
+        if entry_id is None:
+            continue
+        by_entry.setdefault(entry_id, []).append(obs)
+    if not by_entry:
+        return []
+
+    logs = {
+        log.id: log for log in
+        db.query(ActivityLog).filter(ActivityLog.id.in_(list(by_entry))).all()
+    }
+    out: List[HeldRequirementOut] = []
+    for entry_id, facts in by_entry.items():
+        log = logs.get(entry_id)
+        if log is None or log.archived:
+            continue
+        # A name or an address is not a requirement. An entry that stated only
+        # who the client is has nothing to attach; the names stay on the entry
+        # as hints when there IS something to attach.
+        if not any(o.field not in CONTACT_ONLY_FIELDS for o in facts):
+            continue
+        contact = log.contact
+        said = next((o.about_name for o in facts if o.about_name), None)
+        # One line per field: the same fact restated in a note is one fact.
+        seen: set = set()
+        rows: List[HeldFactOut] = []
+        for obs in sorted(facts, key=lambda o: list(REQUIREMENT_FIELDS).index(o.field)):
+            key = (obs.field, (obs.value or "").strip().casefold())
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append(HeldFactOut(
+                id=obs.id, field=obs.field,
+                label=REQUIREMENT_LABELS.get(obs.field, obs.field),
+                value=obs.value, snippet=obs.source_snippet,
+            ))
+        out.append(HeldRequirementOut(
+            entry_id=entry_id, log_date=log.log_date, direction=log.direction,
+            summary=log.action_taken or "",
+            contact_name=contact.name if contact is not None else None,
+            contact_company=(contact.company.name
+                             if contact is not None and contact.company is not None else None),
+            said_name=said, facts=rows,
+        ))
+    out.sort(key=lambda h: (h.log_date or date.min, h.entry_id), reverse=True)
+    return out
+
+
+@router.post("/unassigned-requirements/{entry_id}/assign")
+def assign_requirement(entry_id: int, payload: AssignIn, db: Session = Depends(get_db)):
+    """This entry's held requirement belongs to this company, or this person.
+
+    A company is a tenant: the requirement joins its Intel card. A person can
+    be anyone. A tenant contact at a company joins that company's card; a
+    counterparty, or someone with no company (an investor, a buyer), keeps it
+    on their own page — see /intel/attached-requirements.
+
+    Marked as Jack's judgement (verified_by="human"), so re-mining the entry
+    keeps the answer instead of asking again.
+    """
+    if (payload.company_id is None) == (payload.contact_id is None):
+        raise HTTPException(status_code=400, detail="Pick a company or a person — one of them.")
+    if payload.company_id is not None:
+        if db.query(Company.id).filter(Company.id == payload.company_id).first() is None:
+            raise HTTPException(status_code=404, detail="Company not found")
+    elif db.query(Contact.id).filter(Contact.id == payload.contact_id).first() is None:
+        raise HTTPException(status_code=404, detail="Contact not found")
+    facts = _entry_facts(db, entry_id)
+    if not facts:
+        raise HTTPException(status_code=404, detail="Nothing is waiting on that entry")
+    for obs in facts:
+        obs.assigned_company_id = payload.company_id
+        obs.assigned_contact_id = payload.contact_id
+        obs.human_verified = True
+        obs.verified_by = "human"
+    db.commit()
+    return {"entry_id": entry_id, "company_id": payload.company_id,
+            "contact_id": payload.contact_id, "facts": len(facts)}
+
+
+class AttachedRequirementOut(BaseModel):
+    id: int
+    entry_id: int
+    log_date: Optional[date] = None
+    field: str
+    label: str
+    value: Optional[str] = None
+    snippet: Optional[str] = None
+
+
+@router.get("/attached-requirements", response_model=List[AttachedRequirementOut])
+def attached_requirements(contact_id: int, db: Session = Depends(get_db)):
+    """Requirements Jack attached to this person, newest first.
+
+    Where a counterparty's or an investor's stated needs live — they are not a
+    tenant card, but they are not lost either.
+    """
+    rows = (
+        db.query(Observation)
+        .filter(
+            Observation.superseded_by_id.is_(None),
+            Observation.assigned_contact_id == contact_id,
+        )
+        .all()
+    )
+    entry_ids = [eid for eid in (_entry_id(o) for o in rows) if eid]
+    dates = dict(
+        db.query(ActivityLog.id, ActivityLog.log_date)
+        .filter(ActivityLog.id.in_(entry_ids)).all()
+    ) if entry_ids else {}
+    out: List[AttachedRequirementOut] = []
+    seen: set = set()
+    for obs in rows:
+        key = (obs.field, (obs.value or "").strip().casefold())
+        if key in seen:
+            continue
+        seen.add(key)
+        eid = _entry_id(obs)
+        out.append(AttachedRequirementOut(
+            id=obs.id, entry_id=eid or 0, log_date=dates.get(eid),
+            field=obs.field, label=REQUIREMENT_LABELS.get(obs.field, obs.field),
+            value=obs.value, snippet=obs.source_snippet,
+        ))
+    out.sort(key=lambda r: (r.log_date or date.min, r.entry_id), reverse=True)
+    return out
+
+
+@router.post("/unassigned-requirements/{entry_id}/dismiss")
+def dismiss_requirement(entry_id: int, db: Session = Depends(get_db)):
+    """Not a requirement after all. Kept, marked, and never asked about again."""
+    facts = _entry_facts(db, entry_id)
+    if not facts:
+        raise HTTPException(status_code=404, detail="Nothing is waiting on that entry")
+    for obs in facts:
+        obs.about = ABOUT_DISMISSED
+        obs.human_verified = True
+        obs.verified_by = "human"
+    db.commit()
+    return {"entry_id": entry_id, "facts": len(facts)}
+
+
+# ── What brokers and landlords said about the market ─────────────────────────
+
+class MarketFactOut(BaseModel):
+    id: int
+    entry_id: int
+    log_date: Optional[date] = None
+    field: str
+    label: str
+    value: Optional[str] = None
+    snippet: Optional[str] = None
+
+
+@router.get("/market-facts", response_model=List[MarketFactOut])
+def market_facts(contact_id: int, db: Session = Depends(get_db)):
+    """Space and market information from one person's entries, newest first.
+
+    Reference only: it drives no card and never reaches outreach copy.
+    """
+    logs = {
+        log.id: log for log in
+        db.query(ActivityLog).filter(ActivityLog.contact_id == contact_id).all()
+    }
+    if not logs:
+        return []
+    sources = [f"activity_log:{lid}" for lid in logs]
+    out: List[MarketFactOut] = []
+    seen: set = set()
+    for obs in (
+        db.query(Observation)
+        .filter(
+            Observation.superseded_by_id.is_(None),
+            Observation.about == ABOUT_MARKET,
+            Observation.source_doc.in_(sources),
+        )
+        .all()
+    ):
+        entry_id = int(str(obs.source_doc).split(":", 1)[1])
+        key = (obs.field, (obs.value or "").strip().casefold())
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(MarketFactOut(
+            id=obs.id, entry_id=entry_id, log_date=logs[entry_id].log_date,
+            field=obs.field, label=MARKET_LABELS.get(obs.field, obs.field),
+            value=obs.value, snippet=obs.source_snippet,
+        ))
+    out.sort(key=lambda m: (m.log_date or date.min, m.entry_id), reverse=True)
+    return out
 
 
 @router.get("/criteria", response_model=List[CriterionOut])

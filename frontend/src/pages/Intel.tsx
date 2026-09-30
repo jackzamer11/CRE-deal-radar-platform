@@ -19,15 +19,46 @@ const SIGNAL_META: Record<string, { label: string; icon: React.ElementType; colo
   stated_requirement:     { label: 'Stated Requirement', icon: Target,       color: 'text-blue-400 bg-blue-500/10 border-blue-500/30' },
 }
 
-// Reason categories for reject/defer (one tap).
-const REASON_CATEGORIES: { value: string; label: string }[] = [
+// Reason categories for reject/defer (one tap). "Not a tenant" is reject-only:
+// it is permanent, and marks the firm a counterparty so nothing tenant-side is
+// ever made for it again.
+const REASON_CATEGORIES: { value: string; label: string; rejectOnly?: boolean }[] = [
   { value: 'durable_policy', label: 'Standing policy' },
   { value: 'conditional',    label: 'Conditional' },
   { value: 'relational',     label: 'Relationship' },
   { value: 'timing',         label: 'Timing' },
   { value: 'already_known',  label: 'Already known' },
+  { value: 'not_a_tenant',   label: 'Not a tenant — never show again', rejectOnly: true },
   { value: 'other',          label: 'Other' },
 ]
+
+// What a decision covers, said where it is made — so rejecting a lease card
+// never reads as "gone forever".
+const DECISION_SCOPE: Record<IntelDisposition, string> = {
+  accepted: '',
+  rejected: 'Hidden for this lease (a requirement card: until they say something new). ' +
+            'Their next lease comes back as a new card.',
+  deferred: 'Comes back on the date you pick.',
+}
+
+// Quick picks for a deferral's return date.
+const DEFER_DAYS = [14, 30, 60, 90]
+
+// Local calendar date, n days out, as YYYY-MM-DD. Built from local parts, not
+// toISOString(): in the evening Eastern time that would already be tomorrow.
+const isoIn = (days: number) => {
+  const d = new Date()
+  d.setDate(d.getDate() + days)
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+}
+
+const fmtDay = (iso: string) =>
+  new Date(iso + 'T00:00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
+
+// "2027-08" -> "Aug 2027"
+const fmtCycle = (cycle: string) =>
+  new Date(cycle + '-01T00:00:00').toLocaleDateString(undefined, { month: 'short', year: 'numeric' })
 
 const DISPOSITION_STYLE: Record<string, string> = {
   accepted: 'text-emerald-400 bg-emerald-500/10 border-emerald-500/30',
@@ -39,14 +70,16 @@ const DISPOSITION_STYLE: Record<string, string> = {
 
 // Link an opportunity's evidence to where the fact actually came from:
 // the source note in the Activity Log, else the Review queue.
-function evidenceLink(opp: IntelOpportunity): { href: string; label: string } {
+// A card whose date came from a lease or the company record has no note to
+// open; its "Date from" line says where the date came from instead.
+function evidenceLink(opp: IntelOpportunity): { href: string; label: string } | null {
   const src = opp.signals[0]?.source_doc
   if (src && src.startsWith('activity_log:')) {
     const logId = src.split(':')[1]
     return { href: `/activity?focus=${logId}`, label: 'View source note' }
   }
   if (src) return { href: '/review', label: `View evidence (${src})` }
-  return { href: '/review', label: 'View evidence' }
+  return null
 }
 
 function primarySignal(opp: IntelOpportunity): string {
@@ -75,18 +108,24 @@ function OppCard({
   const [reasonFor, setReasonFor] = useState<IntelDisposition | null>(null)
   const [category, setCategory] = useState<string | null>(null)
   const [text, setText] = useState('')
+  const [backOn, setBackOn] = useState(isoIn(30))
   const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const sig = opp.signals[0]
 
   const submit = async (disposition: IntelDisposition, reasonCategory?: string) => {
     setBusy(true)
+    setError(null)
     try {
       const res = await dispositionIntelOpportunity(opp.id, {
         disposition,
         reason_category: reasonCategory,
         reason_text: text.trim() || undefined,
+        resurface_at: disposition === 'deferred' ? backOn : undefined,
       })
       onDispositioned(opp.id, res.suggested_rule)
-    } catch {
+    } catch (e: any) {
+      setError(e?.response?.data?.detail ?? 'Could not save that decision.')
       setBusy(false)
     }
   }
@@ -97,7 +136,14 @@ function OppCard({
         <div className="min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
             <SignalBadge opp={opp} />
-            <span className="text-[10px] text-ink-muted">{opp.entity_type} #{opp.entity_id}</span>
+            {opp.cycle && (
+              <span className="text-[10px] text-ink-muted" title="A decision on this card covers this lease only">
+                lease ending {fmtCycle(opp.cycle)}
+              </span>
+            )}
+            {sig?.contact_name && (
+              <span className="text-[10px] text-ink-secondary">· {sig.contact_name}</span>
+            )}
           </div>
           <div className="mt-1.5 text-sm font-bold text-ink-primary">{opp.title}</div>
         </div>
@@ -111,6 +157,23 @@ function OppCard({
         <p className="mt-2.5 text-xs text-ink-secondary leading-relaxed">{opp.rationale}</p>
       )}
 
+      {/* Where the date came from, and anyone who disagrees. A conflict is
+          shown, never silently resolved. */}
+      {sig?.expiry_source && (
+        <p className="mt-1.5 text-[10px] text-ink-muted">
+          Date from: <span className="text-ink-secondary">{sig.expiry_source}</span>
+        </p>
+      )}
+      {sig?.conflicts && sig.conflicts.length > 0 && (
+        <div className="mt-1.5 text-[10px] text-amber-300/90 flex items-start gap-1">
+          <AlertTriangle size={11} className="flex-shrink-0 mt-px" />
+          <span>
+            Sources disagree:{' '}
+            {sig.conflicts.map(c => `${c.source} says ${fmtDay(c.date)}`).join('; ')}
+          </span>
+        </div>
+      )}
+
       {/* The tenant's own words. A card you can judge without leaving the page. */}
       {opp.signals[0]?.source_snippet && (
         <p className="mt-2 text-[11px] italic text-ink-muted leading-snug border-l-2
@@ -122,7 +185,7 @@ function OppCard({
       <div className="mt-2 flex items-center gap-3 flex-wrap">
         {(() => {
           const ev = evidenceLink(opp)
-          return (
+          return ev && (
             <a href={ev.href} className="text-[10px] text-accent-blue hover:underline flex items-center gap-1">
               {ev.label} <ArrowRight size={11} />
             </a>
@@ -171,8 +234,9 @@ function OppCard({
               <X size={13} />
             </button>
           </div>
+          <p className="text-[10px] text-ink-muted">{DECISION_SCOPE[reasonFor]}</p>
           <div className="flex flex-wrap gap-1.5">
-            {REASON_CATEGORIES.map(rc => (
+            {REASON_CATEGORIES.filter(rc => !rc.rejectOnly || reasonFor === 'rejected').map(rc => (
               <button
                 key={rc.value}
                 onClick={() => setCategory(rc.value)}
@@ -185,6 +249,31 @@ function OppCard({
               </button>
             ))}
           </div>
+          {reasonFor === 'deferred' && (
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <span className="text-[10px] text-ink-muted">Bring it back on</span>
+              {DEFER_DAYS.map(d => (
+                <button
+                  key={d}
+                  onClick={() => setBackOn(isoIn(d))}
+                  className={`text-[10px] px-2 py-0.5 rounded-full border font-semibold
+                    ${backOn === isoIn(d)
+                      ? 'bg-accent-blue/20 text-accent-blue border-accent-blue/50'
+                      : 'bg-surface-muted text-ink-muted border-surface-border hover:text-ink-secondary'}`}
+                >
+                  {d}d
+                </button>
+              ))}
+              <input
+                type="date"
+                value={backOn}
+                min={isoIn(1)}
+                onChange={e => setBackOn(e.target.value)}
+                className="text-[10px] bg-surface-muted border border-surface-border rounded-lg px-2 py-0.5
+                           text-ink-primary focus:outline-none focus:border-accent-blue/50"
+              />
+            </div>
+          )}
           <input
             value={text}
             onChange={e => setText(e.target.value)}
@@ -200,6 +289,7 @@ function OppCard({
           >
             {busy ? 'Saving…' : `Confirm ${reasonFor === 'rejected' ? 'Reject' : 'Defer'}`}
           </button>
+          {error && <p className="text-[10px] text-red-400">{error}</p>}
         </div>
       )}
     </div>
@@ -217,7 +307,12 @@ function HistoryCard({ item }: { item: IntelHistoryItem }) {
             <span className={`text-[10px] px-2 py-0.5 rounded-full border font-semibold capitalize ${DISPOSITION_STYLE[disp] ?? ''}`}>
               {disp}
             </span>
-            <span className="text-[10px] text-ink-muted">{item.entity_type} #{item.entity_id}</span>
+            {disp === 'deferred' && item.resurface_at && (
+              <span className="text-[10px] text-amber-300/90">back {fmtDay(item.resurface_at)}</span>
+            )}
+            {item.cycle && (
+              <span className="text-[10px] text-ink-muted">lease ending {fmtCycle(item.cycle)}</span>
+            )}
           </div>
           <div className="mt-1.5 text-sm font-semibold text-ink-primary">{item.title}</div>
         </div>
@@ -389,8 +484,9 @@ export default function IntelPage() {
       {tab === 'open' && (
         <p className="text-[11px] text-ink-muted mb-5 leading-relaxed">
           Ranked from lease dates and stated tenant requirements using rules only — no AI scoring.
-          Lease timing is scored highest across the 6–9 month pre-expiry window.
-          Every accept/reject/defer is recorded with its reason.
+          Lease timing is scored highest across the 6–9 month pre-expiry window. One card per
+          company, dated from the most trustworthy source you have. A decision covers that
+          lease only — the next one comes back as a new card.
         </p>
       )}
 

@@ -928,6 +928,63 @@ export interface ObservationFilters {
   human_verified?: boolean
 }
 
+// ── Requirements waiting for a tenant ───────────────────────────────────────
+// A note can state a client's requirement without naming the client — Jack
+// asking a landlord's broker about "a tenant seeking 500-600 sqft". Those facts
+// wait here until Jack says whose they are; they are never filed under the
+// brokerage.
+export interface HeldFact {
+  id: number
+  field: string
+  label: string
+  value: string | null
+  snippet: string | null
+}
+
+export interface HeldRequirement {
+  entry_id: number
+  log_date: string | null
+  direction: string | null
+  summary: string
+  contact_name: string | null
+  contact_company: string | null
+  // The name the note gave, when no single company matches it.
+  said_name: string | null
+  facts: HeldFact[]
+}
+
+export const getUnassignedRequirements = (): Promise<HeldRequirement[]> =>
+  api.get('/intel/unassigned-requirements').then(r => r.data)
+
+// Attach to a company (a tenant: joins its Intel card) or to a person (anyone —
+// a counterparty or an investor keeps it on their own page).
+export type AttachTarget = { company_id: number } | { contact_id: number }
+
+export const assignRequirement = (entryId: number, target: AttachTarget) =>
+  api.post(`/intel/unassigned-requirements/${entryId}/assign`, target).then(r => r.data)
+
+// Requirements Jack attached to this person.
+export const getAttachedRequirements = (contactId: number): Promise<MarketFact[]> =>
+  api.get('/intel/attached-requirements', { params: { contact_id: contactId } }).then(r => r.data)
+
+export const dismissRequirement = (entryId: number) =>
+  api.post(`/intel/unassigned-requirements/${entryId}/dismiss`).then(r => r.data)
+
+// What a broker or landlord said about space and the market. Reference only:
+// it drives no card and never reaches outreach copy.
+export interface MarketFact {
+  id: number
+  entry_id: number
+  log_date: string | null
+  field: string
+  label: string
+  value: string | null
+  snippet: string | null
+}
+
+export const getMarketFacts = (contactId: number): Promise<MarketFact[]> =>
+  api.get('/intel/market-facts', { params: { contact_id: contactId } }).then(r => r.data)
+
 export const getObservations = (filters?: ObservationFilters): Promise<Observation[]> =>
   api.get('/observations/', { params: filters }).then(r => r.data)
 
@@ -957,7 +1014,13 @@ export const getIntelOpportunities = (status = 'open'): Promise<IntelOpportunity
 
 export const dispositionIntelOpportunity = (
   opportunityId: number,
-  payload: { disposition: IntelDisposition; reason_category?: string; reason_text?: string },
+  payload: {
+    disposition: IntelDisposition
+    reason_category?: string
+    reason_text?: string
+    // Deferrals only: the day the card comes back (default 30 days out).
+    resurface_at?: string
+  },
 ): Promise<IntelDispositionResult> =>
   api.post(`/intel/opportunities/${opportunityId}/disposition`, payload).then(r => r.data)
 
