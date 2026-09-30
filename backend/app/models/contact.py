@@ -29,8 +29,17 @@ CONTACT_STAGES = [
 CLOSED_STAGE = "Closed"
 
 # owner is defined here so the owner side never needs a second migration; only
-# tenant and counterparty surface in the UI this build.
-CONTACT_TYPES = ["tenant", "counterparty", "owner"]
+# tenant, counterparty and unconfirmed surface in the UI this build.
+#
+# unconfirmed is what the email automation creates: an address alone cannot say
+# whether someone is a tenant or a broker, and defaulting to "tenant" filed 190
+# brokers, landlords and property managers as tenants. It is a type of its own,
+# not a flag beside tenant, so every check that means "a tenant" (== "tenant")
+# excludes an unknown person without having to know this value exists.
+UNCONFIRMED_TYPE = "unconfirmed"
+CONTACT_TYPES = ["tenant", "counterparty", "owner", UNCONFIRMED_TYPE]
+# What Jack confirms an unconfirmed contact AS, and what a firm can be marked.
+CONFIRMABLE_TYPES = ["tenant", "counterparty"]
 
 
 class Contact(Base):
@@ -60,6 +69,13 @@ class Contact(Base):
     contact_type = Column(
         String, nullable=False, default="tenant", server_default=text("'tenant'"),
     )
+
+    # The email automation's read of who this person is — "tenant" or
+    # "counterparty" — from the whole email, signature included ("Senior VP,
+    # Avison Young"). A SUGGESTION only: it pre-selects a button on an
+    # unconfirmed contact and never sets contact_type. See
+    # services/contact_type_service.py.
+    suggested_type = Column(String, nullable=True)
 
     stage = Column(
         String, nullable=False, default="Sent", server_default=text("'Sent'"),

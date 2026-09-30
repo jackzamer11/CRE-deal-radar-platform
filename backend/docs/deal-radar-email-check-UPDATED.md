@@ -89,6 +89,24 @@ Do NOT send contact_name, property_address, or company_name — those are not
 create-time inputs. The contact comes from from_email/from_name; the company is
 resolved from the email domain.
 
+WHO THE PERSON IS — optional, but send it whenever you can tell:
+  primary_contact_type_guess: "tenant" | "counterparty"
+  (and inside a deal: contact_type_guess, for the contact that deal names)
+
+A new contact is created as "unconfirmed" — an address alone cannot say
+whether someone is a tenant or a broker. You read the whole email, signature
+included, so you are the best judge available. Send your read of the person who
+owns the entry (the sender on an inbound mail, the first To recipient on an
+outbound one):
+- "counterparty" — a landlord or tenant-rep BROKER, a landlord, a property
+  manager, a lender, a leasing agent. Signatures like "Senior Vice President,
+  Avison Young", "Leasing Manager, Simpson Properties".
+- "tenant" — a business that occupies or is looking for space: the practice
+  manager, the owner, the office manager, the CFO of the company that leases.
+- Omit the field when you genuinely cannot tell. Never guess to fill it.
+It is a SUGGESTION: it pre-selects a button Jack clicks, and never sets the
+type on its own. Anything other than the two values above is ignored.
+
 STEP 1 — Build the dedup set:
 Fetch GET /api/activity/message-ids via the browser as described above. It
 returns a flat array of the source_message_id values already logged, read

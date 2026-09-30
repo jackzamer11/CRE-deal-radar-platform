@@ -386,13 +386,22 @@ export interface ActivityLog {
 // A Contact owns its pipeline stage and next-touch date; entries attach to it.
 
 // owner exists in the backend so the owner side never needs a second
-// migration, but only tenant and counterparty surface in the UI this build.
-export type ContactType = 'tenant' | 'counterparty' | 'owner'
+// migration, but it never surfaces in the UI this build.
+//
+// unconfirmed is what the email automation creates: an address alone cannot
+// say whether someone is a tenant or a broker. It is never picked in a form —
+// Jack confirms it away (see TypeConfirm) — so UI_CONTACT_TYPES, the choices a
+// form offers, stays tenant and counterparty.
+export type ContactType = 'tenant' | 'counterparty' | 'owner' | 'unconfirmed'
 export const UI_CONTACT_TYPES: ContactType[] = ['tenant', 'counterparty']
+// The By Contact list filters, which do include unconfirmed.
+export const FILTER_CONTACT_TYPES: ContactType[] = ['tenant', 'counterparty', 'unconfirmed']
+export type ConfirmableType = 'tenant' | 'counterparty'
 export const CONTACT_TYPE_LABELS: Record<ContactType, string> = {
   tenant:       'Tenant',
   counterparty: 'Counterparty',
   owner:        'Owner',
+  unconfirmed:  'Unconfirmed',
 }
 
 export type Direction = 'outbound' | 'inbound'
@@ -422,6 +431,10 @@ export interface Contact {
   triaged: boolean
   auto_created: boolean
   company_name: string | null
+  // Only on an unconfirmed contact: what to pre-select, and why. A suggestion —
+  // the type changes only when Jack confirms it.
+  suggested_type: ConfirmableType | null
+  suggested_type_reason: string | null
 }
 
 export interface ContactListRow {
@@ -462,6 +475,9 @@ export interface ContactListRow {
   latest_entry_id: number | null
   latest_entry_summary: string | null
   latest_entry_channel: Channel | null
+  // Only on an unconfirmed contact — see Contact.
+  suggested_type: ConfirmableType | null
+  suggested_type_reason: string | null
 }
 
 // One card in the By Contact list for a company holding entries that are not

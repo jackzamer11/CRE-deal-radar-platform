@@ -31,6 +31,7 @@ from app.services.contact_service import (
     email_domain_of, mark_engaged, normalize_email, resolve_companies_by_names,
     resolve_company_for_email, resolve_or_create_contact,
 )
+from app.services.contact_type_service import record_type_guess
 from app.services.contactless_service import (
     company_key_column, contactless_filters, move_company_entries_to_contact,
     move_entry_to_contact, needs_contact_count, not_archived,
@@ -688,6 +689,9 @@ class EmailDeal(BaseModel):
     #   neither → the sender.
     contact_email: Optional[str] = None
     contact_name: Optional[str] = None
+    # "tenant" or "counterparty": the task's read of the deal's named contact.
+    # A suggestion only — see primary_contact_type_guess below.
+    contact_type_guess: Optional[str] = None
 
     disc_current_rent_psf:  Optional[float] = None
     disc_current_sf:        Optional[int]   = None
@@ -752,6 +756,13 @@ class ActivityFromEmail(BaseModel):
     # Set on the contact ONLY when the email named a specific day. The task does
     # not send this otherwise, and nothing here infers one.
     next_touch_date: Optional[date] = None
+
+    # "tenant" or "counterparty": the task's read of the person who owns this
+    # entry — the sender on an inbound mail, the first To recipient on an
+    # outbound one — from the whole email, signature included. Stored as a
+    # SUGGESTION on a contact who is still unconfirmed; it never sets their
+    # type, and anything else is dropped rather than failing the email.
+    primary_contact_type_guess: Optional[str] = None
 
     # Written-to versus copied. See the `participation` column on ActivityLog.
     to_recipients: List[EmailRecipient] = []
@@ -942,7 +953,7 @@ class _DealSpec:
     __slots__ = (
         "company_override", "company_override_id", "action_taken", "source_note",
         "discovery", "proposed_company_updates", "facts",
-        "contact_email", "contact_name",
+        "contact_email", "contact_name", "contact_type_guess",
     )
 
     def __init__(self, source, source_note: Optional[str]):
@@ -956,6 +967,7 @@ class _DealSpec:
         # Only a deal names its own contact; a plain email has none.
         self.contact_email = normalize_email(getattr(source, "contact_email", None))
         self.contact_name = (getattr(source, "contact_name", None) or "").strip() or None
+        self.contact_type_guess = getattr(source, "contact_type_guess", None)
 
 
 def _deal_specs(payload: ActivityFromEmail) -> List[_DealSpec]:
@@ -1164,6 +1176,8 @@ def create_activity_from_email(
             people.append((index, person, contact, own_company))
 
         primary_contact = people[0][2] if people else None
+        # Advisory only: pre-selects a button on an unconfirmed contact.
+        record_type_guess(primary_contact, payload.primary_contact_type_guess)
         log_date = payload.sent_at or date.today()
         sender_email = normalize_email(payload.from_email)
         # Every row a `deals` payload writes is marked, including recipients'.
@@ -1230,6 +1244,7 @@ def create_activity_from_email(
             ignored_contact_email = (
                 spec.contact_email if spec.contact_email and deal_contact is None else None
             )
+            record_type_guess(deal_contact, spec.contact_type_guess)
             if (deal_contact is not None and primary_contact is not None
                     and deal_contact.id == primary_contact.id):
                 # The deal names the sender — that is simply today's path.

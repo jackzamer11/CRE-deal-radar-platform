@@ -35,6 +35,9 @@ from app.services.contact_service import (
     record_stage_change, remove_contact_address, resolve_companies_by_names,
     resolve_contact_by_email, set_primary_contact_address, sync_primary_alias,
 )
+from app.services.contact_type_service import (
+    confirm_type, suggest_type, suggest_type_from,
+)
 from app.services.contactless_service import (
     company_key_column, contactless_filters,
 )  # archived entries stay on a card — see contactless_filters()
@@ -93,6 +96,10 @@ class ContactOut(BaseModel):
     triaged: bool = False
     auto_created: bool = False
     company_name: Optional[str] = None
+    # Only on an unconfirmed contact: what the UI pre-selects, and why. A
+    # suggestion — the type changes only when Jack confirms it.
+    suggested_type: Optional[str] = None
+    suggested_type_reason: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -158,6 +165,9 @@ class ContactListRow(BaseModel):
     latest_entry_id: Optional[int] = None
     latest_entry_summary: Optional[str] = None
     latest_entry_channel: Optional[str] = None
+    # Only on an unconfirmed contact — see ContactOut.
+    suggested_type: Optional[str] = None
+    suggested_type_reason: Optional[str] = None
 
 
 class FactOut(BaseModel):
@@ -326,6 +336,9 @@ def _contact_out(contact: Contact, company_name: Optional[str] = None) -> Contac
         out.company_name = company_name
     elif contact.company is not None:
         out.company_name = contact.company.name
+    suggestion = suggest_type(contact)
+    out.suggested_type = suggestion["type"]
+    out.suggested_type_reason = suggestion["reason"]
     return out
 
 
@@ -838,6 +851,9 @@ def list_contacts(
         db.query(
             Contact,
             Company.name.label("company_name"),
+            # The firm's type, for the unconfirmed-contact suggestion — selected
+            # here so the suggestion costs no query of its own.
+            Company.company_type.label("company_type"),
             # Selected, not lazy-loaded: the re-entry marker needs each row's
             # expiry, and touching contact.company per row would turn this back
             # into a query loop.
@@ -923,9 +939,16 @@ def list_contacts(
 
     out: List[ContactListRow] = []
     for (
-        contact, company_name, expiry_date, expiry_months, entry_count, latest_date,
-        latest_id, copied_count,
+        contact, company_name, company_type, expiry_date, expiry_months, entry_count,
+        latest_date, latest_id, copied_count,
     ) in rows:
+        suggestion = suggest_type_from(
+            contact_type=contact.contact_type,
+            suggested_type=contact.suggested_type,
+            email=contact.email,
+            company_name=company_name,
+            company_type=company_type,
+        )
         latest = latest_text.get(contact.id)
         ntd = contact.next_touch_date
         # Re-derived from the date when there is one — see _company_expiry_months.
@@ -961,6 +984,8 @@ def list_contacts(
             latest_entry_id=latest_id,
             latest_entry_summary=(latest.action_taken if latest else None),
             latest_entry_channel=(latest.channel if latest else None),
+            suggested_type=suggestion["type"],
+            suggested_type_reason=suggestion["reason"],
         ))
     return out
 
@@ -1464,6 +1489,50 @@ def update_contact(
     db.commit()
     db.refresh(contact)
     return _contact_out(contact)
+
+
+class ContactTypeConfirm(BaseModel):
+    contact_type: str
+    # Also mark their firm, so everyone still unconfirmed there — and everyone
+    # the email automation creates there later — takes the same type.
+    apply_to_firm: bool = False
+
+
+class ContactTypeConfirmResult(BaseModel):
+    contact: ContactOut
+    # How many other contacts at the firm took the type just now.
+    firm_updated: int = 0
+    # How many at the firm are still unconfirmed — what the UI offers to apply
+    # the type to next. Zero means there is nothing to ask.
+    firm_unconfirmed: int = 0
+    firm_name: Optional[str] = None
+    firm_type: Optional[str] = None
+
+
+@router.post("/{contact_id}/confirm-type", response_model=ContactTypeConfirmResult)
+def confirm_contact_type(
+    contact_id: int, payload: ContactTypeConfirm, db: Session = Depends(get_db),
+):
+    """Jack says who this person is: tenant or counterparty.
+
+    Its own endpoint rather than a PATCH field because it can reach past the
+    one contact — apply_to_firm marks the firm and every still-unconfirmed
+    person at it. Contacts Jack already classified keep their type.
+
+    Confirming a type does NOT triage the contact. Classifying Avison Young's
+    broker as a counterparty is housekeeping, not a sign Jack is working them.
+    """
+    contact = _get_contact(db, contact_id)
+    try:
+        result = confirm_type(
+            db, contact, payload.contact_type, apply_to_firm=payload.apply_to_firm,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    contact.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(contact)
+    return ContactTypeConfirmResult(contact=_contact_out(contact), **result)
 
 
 class ContactStatusUpdate(BaseModel):

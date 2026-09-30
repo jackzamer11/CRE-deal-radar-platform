@@ -1192,6 +1192,44 @@ def backfill_contact_primary_aliases(cur: sqlite3.Cursor) -> int:
     return changed
 
 
+def migrate_contact_types_to_unconfirmed(cur: sqlite3.Cursor) -> int:
+    """Add contacts.suggested_type, and — exactly once, in the same step — move
+    every automatically created "tenant" to "unconfirmed".
+
+    Until this build the email automation created every contact as a tenant,
+    because an address alone cannot tell a tenant from a broker. 192 of 204
+    tenants were made that way and never classified, brokers and landlords
+    among them. Nothing distinguishes one Jack confirmed from one he never
+    looked at, so all of them go back to unconfirmed and the suggestion
+    pre-selects tenant wherever nothing points the other way — one click each.
+
+    Contacts Jack created by hand (auto_created = 0) keep their type. So does
+    any auto-created contact he already moved to counterparty or owner.
+
+    The column's absence is the run-once guard: the rewrite runs only in the
+    call that adds the column, so a contact Jack later confirms as a tenant is
+    never reset by a later startup.
+
+    The UPDATE runs FIRST on purpose. Python's sqlite3 opens a transaction
+    implicitly before DML but not before DDL — an ALTER issued with no
+    transaction open commits on its own. Updating first opens the transaction,
+    the ALTER then joins it, and the caller's rollback undoes both: a half-run
+    can never leave the column (the guard) in place with the rewrite missing.
+    """
+    if not _table_exists(cur, "contacts"):
+        return 0
+    if _has_column(cur, "contacts", "suggested_type"):
+        return 0
+    cur.execute(
+        "UPDATE contacts SET contact_type = 'unconfirmed' "
+        "WHERE auto_created = 1 AND contact_type = 'tenant'"
+    )
+    moved = cur.rowcount or 0
+    cur.execute("ALTER TABLE contacts ADD COLUMN suggested_type TEXT")
+    print(f"  + contacts.suggested_type; {moved} auto-created tenant(s) moved to unconfirmed")
+    return 1 + moved
+
+
 def _table_exists(cur: sqlite3.Cursor, table: str) -> bool:
     cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table,))
     return cur.fetchone() is not None
@@ -1537,7 +1575,8 @@ def run() -> None:
     lease_added = 0
     for _step in (ensure_leases_table, migrate_company_leases_to_table,
                   ensure_submarkets_table, ensure_email_ingest_tables,
-                  backfill_contact_primary_aliases):
+                  backfill_contact_primary_aliases,
+                  migrate_contact_types_to_unconfirmed):
         try:
             lease_added += _step(cur)
             conn.commit()

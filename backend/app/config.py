@@ -407,3 +407,25 @@ TENANT_VACANCY_CITE_THRESHOLD = 10.0  # tenant-side: low vacancy signals tight s
 # NOTE: the former RENT_GAP_PIVOT_YEAR constant was removed. The rent-ladder
 # hedge rungs now anchor to each tenant's real lease_signed_year (or use vague
 # tenure phrasing when unknown) — see outreach_service._signed_reference.
+
+# ---------------------------------------------------------------------------
+# Contact-type suggestions
+# A contact the email automation creates starts as "unconfirmed" — an address
+# alone cannot say whether someone is a tenant or a broker/landlord. These
+# words, found in their company name or email domain, pre-select "counterparty"
+# as the SUGGESTION Jack confirms with one click. Never applied on their own:
+# SolaREIT reads like a landlord and leases space as a tenant.
+#
+# Matched against the name and domain with spaces and punctuation removed, so
+# "Stream Realty" and "streamrealty.com" both hit "realty". The firm names in
+# services/rep_classification.MAJOR_BROKER_FIRMS are checked as well.
+# ---------------------------------------------------------------------------
+COUNTERPARTY_NAME_KEYWORDS = (
+    "realty", "realestate", "properties", "property", "management", "leasing",
+    "reit",
+)
+# A name containing one of these is a tenant business that happens to use a
+# keyword above — "Summit Wealth Management" manages money, not buildings.
+COUNTERPARTY_NAME_EXCLUSIONS = (
+    "wealth", "asset", "investment", "financial", "insurance", "capitalmanagement",
+)

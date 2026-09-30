@@ -1341,6 +1341,19 @@ def draft_outreach(company_id: str, db: Session = Depends(get_db)):
     if not company:
         raise HTTPException(status_code=404, detail="Company not found")
 
+    # A firm Jack marked as a counterparty (a brokerage, a landlord, a property
+    # manager) sits across the table. Tenant-side copy — "your lease is coming
+    # up" — must never be drafted for it, whatever its lease fields say.
+    if company.company_type == "counterparty":
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"{company.name} is marked as a counterparty firm — tenant "
+                "outreach is not drafted for brokers, landlords or property "
+                "managers."
+            ),
+        )
+
     # Fix 1: block outreach generation until real occupied SF is on record. SF is
     # never calculated, so an unknown figure means we cannot responsibly draft.
     if not company.current_sf_occupied:
