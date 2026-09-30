@@ -8,9 +8,12 @@ import {
 import type {
   ActivityStage, Channel, CompanyCardRow, Contact, ContactListRow, ContactType,
 } from '../types'
-import { CLOSED_STAGE, CONTACT_STAGES, CONTACT_TYPE_LABELS, UI_CONTACT_TYPES } from '../types'
+import {
+  CLOSED_STAGE, CONTACT_STAGES, CONTACT_TYPE_LABELS, FILTER_CONTACT_TYPES, UI_CONTACT_TYPES,
+} from '../types'
 import { formatDate } from '../dates'
 import StatusLine from './StatusLine'
+import TypeConfirm from './TypeConfirm'
 
 const STAGE_PILL: Record<ActivityStage, string> = {
   'Sent':           'bg-blue-500/15 text-blue-300 border-blue-500/40',
@@ -199,8 +202,24 @@ function ContactRow({
                 <Copy size={10} /> {row.copied_count} copied
               </span>
             )}
-            <span className="uppercase tracking-wider">{row.contact_type}</span>
+            {row.contact_type !== 'unconfirmed' && (
+              <span className="uppercase tracking-wider">{row.contact_type}</span>
+            )}
           </div>
+
+          {/* Unconfirmed until Jack says otherwise — the email task cannot
+              tell a tenant from a broker by address. */}
+          {row.contact_type === 'unconfirmed' && (
+            <div className="mt-1.5">
+              <TypeConfirm
+                compact
+                contactId={row.id}
+                suggestedType={row.suggested_type}
+                suggestedReason={row.suggested_type_reason}
+                onDone={onChanged}
+              />
+            </div>
+          )}
 
           {/* Jack's own line about where things stand, when he has written
               one; the latest entry summary keeps this slot when he has not. */}
@@ -323,10 +342,14 @@ export default function ContactList({
 
   const load = useCallback(async () => {
     setLoading(true)
+    // Unconfirmed contacts are nearly all untriaged — the email task made them
+    // and nobody has worked them yet. Filtering to them is asking for exactly
+    // that pile, so the untriaged toggle does not get a say.
+    const confirming = typeFilter === 'unconfirmed'
     const filters = {
       contact_type: typeFilter === 'All' ? undefined : typeFilter,
       stage: stageFilter === 'All' ? undefined : stageFilter,
-      triaged: showUntriaged ? undefined : true,
+      triaged: showUntriaged || confirming ? undefined : true,
       limit: 1000,
     }
     try {
@@ -488,7 +511,7 @@ export default function ContactList({
       ) : (
         <>
           <div className="flex items-center gap-1.5 mb-3 flex-wrap">
-            {(['All', ...UI_CONTACT_TYPES] as const).map(t => (
+            {(['All', ...FILTER_CONTACT_TYPES] as const).map(t => (
               <button
                 key={t}
                 onClick={() => setTypeFilter(t as 'All' | ContactType)}

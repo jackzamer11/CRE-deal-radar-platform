@@ -23,6 +23,7 @@ from app.models.activity import ActivityLog
 from app.models.company import Company
 from app.models.contact import Contact, ContactFact, CLOSED_STAGE
 from app.models.email_ingest import ContactAddressOverride
+from app.services.contact_type_service import initial_type_for
 
 # Domains where the sender's address says nothing about who they work for.
 # A contact from one of these gets a null company_id — never a company called
@@ -727,10 +728,12 @@ def create_contact(
         name=name,
         email=e,
         company_id=company.id if company is not None else None,
-        # A sender who is not a tenant is a counterparty, but we cannot tell
-        # which from an address alone — default to tenant and let Jack correct
-        # it. Never used to gate anything automatically.
-        contact_type="tenant",
+        # An address alone cannot say which side of the table someone sits
+        # on. Defaulting to "tenant" filed 190 brokers and landlords as
+        # tenants, so a new person is unconfirmed until Jack says otherwise —
+        # unless Jack already marked their firm, in which case they take its
+        # type. See services/contact_type_service.py.
+        contact_type=initial_type_for(company),
         stage="Sent",
         auto_created=True,
         triaged=False,

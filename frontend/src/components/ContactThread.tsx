@@ -25,6 +25,7 @@ import EntryEditor from './EntryEditor'
 import StatusLine from './StatusLine'
 import LeaseCard from './LeaseCard'
 import StageChangeDivider from './StageChangeDivider'
+import TypeConfirm from './TypeConfirm'
 import { formatDate } from '../dates'
 
 const OUTREACH_TYPE_LABELS: Record<string, string> = {
@@ -1695,11 +1696,23 @@ export default function ContactThread({
               {c.title && <span>{c.title}</span>}
               {c.email && <span>{c.email}</span>}
               {c.phone && <span>{c.phone}</span>}
-              <span className="uppercase tracking-wider">{c.contact_type}</span>
+              {c.contact_type !== 'unconfirmed' && (
+                <span className="uppercase tracking-wider">{c.contact_type}</span>
+              )}
               {!c.triaged && (
                 <span className="text-amber-400/80">untriaged</span>
               )}
             </div>
+            {c.contact_type === 'unconfirmed' && (
+              <div className="mt-1.5">
+                <TypeConfirm
+                  contactId={c.id}
+                  suggestedType={c.suggested_type}
+                  suggestedReason={c.suggested_type_reason}
+                  onDone={() => void load(false)}
+                />
+              </div>
+            )}
           </div>
         </div>
         <button

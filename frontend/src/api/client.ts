@@ -24,6 +24,7 @@ import type {
   ExtractionResult,
   ActivityMineResult,
   ActivityMiningStatus,
+  ConfirmableType,
   Contact,
   ContactListRow,
   CompanyCardRow,
@@ -592,6 +593,25 @@ export const updateContact = (
   },
 ): Promise<Contact> =>
   api.patch(`/contacts/${contactId}`, payload).then(r => r.data)
+
+// Jack says who this person is. applyToFirm also marks their company, so
+// everyone still unconfirmed there — and everyone created there later — takes
+// the same type. firm_unconfirmed is how many at the firm are left, which is
+// what the "apply to everyone at X?" offer counts.
+export interface ContactTypeConfirmResult {
+  contact: Contact
+  firm_updated: number
+  firm_unconfirmed: number
+  firm_name: string | null
+  firm_type: ConfirmableType | null
+}
+
+export const confirmContactType = (
+  contactId: number, contactType: ConfirmableType, applyToFirm = false,
+): Promise<ContactTypeConfirmResult> =>
+  api.post(`/contacts/${contactId}/confirm-type`, {
+    contact_type: contactType, apply_to_firm: applyToFirm,
+  }).then(r => r.data)
 
 // ── Contact facts ──────────────────────────────────────────────────────────
 
