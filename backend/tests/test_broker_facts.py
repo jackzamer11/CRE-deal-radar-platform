@@ -343,6 +343,30 @@ def test_a_dismissed_entry_stays_dismissed_when_re_read(db, client):
     assert client.get("/api/intel/unassigned-requirements").json() == []
 
 
+def test_a_tenants_needs_show_in_the_activity_log(db, client):
+    """Maria's requirements belong next to her notes: on her thread and on
+    Halverson's company page — newest value per item, old ones to re-confirm,
+    and never a broker's market talk."""
+    co = _company(db, "Halverson Dental")
+    maria = _contact(db, "Maria Chen", co)
+    old = _entry(db, company=co, contact=maria, on=TODAY - timedelta(days=500))
+    mine_activity_log(old, db, extractor=_extractor(req_sf_min="2000", req_must_haves="parking"))
+    new = _entry(db, company=co, contact=maria, on=TODAY - timedelta(days=10))
+    mine_activity_log(new, db, extractor=_extractor(req_sf_max="3500", req_sf_min="3000",
+                                                    mkt_asking_rent="$40/SF"))
+    db.commit()
+
+    for params in ({"contact_id": maria.id}, {"company_key": co.company_id}):
+        needs = {n["label"]: n for n in client.get("/api/intel/needs", params=params).json()}
+        assert needs["Max SF"]["value"] == "3500" and needs["Max SF"]["fresh"] is True
+        assert needs["Max SF"]["entry_id"] == new.id
+        # 3,000 contradicts the 2,000 on file: it waits in Review, the old
+        # value stays shown until Jack picks.
+        assert needs["Min SF"]["value"] == "2000"
+        assert needs["Must-haves"]["fresh"] is False          # said over a year ago
+        assert not any("40" in (n["value"] or "") for n in needs.values())
+
+
 def test_an_entry_that_only_names_someone_is_not_held(db, client):
     _, _, log = _george(db)
     mine_activity_log(log, db, extractor=_extractor(

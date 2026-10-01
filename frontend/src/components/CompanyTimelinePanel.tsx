@@ -10,6 +10,7 @@ import {
 import MoveToContactPicker from './MoveToContactPicker'
 import type { Channel, CompanyTimelinePage, PendingUpdate } from '../types'
 import { formatDate } from '../dates'
+import WhatTheyNeed from './WhatTheyNeed'
 
 const CHANNEL_ICONS: Partial<Record<Channel, React.ElementType>> = {
   email: Mail, call: Phone, meeting: Users,
@@ -110,6 +111,11 @@ export default function CompanyTimelinePanel({
           <button onClick={onClose} className="text-ink-muted hover:text-ink-primary flex-shrink-0">
             <X size={16} />
           </button>
+        </div>
+
+        {/* What this tenant told Jack they need, from every note about them. */}
+        <div className="mb-3">
+          <WhatTheyNeed companyKey={companyId} />
         </div>
 
         {/* Stated in an email, not yet on the record. Both values side by side
