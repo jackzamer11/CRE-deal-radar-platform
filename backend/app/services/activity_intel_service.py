@@ -34,6 +34,7 @@ from app.services.document_extraction_service import (
     MissingAPIKeyError,
 )
 from app.services.requirement_subject import (
+    ABOUT_DISMISSED,
     ABOUT_ENTRY,
     ABOUT_MARKET,
     REQUIREMENT_KINDS,
@@ -395,14 +396,20 @@ def mine_activity_log(
     tenant = entry_company(log) if about == ABOUT_ENTRY else None
     on_file = _facts_on_file(db, tenant.id, log.id) if tenant is not None else {}
 
+    # What Jack already decided about this entry's facts survives a re-read: a
+    # fact he kept is not written twice, and anything new follows his answer.
+    kept, answer = _jacks_answers(db, log.id)
+
     created: List[Observation] = []
     for field in EXTRACTED_FIELDS:
         row = parsed.get(field) or {}
         value = row.get("value")
         if value is None:
             continue
-        auto = _should_auto_approve(field, str(value))
         is_market = field in MARKET_FIELDS
+        if (field, _same(value)) in kept:
+            continue
+        auto = _should_auto_approve(field, str(value))
         earlier = on_file.get(field)
         contradicts = (
             earlier is not None and field in CONFLICT_FIELDS
@@ -425,9 +432,106 @@ def mine_activity_log(
             about_name=None if is_market else about_name,
             conflicts_with_id=earlier.id if contradicts else None,
         )
+        if answer is not None and not is_market:
+            _follow_answer(obs, answer)
         db.add(obs)
         created.append(obs)
     return created
+
+
+def _same(value) -> str:
+    """Comparison form of a stated value: case and spacing do not matter."""
+    return " ".join(str(value or "").casefold().split())
+
+
+def _jacks_answers(db: Session, log_id: int):
+    """Facts Jack kept on this entry, and his answer about whose they are.
+
+    Returns ({(field, value) he kept}, the fact carrying his answer or None).
+    His answer is an attachment (a company or a person) or a dismissal.
+    """
+    rows = (
+        db.query(Observation)
+        .filter(
+            Observation.source_doc == f"activity_log:{log_id}",
+            Observation.superseded_by_id.is_(None),
+            Observation.verified_by == "human",
+        )
+        .all()
+    )
+    kept = {(o.field, _same(o.value)) for o in rows}
+    answer = next(
+        (o for o in rows
+         if o.assigned_company_id or o.assigned_contact_id or o.about == ABOUT_DISMISSED),
+        None,
+    )
+    return kept, answer
+
+
+def _follow_answer(obs: Observation, answer: Observation) -> None:
+    """A new fact from an entry Jack already answered goes where he said."""
+    if answer.about == ABOUT_DISMISSED and not (
+        answer.assigned_company_id or answer.assigned_contact_id
+    ):
+        obs.about = ABOUT_DISMISSED
+        return
+    obs.assigned_company_id = answer.assigned_company_id
+    obs.assigned_contact_id = answer.assigned_contact_id
+
+
+def reconcile_with_jacks_answers(db: Session) -> Dict[str, int]:
+    """Repair facts re-read before re-reading respected Jack's answers.
+
+    A copy of a fact he kept is superseded by the one he kept (history, not
+    deleted); anything else new from that entry follows his answer. Idempotent.
+    """
+    answered = (
+        db.query(Observation.source_doc)
+        .filter(
+            Observation.superseded_by_id.is_(None),
+            Observation.verified_by == "human",
+            or_(Observation.assigned_company_id.isnot(None),
+                Observation.assigned_contact_id.isnot(None),
+                Observation.about == ABOUT_DISMISSED),
+            Observation.source_doc.like("activity_log:%"),
+        )
+        .distinct()
+        .all()
+    )
+    copies = followed = 0
+    for (source,) in answered:
+        log_id = int(source.split(":", 1)[1])
+        kept_rows = (
+            db.query(Observation)
+            .filter(Observation.source_doc == source, Observation.superseded_by_id.is_(None),
+                    Observation.verified_by == "human")
+            .all()
+        )
+        by_value = {(o.field, _same(o.value)): o for o in kept_rows}
+        _, answer = _jacks_answers(db, log_id)
+        for obs in (
+            db.query(Observation)
+            .filter(
+                Observation.source_doc == source,
+                Observation.superseded_by_id.is_(None),
+                or_(Observation.verified_by.is_(None), Observation.verified_by != "human"),
+                or_(Observation.about.is_(None), Observation.about != ABOUT_MARKET),
+                Observation.assigned_company_id.is_(None),
+                Observation.assigned_contact_id.is_(None),
+            )
+            .all()
+        ):
+            if obs.about == ABOUT_DISMISSED:
+                continue
+            twin = by_value.get((obs.field, _same(obs.value)))
+            if twin is not None:
+                obs.superseded_by_id = twin.id
+                copies += 1
+            elif answer is not None:
+                _follow_answer(obs, answer)
+                followed += 1
+    db.commit()
+    return {"copies_retired": copies, "followed_answer": followed}
 
 
 # Fields where a different value means the tenant changed their story — a
@@ -760,6 +864,7 @@ def mine_all_activity_logs(
     Returns counts: {processed, facts, skipped, failed}.
     """
     sweep_copies(db)
+    reconcile_with_jacks_answers(db)
 
     # Only logs that actually succeeded are "done". Failed ones (e.g. a transient
     # API error or an exhausted credit balance) must be retried on the next run,
