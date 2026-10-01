@@ -150,6 +150,40 @@ def test_a_mining_failure_says_what_broke_instead_of_a_bare_500(client, monkeypa
     assert len(logged) == 1
 
 
+def test_no_write_is_held_open_while_the_model_thinks(tmp_path):
+    """Mining held SQLite's single write lock across the model call, so any
+    other save in those seconds failed with "database is locked". While the
+    model is working, another connection must be able to write."""
+    from sqlalchemy import text
+
+    path = tmp_path / "radar.db"
+    engine = create_engine(f"sqlite:///{path}", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(bind=engine)
+    Session = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    db = Session()
+    log = _entry(db)
+    db.add(Observation(entity_type="activity_log", entity_id=log.id, field="req_sf_min",
+                       value="2500", source_doc=f"activity_log:{log.id}",
+                       human_verified=True, verified_by="auto"))   # an old machine fact
+    db.commit()
+
+    other = create_engine(f"sqlite:///{path}", connect_args={"timeout": 0.5})
+    writes = []
+
+    def model_while_someone_else_saves(text_in):
+        with other.begin() as conn:   # raises "database is locked" if held
+            conn.execute(text("INSERT INTO intel_criteria (statement, active, created_at) "
+                              "VALUES ('saved meanwhile', 1, '2026-10-01')"))
+        writes.append("ok")
+        return _extractor(text_in)
+
+    assert miner._mine_one(db, log, model_while_someone_else_saves) == 1
+    assert writes == ["ok"]
+    db.close()
+    engine.dispose()
+    other.dispose()
+
+
 def test_a_failed_background_read_is_left_for_the_button(db, factory):
     log = _entry(db)
 
