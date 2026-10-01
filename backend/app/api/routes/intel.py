@@ -533,6 +533,93 @@ def assign_requirement(entry_id: int, payload: AssignIn, db: Session = Depends(g
             "contact_id": payload.contact_id, "facts": len(facts)}
 
 
+class StatedNeedOut(BaseModel):
+    """One thing a tenant needs, as most recently said."""
+    field: str
+    label: str
+    value: Optional[str] = None
+    stated_on: Optional[date] = None
+    entry_id: Optional[int] = None
+    snippet: Optional[str] = None
+    # False once it is old enough to re-confirm on the next call.
+    fresh: bool = True
+
+
+NEED_LABELS = {k: v for k, v in REQUIREMENT_LABELS.items()
+               if k not in ("contact_name", "contact_email")}
+
+
+@router.get("/needs", response_model=List[StatedNeedOut])
+def stated_needs(contact_id: Optional[int] = None, company_key: Optional[str] = None,
+                 db: Session = Depends(get_db)):
+    """What a tenant has told Jack they need, for the Activity Log.
+
+    For a contact: their company's needs, gathered from every note about that
+    company, plus anything on their own notes that has no company and anything
+    Jack attached to them. For a company (company_key is its business id, as
+    the company timeline uses): every note about it. Filed exactly as Intel
+    files facts, so a broker's market talk, a held requirement, a dismissed one
+    or an unsettled contradiction never appears here. Each field once, as most
+    recently said, linked to the note.
+    """
+    from app.services.intel_signal_service import (
+        _active_observations, _group, _is_fresh, _load_context, _source_log_id, _stated_on,
+    )
+
+    entities = []
+    attached_rows: List[Observation] = []
+    if company_key:
+        company = db.query(Company).filter(Company.company_id == company_key).first()
+        if company is None:
+            raise HTTPException(status_code=404, detail="Company not found")
+        entities.append(("company", company.id))
+    elif contact_id is not None:
+        contact = db.query(Contact).filter(Contact.id == contact_id).first()
+        if contact is None:
+            raise HTTPException(status_code=404, detail="Contact not found")
+        if contact.company_id:
+            entities.append(("company", contact.company_id))
+        entities += [
+            ("activity_log", lid) for (lid,) in
+            db.query(ActivityLog.id).filter(ActivityLog.contact_id == contact_id).all()
+        ]
+        attached_rows = (
+            db.query(Observation)
+            .filter(Observation.superseded_by_id.is_(None),
+                    Observation.assigned_contact_id == contact_id)
+            .all()
+        )
+    else:
+        raise HTTPException(status_code=400, detail="Give a contact_id or a company_key")
+
+    ctx, facts = _load_context(db, _active_observations(db))
+    groups = _group(ctx, facts)
+    rows = [o for e in entities for o in groups.get(e, [])] + attached_rows
+
+    today = date.today()
+    newest: dict = {}
+    for obs in rows:
+        if obs.field not in NEED_LABELS or not obs.value:
+            continue
+        said = _stated_on(ctx, obs)
+        key = (said or date.min, obs.id)
+        if obs.field not in newest or key > newest[obs.field][0]:
+            newest[obs.field] = (key, obs, said)
+
+    out: List[StatedNeedOut] = []
+    for field in NEED_LABELS:
+        if field not in newest:
+            continue
+        _, obs, said = newest[field]
+        out.append(StatedNeedOut(
+            field=field, label=NEED_LABELS[field], value=obs.value.strip(),
+            stated_on=said, entry_id=_source_log_id(obs.source_doc),
+            snippet=obs.source_snippet,
+            fresh=True if field == "expiration_date" else _is_fresh(ctx, obs, today),
+        ))
+    return out
+
+
 class AttachedRequirementOut(BaseModel):
     id: int
     entry_id: int

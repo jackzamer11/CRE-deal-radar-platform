@@ -16,6 +16,7 @@ import CoStarTenantImportModal from '../components/CoStarTenantImportModal'
 import OutreachDraftModal from '../components/OutreachDraftModal'
 import CompanySnoozeModal from '../components/CompanySnoozeModal'
 import SubmarketSelect from '../components/SubmarketSelect'
+import WhatTheyNeed from '../components/WhatTheyNeed'
 
 const LEASE_SOURCES = [
   { value: 'manual',              label: 'Manual entry' },
@@ -644,6 +645,12 @@ export default function Companies() {
               <Zap size={15} />
               Draft Outreach
             </button>
+
+            {/* What this tenant told Jack they need — the same stated facts the
+                outreach draft above draws on, each linked to its note. */}
+            <div className="mb-4">
+              <WhatTheyNeed companyKey={selected.company_id} />
+            </div>
 
             <div className="space-y-3">
               <div className="flex items-center gap-2">

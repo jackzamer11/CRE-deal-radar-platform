@@ -28,6 +28,7 @@ import StageChangeDivider from './StageChangeDivider'
 import TypeConfirm from './TypeConfirm'
 import CompanyPicker from './CompanyPicker'
 import MarketFacts from './MarketFacts'
+import WhatTheyNeed from './WhatTheyNeed'
 import LeftCompany from './LeftCompany'
 import { formatDate } from '../dates'
 
@@ -1711,6 +1712,7 @@ export default function ContactThread({
           onEditedFact={() => void load(false)}
           onDeleteFact={handleDeleteFact}
         />
+        <WhatTheyNeed contactId={contactId} onJumpToEntry={jumpToEntry} />
         <MarketFacts contactId={contactId} onJumpToEntry={jumpToEntry} />
         <DealContext
           onLeaseConfirmed={() => void load(false)}

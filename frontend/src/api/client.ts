@@ -990,6 +990,23 @@ export interface MarketFact {
   snippet: string | null
 }
 
+// What a tenant has told Jack they need, for the Activity Log — by contact or
+// by company (its business id, as the company timeline uses).
+export interface StatedNeed {
+  field: string
+  label: string
+  value: string | null
+  stated_on: string | null
+  entry_id: number | null
+  snippet: string | null
+  fresh: boolean
+}
+
+export const getNeeds = (
+  params: { contact_id?: number; company_key?: string },
+): Promise<StatedNeed[]> =>
+  api.get('/intel/needs', { params }).then(r => r.data)
+
 export const getMarketFacts = (contactId: number): Promise<MarketFact[]> =>
   api.get('/intel/market-facts', { params: { contact_id: contactId } }).then(r => r.data)
 
