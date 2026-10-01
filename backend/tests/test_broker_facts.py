@@ -288,6 +288,61 @@ def test_attach_takes_a_company_or_a_person_not_both(db, client):
                            json=body).status_code == 400
 
 
+def test_re_reading_an_attached_entry_does_not_bring_it_back(db, client):
+    """What happened to Mike's email: attached in September, re-read in October,
+    and the requirement reappeared in the holding list. It must not."""
+    _, _, log = _george(db)
+    mine_activity_log(log, db, extractor=_extractor(
+        "unnamed_client", req_sf_min="500", req_sf_max="600"))
+    db.commit()
+    at_home = _company(db, "At Home in Alexandria")
+    client.post(f"/api/intel/unassigned-requirements/{log.id}/assign",
+                json={"company_id": at_home.id})
+
+    db.query(IntelActivityExtraction).delete()
+    db.commit()
+    mine_all_activity_logs(db, extractor=_extractor(
+        "unnamed_client", req_sf_min="500", req_sf_max="600", req_timing="by spring"))
+
+    assert client.get("/api/intel/unassigned-requirements").json() == []
+    live = db.query(Observation).filter(
+        Observation.source_doc == f"activity_log:{log.id}",
+        Observation.superseded_by_id.is_(None)).all()
+    # No second copy of what he kept; the new fact follows his answer.
+    assert sorted(o.field for o in live) == ["req_sf_max", "req_sf_min", "req_timing"]
+    assert {o.assigned_company_id for o in live} == {at_home.id}
+
+
+def test_copies_made_before_the_fix_are_tidied_by_the_next_mine(db, client):
+    _, _, log = _george(db)
+    at_home = _company(db, "At Home in Alexandria")
+    db.add(Observation(entity_type="company", entity_id=1, field="req_sf_min", value="500",
+                       source_doc=f"activity_log:{log.id}", human_verified=True,
+                       verified_by="human", assigned_company_id=at_home.id))
+    db.add(Observation(entity_type="company", entity_id=1, field="req_sf_min", value="500",
+                       source_doc=f"activity_log:{log.id}", human_verified=True,
+                       verified_by="auto", about="unassigned"))     # the stray copy
+    db.add(IntelActivityExtraction(activity_log_id=log.id, status="done", fields_found=1))
+    db.commit()
+    assert len(client.get("/api/intel/unassigned-requirements").json()) == 1
+
+    mine_all_activity_logs(db, extractor=_extractor())
+    assert client.get("/api/intel/unassigned-requirements").json() == []
+
+
+def test_a_dismissed_entry_stays_dismissed_when_re_read(db, client):
+    _, _, log = _george(db)
+    mine_activity_log(log, db, extractor=_extractor("unnamed_client", req_sf_min="500",
+                                                    req_budget_max_psf="32"))
+    db.commit()
+    client.post(f"/api/intel/unassigned-requirements/{log.id}/dismiss")
+    db.query(IntelActivityExtraction).delete()
+    db.commit()
+    mine_all_activity_logs(db, extractor=_extractor("unnamed_client", req_sf_min="500",
+                                                    req_timing="soon"))
+    assert client.get("/api/intel/unassigned-requirements").json() == []
+
+
 def test_an_entry_that_only_names_someone_is_not_held(db, client):
     _, _, log = _george(db)
     mine_activity_log(log, db, extractor=_extractor(

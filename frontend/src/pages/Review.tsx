@@ -314,8 +314,14 @@ function ActivityMiningPanel({ onMined }: { onMined: () => void }) {
         if (next.remaining <= 0 || res.processed === 0) break
       }
     } catch (err) {
-      let msg = 'Mining failed.'
-      if (axios.isAxiosError(err) && err.response?.data?.detail) msg = String(err.response.data.detail)
+      // Say what actually went wrong. Facts already read are kept either way,
+      // and pressing Mine again picks up where it stopped.
+      let msg = 'Mining stopped — press Mine again to continue.'
+      if (axios.isAxiosError(err)) {
+        if (err.response?.data?.detail) msg = String(err.response.data.detail)
+        else if (err.response) msg = `Mining stopped (server error ${err.response.status}) — press Mine again to continue.`
+        else msg = 'Mining stopped (lost connection to the app) — press Mine again to continue.'
+      }
       setError(msg)
     } finally {
       setRunning(false)
