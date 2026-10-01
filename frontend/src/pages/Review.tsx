@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import {
-  ClipboardCheck, Check, Pencil, FileText, X, Upload, Wand2, CalendarClock,
+  ClipboardCheck, Check, Pencil, FileText, X, Upload, Wand2, CalendarClock, ArrowRight,
 } from 'lucide-react'
 import axios from 'axios'
 import {
@@ -173,6 +173,15 @@ function ReviewRow({
         <span className="text-accent-blue">{obs.source_doc ?? 'unknown source'}</span>
         {obs.source_page !== null && <span>· p.{obs.source_page}</span>}
         <span className="text-ink-muted">· {obs.entity_type} #{obs.entity_id}</span>
+        {/* The note this was read from, open in the Activity Log. */}
+        {isFromNote(obs) && (
+          <a
+            href={`/activity?focus=${obs.source_doc!.split(':')[1]}`}
+            className="ml-auto text-[10px] text-accent-blue hover:underline flex items-center gap-1"
+          >
+            View entry <ArrowRight size={10} />
+          </a>
+        )}
       </div>
       {obs.source_snippet && (
         <p className="mt-1.5 text-[11px] italic text-ink-secondary leading-snug border-l-2 border-surface-border pl-2">
@@ -262,7 +271,9 @@ function ReviewRow({
 // ── Activity-log mining panel ────────────────────────────────────────────────
 // Turns freeform notes into structured facts. Runs in small batches so a long
 // backfill never blocks on a single HTTP request. Never edits the logs.
-const MINE_BATCH_SIZE = 20
+// Small batches: each request stays short (a long one can be cut off by the
+// dev proxy), and every entry is saved as it is read, so nothing is lost.
+const MINE_BATCH_SIZE = 5
 
 function ActivityMiningPanel({ onMined }: { onMined: () => void }) {
   const [status, setStatus] = useState<ActivityMiningStatus | null>(null)

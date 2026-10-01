@@ -359,18 +359,33 @@ def _normalize(raw: Dict[str, object]) -> Dict[str, Dict[str, object]]:
     return out
 
 
+def read_entry(log: ActivityLog, extractor=None) -> Dict[str, Dict[str, object]]:
+    """Ask the model what an entry states. Reads only — writes nothing.
+
+    Kept apart from the writes on purpose: SQLite allows one writer at a time,
+    and a model call takes seconds. Called while a write is open, it held the
+    whole database for that long, and every other save — Jack attaching a
+    requirement, the evening email check — failed with "database is locked".
+    """
+    fn = extractor or _extract_facts_via_llm
+    return fn(build_log_text(log))
+
+
 def mine_activity_log(
     log: ActivityLog,
     db: Session,
     extractor: Optional[Callable[[str], Dict[str, Dict[str, object]]]] = None,
+    *,
+    parsed: Optional[Dict[str, Dict[str, object]]] = None,
 ) -> List[Observation]:
     """Mine one activity log into observations. Never modifies the log itself.
 
     Only fields the note actually states are written — a null field records
-    nothing, so the Review queue isn't flooded with empty rows.
+    nothing, so the Review queue isn't flooded with empty rows. Pass `parsed`
+    (from read_entry) to keep the model call outside any open write.
     """
-    fn = extractor or _extract_facts_via_llm
-    parsed = fn(build_log_text(log))
+    if parsed is None:
+        parsed = read_entry(log, extractor)
 
     # Attach to the company when the log is linked to one, so facts enrich the
     # company record; otherwise keep them addressable by the log itself. Where
@@ -625,6 +640,9 @@ def remine_activity_log(
     are kept**: that is Jack's judgement, not a re-derivable projection. The
     activity log itself is never modified here.
     """
+    # The model first, with nothing written yet — see read_entry.
+    parsed = read_entry(log, extractor)
+
     source = f"activity_log:{log.id}"
     stale = (
         db.query(Observation)
@@ -643,7 +661,7 @@ def remine_activity_log(
         IntelActivityExtraction.activity_log_id == log.id
     ).delete(synchronize_session=False)
 
-    created = mine_activity_log(log, db, extractor=extractor)
+    created = mine_activity_log(log, db, parsed=parsed)
     db.add(IntelActivityExtraction(
         activity_log_id=log.id,
         status="done" if created else "empty",
@@ -907,8 +925,12 @@ def _mine_one(db: Session, log: ActivityLog, extractor=None) -> Optional[int]:
     per-entry failure and is raised to the caller.
     """
     try:
+        # The model first, with no write open; then every write in one short
+        # transaction. See read_entry for why the order matters.
+        db.commit()
+        parsed = read_entry(log, extractor)
         _drop_machine_facts(db, log.id)
-        created = mine_activity_log(log, db, extractor=extractor)
+        created = mine_activity_log(log, db, parsed=parsed)
         # Clear any earlier failed attempt so counts reflect reality.
         db.query(IntelActivityExtraction).filter(
             IntelActivityExtraction.activity_log_id == log.id,
@@ -926,10 +948,13 @@ def _mine_one(db: Session, log: ActivityLog, extractor=None) -> Optional[int]:
         raise
     except Exception as exc:  # one bad note must not abort the batch
         db.rollback()
-        db.add(IntelActivityExtraction(
-            activity_log_id=log.id, status="failed", fields_found=0, error=str(exc)[:500],
-        ))
-        db.commit()
+        try:
+            db.add(IntelActivityExtraction(
+                activity_log_id=log.id, status="failed", fields_found=0, error=str(exc)[:500],
+            ))
+            db.commit()
+        except Exception:   # noqa: BLE001 — e.g. still locked: leave it unmarked
+            db.rollback()   # unmarked means the next run simply tries it again
         return None
 
 

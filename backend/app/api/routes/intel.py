@@ -290,7 +290,33 @@ def mine_activity(payload: ActivityMineIn, db: Session = Depends(get_db)):
         result = mine_all_activity_logs(db, limit=payload.limit, force=payload.force)
     except MissingAPIKeyError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001 — say what broke instead of a bare 500
+        # Every entry read before this point is already saved. The traceback
+        # goes to backend/logs/mining.log (gitignored) so a failure can be
+        # diagnosed after the fact; the page gets the one-line reason.
+        _log_mining_error(exc)
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Mining stopped: {type(exc).__name__}: {str(exc)[:200]} — "
+                   "everything read so far is saved; press Mine again to continue.",
+        ) from exc
     return ActivityMineOut(**result)
+
+
+def _log_mining_error(exc: Exception) -> None:
+    import os
+    import traceback
+    from datetime import datetime as _dt
+
+    folder = os.path.join(os.path.dirname(__file__), "..", "..", "..", "logs")
+    try:
+        os.makedirs(folder, exist_ok=True)
+        with open(os.path.join(folder, "mining.log"), "a", encoding="utf-8") as fh:
+            fh.write(f"\n=== {_dt.now().isoformat(timespec='seconds')} ===\n")
+            fh.write("".join(traceback.format_exception(type(exc), exc, exc.__traceback__)))
+    except OSError:
+        pass   # logging must never turn one failure into two
 
 
 class RequeueDatesOut(BaseModel):
@@ -324,7 +350,9 @@ def activity_status(db: Session = Depends(get_db)):
         r for r in db.query(IntelActivityExtraction).all()
         if r.activity_log_id in mineable_ids
     ]
-    mined = len({r.activity_log_id for r in rows})
+    # A failed read is still waiting, not read: counting it as read hid the
+    # Mine button, leaving no way to retry it.
+    mined = len({r.activity_log_id for r in rows if r.status != "failed"})
     total = len(mineable_ids)
     return ActivityStatusOut(
         total_logs=total,
