@@ -1041,6 +1041,9 @@ export interface IntelSignalRef {
   contact_name?: string | null
   // Jack placed this tenant before.
   past_client?: boolean
+  // Why this card is in the Waiting group ("In Play with Maria Chen",
+  // "Maria Chen is due Dec 1"), or null when it is ready to call.
+  waiting?: string | null
 }
 
 export interface IntelOpportunity {
@@ -1068,8 +1071,8 @@ export interface IntelGenerateStats {
   expirations_unreadable: number
   expirations_past: number
   expirations_beyond_horizon: number
-  // Held back while the tenant is being worked or asked to wait.
-  held_by_stage: number
+  // In the Waiting group: being worked, asked to wait, or said no recently.
+  waiting: number
   opportunities: number
   by_signal_type: Record<string, number>
 }

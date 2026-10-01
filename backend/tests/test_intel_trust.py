@@ -1,15 +1,18 @@
 """Intel cards you can act on without checking them first.
 
 A card is a prompt to call. It must not say "no follow-up recorded" when there
-was one, and it must not nag while the deal is already being worked, while the
-tenant said when to come back, or right after they said no. What this file locks:
+was one. And every card shows, whatever stage the relationship is in (Jack:
+there is always something to know) — the stage only decides whether it is
+Ready to call or Waiting, with the reason on it. What this file locks:
 
   - the card states the real last touch, read off the company's timeline
-  - In Play holds the card; a next-touch date in the future holds it until then
-  - Dormant holds for 90 days, Not Interested for a year — unless a next-touch
-    date they gave comes due first
-  - a past client is never held, is labelled, and ranks a little higher
-  - held cards are counted, not silently dropped, and come back on their own
+  - In Play puts the card in Waiting; so does a next-touch date in the future,
+    until that day
+  - Dormant waits 90 days, Not Interested a year — unless a next-touch date
+    they gave comes due first
+  - a past client is never Waiting except while being worked, is labelled, and
+    ranks a little higher
+  - Waiting cards are shown and counted, never dropped
 
 In-memory SQLite. No live DB, no network.
 """
@@ -111,76 +114,83 @@ def test_copies_and_dividers_are_not_a_touch(db):
     assert "Last touch Aug 22 (email, Maria Chen), 40 days ago." in _open(db)[0].rationale
 
 
-# ══ 2. Holding a card while it is being worked ════════════════════════════════
+# ══ 2. Ready to call, or Waiting — never hidden ═══════════════════════════════
 
-def test_in_play_holds_the_card_and_it_is_counted(db):
+def _waiting(db):
+    card = _open(db)[0]
+    return json.loads(card.signals_json)[0]["waiting"]
+
+
+def test_in_play_shows_the_card_as_waiting_and_counts_it(db):
     _setup(db, stage="In Play")
     stats = _run(db)
-    assert _open(db) == []
-    assert stats["held_by_stage"] == 1
+    assert len(_open(db)) == 1
+    assert _waiting(db) == "In Play with Maria Chen"
+    assert stats["waiting"] == 1
 
 
-def test_a_next_touch_date_holds_the_card_until_that_day(db):
+def test_a_next_touch_date_is_waiting_until_that_day(db):
     _setup(db, stage="Interested", next_touch=TODAY + timedelta(days=20))
     _run(db)
-    assert _open(db) == []
+    assert _waiting(db) == "Maria Chen is due Oct 21"
     _run(db, today=TODAY + timedelta(days=20))
-    assert len(_open(db)) == 1
+    assert _waiting(db) is None
 
 
 def test_dormant_waits_ninety_days(db):
     _setup(db, stage="Dormant", stage_changed=TODAY - timedelta(days=30))
     _run(db)
-    assert _open(db) == []
+    assert _waiting(db) == "Maria Chen is Dormant since Sep 1"
     _run(db, today=TODAY + timedelta(days=60))
-    assert len(_open(db)) == 1
+    assert _waiting(db) is None
 
 
 def test_not_interested_waits_a_year_unless_their_date_comes_first(db):
     _setup(db, stage="Not Interested", stage_changed=TODAY - timedelta(days=30))
     _run(db, today=TODAY + timedelta(days=60))
-    assert _open(db) == []
+    assert _waiting(db).startswith("Maria Chen is Not Interested")
 
 
-def test_not_interested_with_a_date_that_has_come_returns(db):
+def test_not_interested_with_a_date_that_has_come_is_ready(db):
     _setup(db, stage="Not Interested", stage_changed=TODAY - timedelta(days=30),
            next_touch=TODAY - timedelta(days=1))
     _run(db)
-    assert len(_open(db)) == 1
+    assert _waiting(db) is None
 
 
-def test_one_person_still_open_keeps_the_company_in_play(db):
+def test_one_person_still_open_keeps_the_company_ready(db):
     co, maria = _setup(db, stage="Not Interested")
     db.add(Contact(name="Office Manager", company_id=co.id, contact_type="tenant",
                    stage="Sent", triaged=True))
     db.commit()
     _run(db)
-    assert len(_open(db)) == 1
+    assert _waiting(db) is None
 
 
-def test_a_counterparty_at_the_company_does_not_hold_it(db):
+def test_a_counterparty_at_the_company_does_not_make_it_wait(db):
     co, maria = _setup(db)
     db.add(Contact(name="Their Broker", company_id=co.id, contact_type="counterparty",
                    stage="In Play", triaged=True))
     db.commit()
     _run(db)
-    assert len(_open(db)) == 1
+    assert _waiting(db) is None
 
 
 # ══ 3. Past clients ═══════════════════════════════════════════════════════════
 
-def test_a_past_client_is_never_held_is_labelled_and_ranks_higher(db):
+def test_a_past_client_is_ready_labelled_and_ranks_higher(db):
     _setup(db, stage="Closed", past=True)
     _run(db)
     card = _open(db)[0]
     sig = json.loads(card.signals_json)[0]
     assert sig["past_client"] is True
+    assert sig["waiting"] is None
     assert "Past client" in card.rationale
     plain = 100 + 39   # verified, inside the 6-9 month window
     assert card.score == plain + 10
 
 
-def test_a_past_client_being_worked_is_still_held(db):
+def test_a_past_client_being_worked_is_waiting(db):
     _setup(db, stage="In Play", past=True)
     _run(db)
-    assert _open(db) == []
+    assert _waiting(db) == "In Play with Maria Chen"

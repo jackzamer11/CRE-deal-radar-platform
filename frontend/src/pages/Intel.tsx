@@ -149,6 +149,12 @@ function OppCard({
               <span className="text-[9px] px-1.5 py-0.5 rounded font-bold bg-teal-500/20 text-teal-200
                                border border-teal-400/50">PAST CLIENT</span>
             )}
+            {sig?.waiting && (
+              <span className="text-[9px] px-1.5 py-0.5 rounded font-semibold bg-amber-500/10
+                               text-amber-300 border border-amber-500/30">
+                Waiting: {sig.waiting}
+              </span>
+            )}
           </div>
           <div className="mt-1.5 text-sm font-bold text-ink-primary">{opp.title}</div>
         </div>
@@ -459,9 +465,9 @@ export default function IntelPage() {
             {stats.expirations_beyond_horizon > 0 && (
               <span className="text-ink-muted"> · {stats.expirations_beyond_horizon} over a year out</span>
             )}
-            {stats.held_by_stage > 0 && (
-              <span className="text-ink-muted" title="In Play, told you when to come back, or said no recently — they return on their own">
-                {' '}· {stats.held_by_stage} held (being worked or waiting)
+            {stats.waiting > 0 && (
+              <span className="text-ink-muted" title="In Play, told you when to come back, or said no recently — shown below under Waiting">
+                {' '}· {stats.waiting} waiting
               </span>
             )}
             {' → '}
@@ -553,8 +559,18 @@ export default function IntelPage() {
             </p>
           </div>
         ) : (
+          // Every card shows. The stage only decides the group: Waiting cards
+          // (being worked, a date they gave, a recent no) sit below, reason on each.
           <div className="space-y-3">
-            {opps.map(opp => (
+            {opps.filter(o => !o.signals[0]?.waiting).map(opp => (
+              <OppCard key={opp.id} opp={opp} onDispositioned={handleDispositioned} />
+            ))}
+            {opps.some(o => o.signals[0]?.waiting) && (
+              <div className="pt-3 text-[10px] font-bold uppercase tracking-widest text-ink-muted">
+                Waiting — being worked, or asked to come back later
+              </div>
+            )}
+            {opps.filter(o => o.signals[0]?.waiting).map(opp => (
               <OppCard key={opp.id} opp={opp} onDispositioned={handleDispositioned} />
             ))}
           </div>

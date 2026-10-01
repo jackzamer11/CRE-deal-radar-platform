@@ -601,11 +601,13 @@ def _load_last_touches(db: Session, ctx: _Context, company_ids: List[int]) -> No
                 ctx.last_touch[("activity_log", lid)] = person_touch[cid]
 
 
-# ── Holding a card while its tenant is being worked ──────────────────────────
-# A card is a prompt to call. It is noise while the deal is already in play,
-# while the tenant said when to come back, or while they said no — for a
-# while. Held cards are not decisions: they come back by themselves when the
-# reason runs out. None of this applies to a past client.
+# ── Ready to call, or waiting ────────────────────────────────────────────────
+# Every card shows (Jack: whatever stage the relationship is in, there is
+# still something to know). What the stage decides is which group a card sits
+# in: Ready to call, or Waiting — the deal is already in play, the tenant said
+# when to come back, or said no recently — with the reason on the card. A card
+# moves back to Ready by itself when the reason runs out. A past client is
+# never Waiting except while In Play or on a date they gave.
 HOLD_DORMANT_DAYS = 90
 HOLD_NOT_INTERESTED_DAYS = 365
 PAST_CLIENT_BONUS = 10
@@ -643,7 +645,9 @@ def _hold_reason(people: List[Contact], today: date) -> Tuple[Optional[str], boo
         span = HOLD_DORMANT_DAYS if p.stage == "Dormant" else HOLD_NOT_INTERESTED_DAYS
         if today >= (p.stage_changed_at or today) + timedelta(days=span):
             return None, past   # long enough ago to ask again
-    return f"{quiet[0].name} is {quiet[0].stage}", past
+    since = quiet[0].stage_changed_at
+    when = f" since {since:%b} {since.day}" if since else ""
+    return f"{quiet[0].name} is {quiet[0].stage}{when}", past
 
 
 def _touch_line(ctx: _Context, entity_type: str, entity_id: int, today: date) -> str:
@@ -1176,9 +1180,9 @@ def generate_with_stats(
         "expirations_past": 0,
         "expirations_beyond_horizon": 0,
         "by_signal_type": {},
-        # Cards not shown because the tenant is being worked, said when to
-        # come back, or said no recently. They return on their own.
-        "held_by_stage": 0,
+        # Cards in the Waiting group: the tenant is being worked, said when to
+        # come back, or said no recently. Shown all the same, reason on them.
+        "waiting": 0,
     }
 
     def _keep(opp: Optional[IntelOpportunity], key: str) -> None:
@@ -1244,10 +1248,11 @@ def generate_with_stats(
         if days < 0 or days > EXPIRY_HORIZON_DAYS:
             continue
         expiry_entities.add((entity_type, entity_id))
-        held, past_client = _hold_reason(_people_for(ctx, entity_type, entity_id), today)
-        if held:
-            stats["held_by_stage"] = int(stats["held_by_stage"]) + 1
-            continue
+        # Never hidden: a card the tenant's stage says to wait on still shows,
+        # in the Waiting group, with the reason on it.
+        waiting, past_client = _hold_reason(_people_for(ctx, entity_type, entity_id), today)
+        if waiting:
+            stats["waiting"] = int(stats["waiting"]) + 1
 
         tenant = _tenant_label(ctx, entity_type, entity_id, rows)
         contact = _contact_for(ctx, chosen.obs, rows)
@@ -1309,6 +1314,8 @@ def generate_with_stats(
                 {"source": c.label, "date": c.date.isoformat()} for c in conflicts
             ],
             "past_client": past_client,
+            # Why this card is in the Waiting group, or None when it is ready.
+            "waiting": waiting,
         }]
         dedup_key = f"{entity_type}:{entity_id}:{signal_type}"
         opp = _upsert_opportunity(
@@ -1392,10 +1399,11 @@ def generate_with_stats(
         if (entity_type, entity_id) in expiry_entities:
             _retire_superseded(db, entity_type, entity_id, "stated_requirement")
             continue
-        held, past_client = _hold_reason(_people_for(ctx, entity_type, entity_id), today)
-        if held:
-            stats["held_by_stage"] = int(stats["held_by_stage"]) + 1
-            continue
+        # Never hidden: a card the tenant's stage says to wait on still shows,
+        # in the Waiting group, with the reason on it.
+        waiting, past_client = _hold_reason(_people_for(ctx, entity_type, entity_id), today)
+        if waiting:
+            stats["waiting"] = int(stats["waiting"]) + 1
 
         last_touch = _last_touch_date(ctx, rows)
         days_since = (today - last_touch).days if last_touch else None
@@ -1442,6 +1450,8 @@ def generate_with_stats(
             "source_snippet": evidence.source_snippet,
             "contact_name": contact,
             "past_client": past_client,
+            # Why this card is in the Waiting group, or None when it is ready.
+            "waiting": waiting,
             # Brokers Jack shopped this requirement with — facts that reached
             # this tenant from someone else's thread.
             "via": via,

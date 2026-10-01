@@ -101,9 +101,9 @@ class GenerateStatsOut(BaseModel):
     expirations_unreadable: int = 0
     expirations_past: int = 0
     expirations_beyond_horizon: int = 0
-    # Not shown because the tenant is being worked, said when to come back,
-    # or said no recently. They return on their own.
-    held_by_stage: int = 0
+    # Shown in the Waiting group: the tenant is being worked, said when to
+    # come back, or said no recently. They move to Ready on their own.
+    waiting: int = 0
     opportunities: int = 0
     by_signal_type: dict = {}
 
