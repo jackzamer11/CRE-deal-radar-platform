@@ -1089,6 +1089,15 @@ export interface IntelHistoryItem extends IntelOpportunity {
   disposition: IntelDisposition | null
   reason_category: string | null
   reason_text: string | null
+  // Accepted cards only: what followed, read off the timeline.
+  outcome?: {
+    decided_on: string | null
+    first_touch: string | null
+    first_touch_channel: string | null
+    touches: number
+    best_stage: string | null
+    closed: boolean
+  } | null
 }
 
 export interface IntelDispositionResult {

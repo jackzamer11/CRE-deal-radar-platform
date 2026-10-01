@@ -1042,6 +1042,20 @@ export const dispositionIntelOpportunity = (
 export const getIntelHistory = (): Promise<IntelHistoryItem[]> =>
   api.get('/intel/history').then(r => r.data)
 
+// Per kind of card: decisions, and how often an accepted one led anywhere.
+export interface IntelResultRow {
+  family: string
+  accepted: number
+  rejected: number
+  deferred: number
+  acted: number        // touched within two weeks of accepting
+  interested: number   // reached Interested or further
+  closed: number
+}
+
+export const getIntelResults = (): Promise<IntelResultRow[]> =>
+  api.get('/intel/results').then(r => r.data)
+
 export const getIntelCriteria = (): Promise<IntelCriterion[]> =>
   api.get('/intel/criteria').then(r => r.data)
 
