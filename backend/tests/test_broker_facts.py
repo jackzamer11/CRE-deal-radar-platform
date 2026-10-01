@@ -548,6 +548,18 @@ def test_the_status_counts_only_entries_a_run_would_read(db, client):
     assert status["remaining"] == 1
 
 
+def test_a_failed_read_still_counts_as_waiting(db, client):
+    """Counted as read, a failure hid the Mine button and could not be retried."""
+    co = _company(db, "Halverson Dental")
+    maria = _contact(db, "Maria Chen", co)
+    log = _entry(db, company=co, contact=maria)
+    db.add(IntelActivityExtraction(activity_log_id=log.id, status="failed", fields_found=0,
+                                   error="database is locked"))
+    db.commit()
+    status = client.get("/api/intel/activity/status").json()
+    assert status["remaining"] == 1 and status["failed"] == 1
+
+
 # ══ 6. Reclassifying someone re-reads their notes ═════════════════════════════
 
 def test_confirming_a_broker_queues_their_entries_to_be_read_again(db):

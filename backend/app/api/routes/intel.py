@@ -350,7 +350,9 @@ def activity_status(db: Session = Depends(get_db)):
         r for r in db.query(IntelActivityExtraction).all()
         if r.activity_log_id in mineable_ids
     ]
-    mined = len({r.activity_log_id for r in rows})
+    # A failed read is still waiting, not read: counting it as read hid the
+    # Mine button, leaving no way to retry it.
+    mined = len({r.activity_log_id for r in rows if r.status != "failed"})
     total = len(mineable_ids)
     return ActivityStatusOut(
         total_logs=total,
