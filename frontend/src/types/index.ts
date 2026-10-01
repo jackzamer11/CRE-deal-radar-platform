@@ -1028,6 +1028,8 @@ export interface IntelSignalRef {
   conflicts?: { source: string; date: string }[]
   // The person on the entry behind the card, when there is one.
   contact_name?: string | null
+  // Jack placed this tenant before.
+  past_client?: boolean
 }
 
 export interface IntelOpportunity {
@@ -1055,6 +1057,8 @@ export interface IntelGenerateStats {
   expirations_unreadable: number
   expirations_past: number
   expirations_beyond_horizon: number
+  // Held back while the tenant is being worked or asked to wait.
+  held_by_stage: number
   opportunities: number
   by_signal_type: Record<string, number>
 }

@@ -144,6 +144,10 @@ function OppCard({
             {sig?.contact_name && (
               <span className="text-[10px] text-ink-secondary">· {sig.contact_name}</span>
             )}
+            {sig?.past_client && (
+              <span className="text-[9px] px-1.5 py-0.5 rounded font-bold bg-teal-500/20 text-teal-200
+                               border border-teal-400/50">PAST CLIENT</span>
+            )}
           </div>
           <div className="mt-1.5 text-sm font-bold text-ink-primary">{opp.title}</div>
         </div>
@@ -413,6 +417,11 @@ export default function IntelPage() {
             )}
             {stats.expirations_beyond_horizon > 0 && (
               <span className="text-ink-muted"> · {stats.expirations_beyond_horizon} over a year out</span>
+            )}
+            {stats.held_by_stage > 0 && (
+              <span className="text-ink-muted" title="In Play, told you when to come back, or said no recently — they return on their own">
+                {' '}· {stats.held_by_stage} held (being worked or waiting)
+              </span>
             )}
             {' → '}
             <span className="font-bold text-accent-blue">{stats.opportunities}</span> opportunities
