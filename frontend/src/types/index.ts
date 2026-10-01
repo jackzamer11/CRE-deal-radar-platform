@@ -1006,6 +1006,13 @@ export interface Observation {
   suggested_value?: string | null
   /** How precise the stored text really was: exact | month | quarter | year */
   value_precision?: string | null
+  /** Set when this fact contradicts one already on file: that earlier fact. */
+  conflicts_with?: {
+    id: number
+    value: string | null
+    source_doc: string | null
+    source_snippet: string | null
+  } | null
 }
 
 export interface IntelSignalRef {

@@ -5,6 +5,7 @@ import {
 import axios from 'axios'
 import {
   getObservations, verifyObservation, uploadDocument, extractDocument,
+  resolveObservationConflict,
   getActivityMiningStatus, mineActivityLogs, requeueFuzzyDates,
 } from '../api/client'
 import type { Observation, ActivityMiningStatus } from '../types'
@@ -91,6 +92,63 @@ function ReviewRow({
     } catch {
       setBusy(false)
     }
+  }
+
+  const settle = async (keep: 'new' | 'old') => {
+    setBusy(true)
+    try {
+      await resolveObservationConflict(obs.id, keep)
+      onResolved(obs.id)
+    } catch {
+      setBusy(false)
+    }
+  }
+
+  // A newer note said something different from what is on file. Both are
+  // shown; the old one stays in use until Jack picks.
+  const earlier = obs.conflicts_with
+  if (earlier) {
+    const noteLink = (src: string | null) =>
+      src && src.startsWith('activity_log:') ? `/activity?focus=${src.split(':')[1]}` : null
+    const side = (label: string, value: string | null, src: string | null, snippet: string | null) => (
+      <div className="flex-1 min-w-[200px] bg-surface-muted/50 border border-surface-border rounded-lg p-2.5">
+        <div className="text-[10px] uppercase tracking-wider text-ink-muted">{label}</div>
+        <div className="text-sm font-bold text-ink-primary break-words">{value ?? '—'}</div>
+        {snippet && <p className="text-[11px] italic text-ink-secondary mt-1">“{snippet}”</p>}
+        {noteLink(src) && (
+          <a href={noteLink(src)!} className="text-[10px] text-accent-blue hover:underline">View note</a>
+        )}
+      </div>
+    )
+    return (
+      <div className="bg-surface-card border border-amber-500/40 rounded-xl p-4">
+        <div className="text-[10px] font-bold uppercase tracking-wider text-amber-300">
+          {fieldLabel(obs.field)} — the notes disagree
+        </div>
+        <div className="mt-2 flex gap-2 flex-wrap">
+          {side('On file (in use)', earlier.value, earlier.source_doc, earlier.source_snippet)}
+          {side('Newer note says', obs.value, obs.source_doc, obs.source_snippet)}
+        </div>
+        <div className="mt-3 flex items-center gap-2">
+          <button
+            onClick={() => settle('new')}
+            disabled={busy}
+            className="text-[10px] px-3 py-1.5 rounded-lg bg-accent-blue hover:bg-accent-blueDim
+                       text-white font-semibold disabled:opacity-50"
+          >
+            Use new
+          </button>
+          <button
+            onClick={() => settle('old')}
+            disabled={busy}
+            className="text-[10px] px-3 py-1.5 rounded-lg bg-surface-muted hover:bg-surface-hover
+                       text-ink-secondary font-semibold border border-surface-border disabled:opacity-50"
+          >
+            Keep old
+          </button>
+        </div>
+      </div>
+    )
   }
 
   return (

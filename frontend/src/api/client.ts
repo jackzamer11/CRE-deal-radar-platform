@@ -990,6 +990,13 @@ export const getObservations = (filters?: ObservationFilters): Promise<Observati
 
 // Confirm (value omitted) or correct (value supplied). Backend creates a new
 // verified row that supersedes the original — the old row never edits in place.
+// Settle a contradiction: use the newer statement, or keep the one on file.
+// The value not kept is superseded, never deleted.
+export const resolveObservationConflict = (
+  observationId: number, keep: 'new' | 'old',
+): Promise<Observation> =>
+  api.post(`/observations/${observationId}/resolve-conflict`, { keep }).then(r => r.data)
+
 export const verifyObservation = (
   observationId: number,
   value?: string,

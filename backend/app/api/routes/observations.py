@@ -28,9 +28,22 @@ class ObservationOut(BaseModel):
     suggested_value: Optional[str] = None
     # exact | month | quarter | year — how precise the stored text really was.
     value_precision: Optional[str] = None
+    # Set when this fact contradicts one already on file: the earlier fact, so
+    # Review can show both side by side. Null otherwise.
+    conflicts_with: Optional["ConflictOut"] = None
 
     class Config:
         from_attributes = True
+
+
+class ConflictOut(BaseModel):
+    id: int
+    value: Optional[str] = None
+    source_doc: Optional[str] = None
+    source_snippet: Optional[str] = None
+
+
+ObservationOut.model_rebuild()
 
 
 # Fields whose stored text is a date and may need normalizing before it is useful.
@@ -53,8 +66,15 @@ def _date_hint(observation: Observation) -> tuple:
     return parsed.normalized, parsed.precision
 
 
-def _to_out(observation: Observation) -> ObservationOut:
+def _to_out(observation: Observation, db: Optional[Session] = None) -> ObservationOut:
     suggested, precision = _date_hint(observation)
+    conflict = None
+    if observation.conflicts_with_id and db is not None:
+        earlier = db.query(Observation).filter(Observation.id == observation.conflicts_with_id).first()
+        if earlier is not None:
+            conflict = ConflictOut(id=earlier.id, value=earlier.value,
+                                   source_doc=earlier.source_doc,
+                                   source_snippet=earlier.source_snippet)
     return ObservationOut(
         id=observation.id,
         entity_type=observation.entity_type,
@@ -70,6 +90,7 @@ def _to_out(observation: Observation) -> ObservationOut:
         created_at=observation.created_at.isoformat() if observation.created_at else "",
         suggested_value=suggested,
         value_precision=precision,
+        conflicts_with=conflict,
     )
 
 
@@ -126,7 +147,7 @@ def list_observations(
             query = query.filter(Observation.superseded_by_id.is_(None))
 
     rows = query.order_by(Observation.confidence.asc().nulls_last(), Observation.created_at.asc()).all()
-    return [_to_out(row) for row in rows]
+    return [_to_out(row, db) for row in rows]
 
 
 @router.post("/{observation_id}/verify", response_model=ObservationOut)
@@ -150,6 +171,12 @@ def verify_observation(
         source_snippet=original.source_snippet,
         human_verified=True,
         verified_by="human",
+        # Who the fact is about travels with it. Without these a confirmed
+        # broker fact would quietly re-file under the broker's firm.
+        about=original.about,
+        about_name=original.about_name,
+        assigned_company_id=original.assigned_company_id,
+        assigned_contact_id=original.assigned_contact_id,
     )
     db.add(corrected)
     db.flush()
@@ -157,6 +184,41 @@ def verify_observation(
     original.human_verified = False
     corrected.human_verified = True
     original.superseded_by = corrected
+    # Confirming a fact that contradicted an earlier one settles it: the
+    # earlier one is superseded by this, kept as history, no longer in use.
+    if original.conflicts_with_id:
+        earlier = db.query(Observation).filter(Observation.id == original.conflicts_with_id).first()
+        if earlier is not None and earlier.superseded_by_id is None:
+            earlier.superseded_by_id = corrected.id
     db.commit()
     db.refresh(corrected)
-    return _to_out(corrected)
+    return _to_out(corrected, db)
+
+
+class ConflictResolve(BaseModel):
+    keep: str   # "new" | "old"
+
+
+@router.post("/{observation_id}/resolve-conflict", response_model=ObservationOut)
+def resolve_conflict(observation_id: int, payload: ConflictResolve,
+                     db: Session = Depends(get_db)):
+    """Settle a contradiction: use the newer statement, or keep the one on file.
+
+    Nothing is deleted. The value not kept is superseded by the one kept, so
+    the history of what was said, and when, survives.
+    """
+    newer = db.query(Observation).filter(Observation.id == observation_id).first()
+    if newer is None or not newer.conflicts_with_id:
+        raise HTTPException(status_code=404, detail="No contradiction to settle on that fact")
+    if payload.keep == "new":
+        return verify_observation(observation_id, ObservationVerify(), db)
+    if payload.keep != "old":
+        raise HTTPException(status_code=400, detail="keep must be 'new' or 'old'")
+    earlier = db.query(Observation).filter(Observation.id == newer.conflicts_with_id).first()
+    if earlier is None:
+        raise HTTPException(status_code=404, detail="The earlier fact is gone")
+    newer.superseded_by_id = earlier.id
+    newer.human_verified = False
+    db.commit()
+    db.refresh(earlier)
+    return _to_out(earlier, db)

@@ -109,6 +109,12 @@ MIN_REQUIREMENT_FIELDS = 2
 # How long a stated requirement can sit untouched before it is worth resurfacing.
 REQUIREMENT_STALE_DAYS = 30
 
+# How long a stated requirement counts as what the tenant wants NOW. Space,
+# budget and must-haves hold for about a year; "when" goes stale in a quarter
+# ("need space by spring" said in 2026 means nothing in 2027).
+REQUIREMENT_FRESH_DAYS = 365
+TIMING_FRESH_DAYS = 90
+
 
 # ── Date parsing ─────────────────────────────────────────────────────────────
 # Extraction stores the model's verbatim value. Real notes produce hedged,
@@ -471,6 +477,8 @@ def _load_context(db: Session, active: List[Observation]) -> Tuple[_Context, Lis
         about = obs.about
         if about in (ABOUT_MARKET, ABOUT_DISMISSED):
             continue
+        if obs.conflicts_with_id and not obs.human_verified:
+            continue   # contradicts what is on file; the old value stands until Jack picks
         entity = (obs.entity_type, obs.entity_id)
         lid = _source_log_id(obs.source_doc)
         row = logs.get(lid) if lid else None
@@ -1073,6 +1081,15 @@ def _specificity_bonus(field_count: int) -> int:
     return round(min(field_count, 6) / 6 * 24)
 
 
+def _is_fresh(ctx: _Context, obs: Observation, today: date) -> bool:
+    """Whether a stated requirement still counts as current."""
+    said = _stated_on(ctx, obs)
+    if said is None:
+        return True
+    window = TIMING_FRESH_DAYS if obs.field == "req_timing" else REQUIREMENT_FRESH_DAYS
+    return (today - said).days <= window
+
+
 def _newest_value(ctx: _Context, rows: List[Observation], field: str) -> Optional[str]:
     """The most recently stated value for a field — a requirement said again
     later ("actually 3,000 now") replaces what was said before. Verified wins a
@@ -1353,8 +1370,15 @@ def generate_with_stats(
     # from call notes previously drove nothing at all, because only
     # `expiration_date` could produce a card.
     for (entity_type, entity_id), all_rows in by_entity.items():
-        rows = [o for o in all_rows if o.field in ALL_REQUIREMENT_FIELDS and o.value]
-        if not rows or _is_counterparty(entity_type, entity_id):
+        stated = [o for o in all_rows if o.field in ALL_REQUIREMENT_FIELDS and o.value]
+        if not stated or _is_counterparty(entity_type, entity_id):
+            continue
+        # A requirement ages. Within its window it is current and drives the
+        # card; past it, it is listed to re-confirm on the call, never treated
+        # as what the tenant wants today.
+        rows = [o for o in stated if _is_fresh(ctx, o, today)]
+        stale = [o for o in stated if not _is_fresh(ctx, o, today)]
+        if not rows:
             continue
         fields = {o.field for o in rows}
         # Two soft facts ("Arlington", "office") describe a note, not a
@@ -1394,10 +1418,15 @@ def generate_with_stats(
         ) if via else ""
         title = f"Stated requirement — {tenant}"
         touch = _touch_line(ctx, entity_type, entity_id, today)
+        # Older statements not superseded by anything current — ask again.
+        old_fields = {o.field for o in stale} - fields
+        reconfirm = _requirement_summary(ctx, stale, old_fields) if old_fields else ""
+        recheck = f" Said a while ago — re-confirm: {reconfirm}." if reconfirm else ""
         rationale = (
-            f"{tenant} stated: {summary}. {since}.{touch}{also}"
+            f"{tenant} stated: {summary}. {since}.{touch}{also}{recheck}"
             if summary else
-            f"{tenant} stated a space requirement across {len(fields)} fields. {since}.{touch}{also}"
+            f"{tenant} stated a space requirement across {len(fields)} fields. "
+            f"{since}.{touch}{also}{recheck}"
         )
         evidence = next((o for o in rows if o.field in SPECIFIC_REQUIREMENT_FIELDS), rows[0])
         contact = _contact_for(ctx, evidence, rows)

@@ -508,6 +508,7 @@ def ensure_observations(cur: sqlite3.Cursor) -> int:
             "about_name": "TEXT",
             "assigned_company_id": "INTEGER",
             "assigned_contact_id": "INTEGER",
+            "conflicts_with_id": "INTEGER",
         }.items():
             added += _add_column(cur, "observations", col, col_def)
         return added
@@ -531,6 +532,7 @@ def ensure_observations(cur: sqlite3.Cursor) -> int:
             about_name TEXT,
             assigned_company_id INTEGER,
             assigned_contact_id INTEGER,
+            conflicts_with_id INTEGER,
             FOREIGN KEY(superseded_by_id) REFERENCES observations(id)
         )
     """)

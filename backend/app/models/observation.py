@@ -48,6 +48,13 @@ class Observation(Base):
     # page — Intel stays tenant cards only.
     assigned_company_id = Column(Integer, nullable=True)
     assigned_contact_id = Column(Integer, nullable=True)
+
+    # Set when this fact, mined from a newer note, CONTRADICTS one already on
+    # file for the same tenant (a different SF, budget, term or lease date).
+    # It then waits in Review beside the fact it contradicts, and the old one
+    # stays in use until Jack picks: the loser is superseded by the winner,
+    # never deleted. A restatement of the same value is not a contradiction.
+    conflicts_with_id = Column(Integer, nullable=True)
     superseded_by_id = Column(Integer, ForeignKey("observations.id"), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 

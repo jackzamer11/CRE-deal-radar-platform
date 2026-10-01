@@ -34,6 +34,7 @@ from app.services.document_extraction_service import (
     MissingAPIKeyError,
 )
 from app.services.requirement_subject import (
+    ABOUT_ENTRY,
     ABOUT_MARKET,
     REQUIREMENT_KINDS,
     entry_company,
@@ -388,6 +389,12 @@ def mine_activity_log(
         log, kind if kind in REQUIREMENT_KINDS else None, subject.get("tenant_name"),
     )
 
+    # What is already on file for this tenant, to catch a note that says
+    # something different. Only for a requirement filed under the entry's own
+    # company — a held or named one has no settled tenant to compare against.
+    tenant = entry_company(log) if about == ABOUT_ENTRY else None
+    on_file = _facts_on_file(db, tenant.id, log.id) if tenant is not None else {}
+
     created: List[Observation] = []
     for field in EXTRACTED_FIELDS:
         row = parsed.get(field) or {}
@@ -396,6 +403,13 @@ def mine_activity_log(
             continue
         auto = _should_auto_approve(field, str(value))
         is_market = field in MARKET_FIELDS
+        earlier = on_file.get(field)
+        contradicts = (
+            earlier is not None and field in CONFLICT_FIELDS
+            and _contradicts(field, earlier.value, str(value))
+        )
+        if contradicts:
+            auto = False   # a contradiction is Jack's call, never automatic
         obs = Observation(
             entity_type=entity_type,
             entity_id=entity_id,
@@ -409,10 +423,89 @@ def mine_activity_log(
             verified_by="auto" if auto else None,
             about=ABOUT_MARKET if is_market else about,
             about_name=None if is_market else about_name,
+            conflicts_with_id=earlier.id if contradicts else None,
         )
         db.add(obs)
         created.append(obs)
     return created
+
+
+# Fields where a different value means the tenant changed their story — a
+# contradiction for Jack to settle. Lists like must-haves only ever add, so a
+# new item is a new fact, not a conflict.
+CONFLICT_FIELDS = {
+    "req_sf_min", "req_sf_max", "req_budget_max_psf", "req_lease_term_years",
+    "expiration_date",
+}
+
+# Two numbers this close are the same statement ("$38" and "38.00/SF").
+_SAME_NUMBER = 0.02
+# Two lease dates this close are the same date, pinned down.
+_SAME_DATE_DAYS = 45
+
+
+def _first_number(text: Optional[str]) -> Optional[float]:
+    import re
+
+    match = re.search(r"\d[\d,]*(?:\.\d+)?", text or "")
+    if not match:
+        return None
+    try:
+        return float(match.group(0).replace(",", ""))
+    except ValueError:
+        return None
+
+
+def _contradicts(field: str, old: Optional[str], new: Optional[str]) -> bool:
+    """Whether two stated values disagree. Unreadable is never a contradiction:
+    only values that can be compared, and differ, go to Review."""
+    if field == "expiration_date":
+        from app.services.intel_signal_service import parse_expiry
+
+        a, b = parse_expiry(old).date, parse_expiry(new).date
+        return bool(a and b) and abs((a - b).days) > _SAME_DATE_DAYS
+    a, b = _first_number(old), _first_number(new)
+    if a is None or b is None:
+        return False
+    return abs(a - b) > _SAME_NUMBER * max(abs(a), abs(b))
+
+
+def _facts_on_file(db: Session, company_id: int, exclude_log_id: int) -> Dict[str, Observation]:
+    """The newest settled fact per field for one tenant, from other notes.
+
+    Settled: not superseded, not itself waiting on a contradiction, and filed
+    under this company — by its note's company, or by Jack attaching it.
+    """
+    log_ids = [
+        lid for (lid,) in
+        db.query(ActivityLog.id)
+        .filter(
+            or_(ActivityLog.company_stamp_id == company_id,
+                ActivityLog.company_id == company_id),
+            ActivityLog.id != exclude_log_id,
+        )
+        .all()
+    ]
+    sources = [f"activity_log:{lid}" for lid in log_ids]
+    conditions = [Observation.assigned_company_id == company_id]
+    if sources:
+        conditions.append(Observation.source_doc.in_(sources))
+    rows = (
+        db.query(Observation)
+        .filter(
+            or_(*conditions),
+            Observation.superseded_by_id.is_(None),
+            Observation.field.in_(sorted(CONFLICT_FIELDS)),
+            or_(Observation.about.is_(None), Observation.about.in_(("entry", "named"))),
+            or_(Observation.conflicts_with_id.is_(None), Observation.human_verified.is_(True)),
+        )
+        .order_by(Observation.id.asc())
+        .all()
+    )
+    newest: Dict[str, Observation] = {}
+    for obs in rows:
+        newest[obs.field] = obs   # ascending id: the last one is the newest
+    return newest
 
 
 def remine_activity_log(
