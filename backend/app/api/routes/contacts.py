@@ -12,7 +12,7 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import and_, case, func, or_
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session, joinedload, object_session
 
 from app.database import get_db
 from app.models.activity import ActivityLog
@@ -100,6 +100,10 @@ class ContactOut(BaseModel):
     # suggestion — the type changes only when Jack confirms it.
     suggested_type: Optional[str] = None
     suggested_type_reason: Optional[str] = None
+    # "Left <former company> on <date>", when Jack has said so.
+    former_company_id: Optional[int] = None
+    former_company_name: Optional[str] = None
+    left_company_on: Optional[date] = None
 
     class Config:
         from_attributes = True
@@ -339,6 +343,10 @@ def _contact_out(contact: Contact, company_name: Optional[str] = None) -> Contac
     suggestion = suggest_type(contact)
     out.suggested_type = suggestion["type"]
     out.suggested_type_reason = suggestion["reason"]
+    if contact.former_company_id:
+        former = object_session(contact).query(Company.name).filter(
+            Company.id == contact.former_company_id).first() if object_session(contact) else None
+        out.former_company_name = former[0] if former else None
     return out
 
 
@@ -1541,6 +1549,62 @@ def confirm_contact_type(
     db.commit()
     db.refresh(contact)
     return ContactTypeConfirmResult(contact=_contact_out(contact), **result)
+
+
+class LeftCompanyIn(BaseModel):
+    left_on: date
+    # Where they went, when known. Their later entries move there.
+    new_company_id: Optional[int] = None
+
+
+class LeftCompanyResult(BaseModel):
+    contact: ContactOut
+    entries_moved: int
+
+
+@router.post("/{contact_id}/left-company", response_model=LeftCompanyResult)
+def left_company(contact_id: int, payload: LeftCompanyIn, db: Session = Depends(get_db)):
+    """"Maria left Halverson on 2030-03-01."
+
+    Moves every entry on this person's thread logged on or after that day off
+    the company they left — to the company they went to, or to none — so the
+    old company keeps exactly the years they worked there. Entries before the
+    date stay with the old company; the person's own thread is untouched.
+    Roundup entries about a deal are left alone: they are about the deal's
+    company, not this person's employer.
+    """
+    contact = _get_contact(db, contact_id)
+    old_id = contact.company_id
+    if old_id is None:
+        raise HTTPException(status_code=400, detail="This contact has no company to leave.")
+    if payload.new_company_id is not None:
+        if payload.new_company_id == old_id:
+            raise HTTPException(status_code=400, detail="That is the company they are leaving.")
+        _get_company(db, payload.new_company_id)
+
+    later = (
+        db.query(ActivityLog)
+        .filter(
+            ActivityLog.contact_id == contact.id,
+            ActivityLog.log_date >= payload.left_on,
+            ActivityLog.deal_sourced.isnot(True),
+            or_(ActivityLog.company_stamp_id == old_id, ActivityLog.company_id == old_id),
+        )
+        .all()
+    )
+    for log in later:
+        if log.company_stamp_id == old_id:
+            log.company_stamp_id = payload.new_company_id
+        if log.company_id == old_id:
+            log.company_id = payload.new_company_id
+
+    contact.former_company_id = old_id
+    contact.left_company_on = payload.left_on
+    contact.company_id = payload.new_company_id
+    contact.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(contact)
+    return LeftCompanyResult(contact=_contact_out(contact), entries_moved=len(later))
 
 
 class ContactStatusUpdate(BaseModel):

@@ -5,8 +5,9 @@ import {
 } from 'lucide-react'
 import {
   getIntelOpportunities, generateIntelOpportunities,
-  dispositionIntelOpportunity, getIntelHistory, saveIntelCriterion,
+  dispositionIntelOpportunity, getIntelHistory, saveIntelCriterion, getIntelResults,
 } from '../api/client'
+import type { IntelResultRow } from '../api/client'
 import type {
   IntelOpportunity, IntelHistoryItem, IntelDisposition, IntelGenerateStats,
 } from '../types'
@@ -143,6 +144,16 @@ function OppCard({
             )}
             {sig?.contact_name && (
               <span className="text-[10px] text-ink-secondary">· {sig.contact_name}</span>
+            )}
+            {sig?.past_client && (
+              <span className="text-[9px] px-1.5 py-0.5 rounded font-bold bg-teal-500/20 text-teal-200
+                               border border-teal-400/50">PAST CLIENT</span>
+            )}
+            {sig?.waiting && (
+              <span className="text-[9px] px-1.5 py-0.5 rounded font-semibold bg-amber-500/10
+                               text-amber-300 border border-amber-500/30">
+                Waiting: {sig.waiting}
+              </span>
             )}
           </div>
           <div className="mt-1.5 text-sm font-bold text-ink-primary">{opp.title}</div>
@@ -326,6 +337,46 @@ function HistoryCard({ item }: { item: IntelHistoryItem }) {
           {item.reason_text && <span> — “{item.reason_text}”</span>}
         </p>
       )}
+      {/* What followed — read off the timeline, never typed in. */}
+      {item.outcome && (
+        <p className="mt-2 text-[11px] text-ink-secondary">
+          <span className="text-ink-muted">Then: </span>
+          {item.outcome.first_touch ? (
+            <>
+              {item.outcome.first_touch_channel ?? 'entry'} {fmtDay(item.outcome.first_touch)}
+              {item.outcome.touches > 1 && ` · ${item.outcome.touches} touches`}
+              {item.outcome.best_stage && ` · reached ${item.outcome.best_stage}`}
+            </>
+          ) : 'nothing logged since'}
+        </p>
+      )}
+    </div>
+  )
+}
+
+// Per kind of card, how often accepting one led anywhere. Evidence for which
+// cards are worth the call — it fills in as decisions and their outcomes pile up.
+const FAMILY_LABEL: Record<string, string> = {
+  lease: 'Lease cards',
+  stated_requirement: 'Requirement cards',
+  stale_data: 'Incomplete-record cards',
+}
+
+function ResultsStrip() {
+  const [rows, setRows] = useState<IntelResultRow[]>([])
+  useEffect(() => { getIntelResults().then(setRows).catch(() => setRows([])) }, [])
+  const shown = rows.filter(r => r.accepted > 0)
+  if (shown.length === 0) return null
+  return (
+    <div className="bg-surface-card border border-surface-border rounded-xl px-4 py-3 space-y-1">
+      <div className="text-[10px] font-bold uppercase tracking-widest text-ink-muted">What accepted cards led to</div>
+      {shown.map(r => (
+        <p key={r.family} className="text-[11px] text-ink-secondary">
+          <span className="font-semibold text-ink-primary">{FAMILY_LABEL[r.family] ?? r.family}:</span>{' '}
+          {r.accepted} accepted → {r.acted} acted on within 2 weeks · {r.interested} reached
+          Interested or further · {r.closed} closed
+        </p>
+      ))}
     </div>
   )
 }
@@ -413,6 +464,11 @@ export default function IntelPage() {
             )}
             {stats.expirations_beyond_horizon > 0 && (
               <span className="text-ink-muted"> · {stats.expirations_beyond_horizon} over a year out</span>
+            )}
+            {stats.waiting > 0 && (
+              <span className="text-ink-muted" title="In Play, told you when to come back, or said no recently — shown below under Waiting">
+                {' '}· {stats.waiting} waiting
+              </span>
             )}
             {' → '}
             <span className="font-bold text-accent-blue">{stats.opportunities}</span> opportunities
@@ -503,8 +559,18 @@ export default function IntelPage() {
             </p>
           </div>
         ) : (
+          // Every card shows. The stage only decides the group: Waiting cards
+          // (being worked, a date they gave, a recent no) sit below, reason on each.
           <div className="space-y-3">
-            {opps.map(opp => (
+            {opps.filter(o => !o.signals[0]?.waiting).map(opp => (
+              <OppCard key={opp.id} opp={opp} onDispositioned={handleDispositioned} />
+            ))}
+            {opps.some(o => o.signals[0]?.waiting) && (
+              <div className="pt-3 text-[10px] font-bold uppercase tracking-widest text-ink-muted">
+                Waiting — being worked, or asked to come back later
+              </div>
+            )}
+            {opps.filter(o => o.signals[0]?.waiting).map(opp => (
               <OppCard key={opp.id} opp={opp} onDispositioned={handleDispositioned} />
             ))}
           </div>
@@ -516,6 +582,7 @@ export default function IntelPage() {
         </div>
       ) : (
         <div className="space-y-3">
+          <ResultsStrip />
           {history.map(item => <HistoryCard key={item.id} item={item} />)}
         </div>
       )}

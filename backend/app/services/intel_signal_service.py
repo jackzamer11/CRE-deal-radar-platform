@@ -109,6 +109,12 @@ MIN_REQUIREMENT_FIELDS = 2
 # How long a stated requirement can sit untouched before it is worth resurfacing.
 REQUIREMENT_STALE_DAYS = 30
 
+# How long a stated requirement counts as what the tenant wants NOW. Space,
+# budget and must-haves hold for about a year; "when" goes stale in a quarter
+# ("need space by spring" said in 2026 means nothing in 2027).
+REQUIREMENT_FRESH_DAYS = 365
+TIMING_FRESH_DAYS = 90
+
 
 # ── Date parsing ─────────────────────────────────────────────────────────────
 # Extraction stores the model's verbatim value. Real notes produce hedged,
@@ -388,6 +394,15 @@ class _Context:
     current_lease: Dict[int, Lease] = dc_field(default_factory=dict)
     # company id -> the types of everyone on file who works there now.
     staff_types: Dict[int, Set[str]] = dc_field(default_factory=dict)
+    # Everyone who works at each company, and the person on each entry — for
+    # holding a card while its tenant is being worked (see _hold_reason).
+    people: Dict[int, List[Contact]] = dc_field(default_factory=dict)
+    log_contact_id: Dict[int, int] = dc_field(default_factory=dict)
+    contacts_by_id: Dict[int, Contact] = dc_field(default_factory=dict)
+    # (entity_type, entity_id) -> (date, channel, person) of the newest real
+    # entry: what a card says instead of claiming "no follow-up recorded".
+    last_touch: Dict[Tuple[str, int], Tuple[date, Optional[str], Optional[str]]] = \
+        dc_field(default_factory=dict)
 
 
 def _chunks(items: List[int], size: int = 500) -> Iterable[List[int]]:
@@ -462,6 +477,8 @@ def _load_context(db: Session, active: List[Observation]) -> Tuple[_Context, Lis
         about = obs.about
         if about in (ABOUT_MARKET, ABOUT_DISMISSED):
             continue
+        if obs.conflicts_with_id and not obs.human_verified:
+            continue   # contradicts what is on file; the old value stands until Jack picks
         entity = (obs.entity_type, obs.entity_id)
         lid = _source_log_id(obs.source_doc)
         row = logs.get(lid) if lid else None
@@ -514,13 +531,135 @@ def _load_context(db: Session, active: List[Observation]) -> Tuple[_Context, Lis
             .all()
         ):
             ctx.current_lease[lease.company_id] = lease
-        for company_id, contact_type in (
-            db.query(Contact.company_id, Contact.contact_type)
-            .filter(Contact.company_id.in_(chunk))
+        for person in db.query(Contact).filter(Contact.company_id.in_(chunk)).all():
+            ctx.staff_types.setdefault(person.company_id, set()).add(person.contact_type or "")
+            ctx.people.setdefault(person.company_id, []).append(person)
+            ctx.contacts_by_id[person.id] = person
+
+    # The person on each entry, for cards that belong to no company.
+    for lid, row in logs.items():
+        if row[3]:
+            ctx.log_contact_id[lid] = row[3]
+    missing = sorted(set(ctx.log_contact_id.values()) - set(ctx.contacts_by_id))
+    for chunk in _chunks(missing):
+        for person in db.query(Contact).filter(Contact.id.in_(chunk)).all():
+            ctx.contacts_by_id[person.id] = person
+
+    _load_last_touches(db, ctx, company_ids)
+    return ctx, kept
+
+
+def _real_entry_filters():
+    """An entry that is a conversation: not a copy, not a divider, not noise."""
+    return (
+        ActivityLog.participation.isnot(True),
+        ActivityLog.action_type != "STAGE_CHANGE",
+        ActivityLog.archived.isnot(True),
+    )
+
+
+def _load_last_touches(db: Session, ctx: _Context, company_ids: List[int]) -> None:
+    """The newest real entry per company (by the company it was stamped to),
+    and per person for cards that belong to no company."""
+    def newest(rows, key_of):
+        for key, when, lid, channel, contact_id in rows:
+            if key is None or when is None:
+                continue
+            k = key_of(key)
+            seen = ctx.last_touch.get(k)
+            if seen is None or (when, lid) > (seen[0], seen[3]):
+                person = ctx.contacts_by_id.get(contact_id) if contact_id else None
+                ctx.last_touch[k] = (when, channel, person.name if person else None, lid)
+
+    for chunk in _chunks(company_ids):
+        newest(
+            db.query(ActivityLog.company_stamp_id, ActivityLog.log_date, ActivityLog.id,
+                     ActivityLog.channel, ActivityLog.contact_id)
+            .filter(ActivityLog.company_stamp_id.in_(chunk), *_real_entry_filters())
+            .all(),
+            lambda cid: ("company", cid),
+        )
+    # Entry-level cards: the person on that entry, across all their entries.
+    by_person: Dict[int, List[int]] = {}
+    for lid, cid in ctx.log_contact_id.items():
+        by_person.setdefault(cid, []).append(lid)
+    person_touch: Dict[int, tuple] = {}
+    for chunk in _chunks(sorted(by_person)):
+        for cid, when, lid, channel, _ in (
+            db.query(ActivityLog.contact_id, ActivityLog.log_date, ActivityLog.id,
+                     ActivityLog.channel, ActivityLog.contact_id)
+            .filter(ActivityLog.contact_id.in_(chunk), *_real_entry_filters())
             .all()
         ):
-            ctx.staff_types.setdefault(company_id, set()).add(contact_type or "")
-    return ctx, kept
+            seen = person_touch.get(cid)
+            if when and (seen is None or (when, lid) > (seen[0], seen[3])):
+                person = ctx.contacts_by_id.get(cid)
+                person_touch[cid] = (when, channel, person.name if person else None, lid)
+    for cid, lids in by_person.items():
+        if cid in person_touch:
+            for lid in lids:
+                ctx.last_touch[("activity_log", lid)] = person_touch[cid]
+
+
+# ── Ready to call, or waiting ────────────────────────────────────────────────
+# Every card shows (Jack: whatever stage the relationship is in, there is
+# still something to know). What the stage decides is which group a card sits
+# in: Ready to call, or Waiting — the deal is already in play, the tenant said
+# when to come back, or said no recently — with the reason on the card. A card
+# moves back to Ready by itself when the reason runs out. A past client is
+# never Waiting except while In Play or on a date they gave.
+HOLD_DORMANT_DAYS = 90
+HOLD_NOT_INTERESTED_DAYS = 365
+PAST_CLIENT_BONUS = 10
+
+
+def _people_for(ctx: _Context, entity_type: str, entity_id: int) -> List[Contact]:
+    if entity_type == "company":
+        people = ctx.people.get(entity_id, [])
+    else:
+        cid = ctx.log_contact_id.get(entity_id)
+        people = [ctx.contacts_by_id[cid]] if cid in ctx.contacts_by_id else []
+    return [p for p in people if p.contact_type != "counterparty"]
+
+
+def _hold_reason(people: List[Contact], today: date) -> Tuple[Optional[str], bool]:
+    """(why this card waits, or None; whether a past client is among them)."""
+    past = any(p.is_past_client or p.stage == "Closed" for p in people)
+    if not people:
+        return None, past
+    for p in people:
+        if p.stage == "In Play":
+            return f"In Play with {p.name}", past
+    for p in people:
+        if p.next_touch_date and p.next_touch_date > today:
+            d = p.next_touch_date
+            return f"{p.name} is due {d:%b} {d.day}", past
+    if past:
+        return None, past
+    quiet = [p for p in people if p.stage in ("Not Interested", "Dormant")]
+    if len(quiet) != len(people):
+        return None, past
+    for p in quiet:
+        if p.next_touch_date and p.next_touch_date <= today:
+            return None, past   # the date they gave has come
+        span = HOLD_DORMANT_DAYS if p.stage == "Dormant" else HOLD_NOT_INTERESTED_DAYS
+        if today >= (p.stage_changed_at or today) + timedelta(days=span):
+            return None, past   # long enough ago to ask again
+    since = quiet[0].stage_changed_at
+    when = f" since {since:%b} {since.day}" if since else ""
+    return f"{quiet[0].name} is {quiet[0].stage}{when}", past
+
+
+def _touch_line(ctx: _Context, entity_type: str, entity_id: int, today: date) -> str:
+    """The card's claim about follow-up, read off the timeline — never assumed."""
+    touch = ctx.last_touch.get((entity_type, entity_id))
+    if touch is None:
+        return " No conversation logged yet."
+    when, channel, person = touch[0], touch[1], touch[2]
+    how = channel if channel and channel != "other" else "entry"
+    who = f", {person}" if person else ""
+    ago = (today - when).days
+    return f" Last touch {when:%b} {when.day} ({how}{who}), {ago} day{'s' if ago != 1 else ''} ago."
 
 
 def _group(ctx: _Context, facts: List[Observation]) -> Dict[Tuple[str, int], List[Observation]]:
@@ -946,6 +1085,15 @@ def _specificity_bonus(field_count: int) -> int:
     return round(min(field_count, 6) / 6 * 24)
 
 
+def _is_fresh(ctx: _Context, obs: Observation, today: date) -> bool:
+    """Whether a stated requirement still counts as current."""
+    said = _stated_on(ctx, obs)
+    if said is None:
+        return True
+    window = TIMING_FRESH_DAYS if obs.field == "req_timing" else REQUIREMENT_FRESH_DAYS
+    return (today - said).days <= window
+
+
 def _newest_value(ctx: _Context, rows: List[Observation], field: str) -> Optional[str]:
     """The most recently stated value for a field — a requirement said again
     later ("actually 3,000 now") replaces what was said before. Verified wins a
@@ -1032,6 +1180,9 @@ def generate_with_stats(
         "expirations_past": 0,
         "expirations_beyond_horizon": 0,
         "by_signal_type": {},
+        # Cards in the Waiting group: the tenant is being worked, said when to
+        # come back, or said no recently. Shown all the same, reason on them.
+        "waiting": 0,
     }
 
     def _keep(opp: Optional[IntelOpportunity], key: str) -> None:
@@ -1097,10 +1248,18 @@ def generate_with_stats(
         if days < 0 or days > EXPIRY_HORIZON_DAYS:
             continue
         expiry_entities.add((entity_type, entity_id))
+        # Never hidden: a card the tenant's stage says to wait on still shows,
+        # in the Waiting group, with the reason on it.
+        waiting, past_client = _hold_reason(_people_for(ctx, entity_type, entity_id), today)
+        if waiting:
+            stats["waiting"] = int(stats["waiting"]) + 1
 
         tenant = _tenant_label(ctx, entity_type, entity_id, rows)
         contact = _contact_for(ctx, chosen.obs, rows)
         who = f" Contact: {contact}." if contact else ""
+        who += _touch_line(ctx, entity_type, entity_id, today)
+        if past_client:
+            who = " Past client — you placed them before." + who
         disagree = ""
         if conflicts:
             disagree = " Sources disagree: " + "; ".join(
@@ -1127,6 +1286,11 @@ def generate_with_stats(
                 f"{who}{disagree}"
             )
         score = SIGNAL_BASE_WEIGHT[signal_type] + _window_bonus(days)
+        if past_client and chosen.verified:
+            # "You placed this tenant in this building" is the strongest
+            # opening line there is — worth a few places, never a tier, and
+            # never enough to lift an unverified date over a verified one.
+            score += PAST_CLIENT_BONUS
 
         obs = chosen.obs
         value = obs.value if obs is not None else exp.isoformat()
@@ -1149,6 +1313,9 @@ def generate_with_stats(
             "conflicts": [
                 {"source": c.label, "date": c.date.isoformat()} for c in conflicts
             ],
+            "past_client": past_client,
+            # Why this card is in the Waiting group, or None when it is ready.
+            "waiting": waiting,
         }]
         dedup_key = f"{entity_type}:{entity_id}:{signal_type}"
         opp = _upsert_opportunity(
@@ -1210,8 +1377,15 @@ def generate_with_stats(
     # from call notes previously drove nothing at all, because only
     # `expiration_date` could produce a card.
     for (entity_type, entity_id), all_rows in by_entity.items():
-        rows = [o for o in all_rows if o.field in ALL_REQUIREMENT_FIELDS and o.value]
-        if not rows or _is_counterparty(entity_type, entity_id):
+        stated = [o for o in all_rows if o.field in ALL_REQUIREMENT_FIELDS and o.value]
+        if not stated or _is_counterparty(entity_type, entity_id):
+            continue
+        # A requirement ages. Within its window it is current and drives the
+        # card; past it, it is listed to re-confirm on the call, never treated
+        # as what the tenant wants today.
+        rows = [o for o in stated if _is_fresh(ctx, o, today)]
+        stale = [o for o in stated if not _is_fresh(ctx, o, today)]
+        if not rows:
             continue
         fields = {o.field for o in rows}
         # Two soft facts ("Arlington", "office") describe a note, not a
@@ -1225,6 +1399,11 @@ def generate_with_stats(
         if (entity_type, entity_id) in expiry_entities:
             _retire_superseded(db, entity_type, entity_id, "stated_requirement")
             continue
+        # Never hidden: a card the tenant's stage says to wait on still shows,
+        # in the Waiting group, with the reason on it.
+        waiting, past_client = _hold_reason(_people_for(ctx, entity_type, entity_id), today)
+        if waiting:
+            stats["waiting"] = int(stats["waiting"]) + 1
 
         last_touch = _last_touch_date(ctx, rows)
         days_since = (today - last_touch).days if last_touch else None
@@ -1246,10 +1425,16 @@ def generate_with_stats(
             ) + "."
         ) if via else ""
         title = f"Stated requirement — {tenant}"
+        touch = _touch_line(ctx, entity_type, entity_id, today)
+        # Older statements not superseded by anything current — ask again.
+        old_fields = {o.field for o in stale} - fields
+        reconfirm = _requirement_summary(ctx, stale, old_fields) if old_fields else ""
+        recheck = f" Said a while ago — re-confirm: {reconfirm}." if reconfirm else ""
         rationale = (
-            f"{tenant} stated: {summary}. {since}; no follow-up recorded.{also}"
+            f"{tenant} stated: {summary}. {since}.{touch}{also}{recheck}"
             if summary else
-            f"{tenant} stated a space requirement across {len(fields)} fields. {since}.{also}"
+            f"{tenant} stated a space requirement across {len(fields)} fields. "
+            f"{since}.{touch}{also}{recheck}"
         )
         evidence = next((o for o in rows if o.field in SPECIFIC_REQUIREMENT_FIELDS), rows[0])
         contact = _contact_for(ctx, evidence, rows)
@@ -1264,6 +1449,9 @@ def generate_with_stats(
             "source_doc": evidence.source_doc,
             "source_snippet": evidence.source_snippet,
             "contact_name": contact,
+            "past_client": past_client,
+            # Why this card is in the Waiting group, or None when it is ready.
+            "waiting": waiting,
             # Brokers Jack shopped this requirement with — facts that reached
             # this tenant from someone else's thread.
             "via": via,

@@ -114,8 +114,14 @@ _STREET_SUFFIX = (
     r"(?:St|Street|Ave|Avenue|Blvd|Boulevard|Rd|Road|Dr|Drive|Ln|Lane|Way|Ct|Court|"
     r"Pkwy|Parkway|Pike|Plaza|Sq|Square|Ter|Terrace|Cir|Circle|Hwy|Highway|Suite|Ste)\b\.?"
 )
+# A square footage is not a street number. Without these two guards "3,200
+# square feet" read as an address ("200 Square") and became "3, feet", and
+# "3200 SF suite" vanished — harmless while emails never stated a size, wrong
+# now that they may state the one the tenant gave. So the number must not
+# follow a thousands comma, and must not be followed by a unit of area.
+_AREA_UNIT = r"(?:r?sf|usf|sq\.?\s*f(?:ee|oo)?t|square\s+f(?:ee|oo)t)\b"
 _STREET_ADDRESS_RE = re.compile(
-    rf"\b\d{{1,6}}\s+(?:[A-Za-z0-9.'-]+\s+){{0,4}}{_STREET_SUFFIX}",
+    rf"(?<![\d,.])\b\d{{1,6}}(?!\s*{_AREA_UNIT})\s+(?:[A-Za-z0-9.'-]+\s+){{0,4}}{_STREET_SUFFIX}",
     re.IGNORECASE,
 )
 
@@ -525,6 +531,17 @@ def build_call_sheet(company: dict) -> dict:
         # Kept in numeric parity with the email's market-window paragraph.
         f"Concessions: {_concession_sheet_value()}",
     ]
+    # What the tenant told Jack — on the sheet in full, budget included: the
+    # sheet is for Jack on the call, not copy that goes out.
+    for label, value in company.get("call_sheet_stated") or []:
+        data_lines.append(f"Tenant said — {label}: {value}")
+    for label, value in company.get("reconfirm_requirements") or []:
+        data_lines.append(f"Said a while ago, re-confirm — {label}: {value}")
+    own_lease = company.get("own_lease") or {}
+    if own_lease.get("rentable_sf"):
+        data_lines.append(f"Lease on file — size: {own_lease['rentable_sf']:,} SF")
+    if own_lease.get("expires"):
+        data_lines.append(f"Lease on file — expires: {own_lease['expires']}")
 
     angle = build_angle_line(
         company.get("effective_rent_psf"),
@@ -948,6 +965,35 @@ Return valid JSON only — no markdown fences, no extra text:
     else:
         submarket_context = f"SUBMARKET: {submarket} (no benchmark data)"
 
+    # ── What the tenant told Jack ─────────────────────────────────────────────
+    # Gathered by services/outreach_facts.py: this tenant's own statements only,
+    # never a budget figure (rent numbers in an email must match the call
+    # sheet), older statements as questions, and the lease Jack has on file for
+    # THIS tenant — size and expiry month, never an address.
+    stated = company.get("stated_requirements") or []
+    reconfirm = company.get("reconfirm_requirements") or []
+    own_lease = company.get("own_lease") or {}
+    told_lines = []
+    if stated:
+        told_lines.append(
+            "WHAT THE TENANT HAS TOLD JACK (their own words, stated recently — use at least one "
+            "naturally to show you listened; never add a figure they did not state; never mention "
+            "a budget or a price):"
+        )
+        told_lines += [f"  {label}: {value}" for label, value in stated]
+    if reconfirm:
+        told_lines.append(
+            "SAID OVER A YEAR AGO (if you use one, ask whether it still holds — never state it as current):"
+        )
+        told_lines += [f"  {label}: {value}" for label, value in reconfirm]
+    if own_lease:
+        told_lines.append("THEIR CURRENT LEASE (the one Jack has on file for this tenant):")
+        if own_lease.get("rentable_sf"):
+            told_lines.append(f"  Size: {own_lease['rentable_sf']:,} SF")
+        if own_lease.get("expires"):
+            told_lines.append(f"  Expires: {own_lease['expires']}")
+    told_section = ("\n".join(told_lines) + "\n\n") if told_lines else ""
+
     user_prompt = (
         f"Generate personalized outreach for this NoVA office tenant:\n\n"
         f"COMPANY: {company_name}\n"
@@ -957,6 +1003,7 @@ Return valid JSON only — no markdown fences, no extra text:
         f"LEASE TRAJECTORY: {trajectory}\n\n"
         f"{nova_context}\n\n"
         f"{submarket_context}\n\n"
+        f"{told_section}"
         f"TENANT DATA:\n"
         f"  Headcount:      {headcount or 'unknown'} employees\n"
         f"  Growth rate:    {growth_str} YoY\n"
@@ -989,6 +1036,11 @@ Return valid JSON only — no markdown fences, no extra text:
     )
     result = json.loads(response.choices[0].message.content.strip())
     result["projected_sf"] = projected_sf
+
+    # Last line of defence for lease facts, on exactly what the model wrote —
+    # before any clean-up below can reshape it: a figure from ANOTHER tenant's
+    # lease means something leaked. The draft is refused, never shown.
+    _refuse_other_lease_figures(result, company)
 
     # ── Deterministic rent-ladder guarantee (email) ───────────────────────────
     # The lease-timing opener, rent line, full-service positioning, and free
@@ -1028,3 +1080,26 @@ Return valid JSON only — no markdown fences, no extra text:
     if email is not None and email.get("body"):
         email["body"] = _strip_street_address(email["body"])
     return result
+
+
+class OutreachBlocked(RuntimeError):
+    """A generated draft broke a guardrail and must not be shown."""
+
+
+def _refuse_other_lease_figures(result: dict, company: dict) -> None:
+    others = company.get("other_lease_numbers") or []
+    if not others:
+        return
+    email = result.get("email") if isinstance(result.get("email"), dict) else {}
+    text = f"{email.get('subject') or ''} {email.get('body') or ''}"
+    own = company.get("own_lease") or {}
+    own_sf = own.get("rentable_sf")
+    own_forms = {f"{own_sf:,}", str(own_sf)} if own_sf else set()
+    for figure in others:
+        if figure in own_forms:
+            continue
+        if re.search(rf"(?<![\d,]){re.escape(figure)}(?![\d,])", text):
+            raise OutreachBlocked(
+                "Draft blocked: it contained a square footage from another tenant's lease. "
+                "Nothing was saved — try generating again."
+            )

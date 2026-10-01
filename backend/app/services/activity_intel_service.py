@@ -24,7 +24,7 @@ import os
 from typing import Callable, Dict, List, Optional
 
 from sqlalchemy import or_
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, object_session
 
 from app.models.activity import ActivityLog
 from app.models.intel import IntelActivityExtraction
@@ -34,6 +34,7 @@ from app.services.document_extraction_service import (
     MissingAPIKeyError,
 )
 from app.services.requirement_subject import (
+    ABOUT_ENTRY,
     ABOUT_MARKET,
     REQUIREMENT_KINDS,
     entry_company,
@@ -237,7 +238,53 @@ def build_log_text(log: ActivityLog) -> str:
         parts.append(f"Notes: {log.notes}")
     if log.follow_up_action:
         parts.append(f"Follow-up: {log.follow_up_action}")
+
+    # What the email check recorded from the FULL email. The entry's own text
+    # is a one-line summary; the email check read the whole message, signature
+    # and all, and wrote down facts ("Fatimah Wilson is representing One Life
+    # One Love, looking for 2,000-2,500 SF by December") and discovery values.
+    # Reading them here is how Intel sees what the email said, rather than
+    # only what the summary kept.
+    discovery = [
+        (label, getattr(log, col)) for col, label in _DISCOVERY_LABELS.items()
+        if getattr(log, col, None) not in (None, "")
+    ]
+    if discovery:
+        parts.append("Recorded from the email: " + "; ".join(
+            f"{label}: {value}" for label, value in discovery
+        ))
+    for text in _entry_fact_texts(log):
+        parts.append(f"Fact recorded from the email: {text}")
     return "\n".join(parts)
+
+
+# ActivityLog discovery columns, as the extractor reads them.
+_DISCOVERY_LABELS = {
+    "disc_current_sf": "current SF",
+    "disc_current_rent_psf": "current rent $/SF",
+    "disc_lease_expiry": "current lease expiry",
+    "disc_decision_timeline": "decision timeline",
+    "disc_buildout_needs": "buildout needs",
+    "disc_decision_maker": "decision maker",
+}
+
+
+def _entry_fact_texts(log: ActivityLog) -> List[str]:
+    """Active contact facts the email check wrote from this entry. Read
+    through the entry's own session; a log with none attached has none."""
+    session = object_session(log)
+    if session is None or log.id is None:
+        return []
+    from app.models.contact import ContactFact
+
+    return [
+        text for (text,) in
+        session.query(ContactFact.fact_text)
+        .filter(ContactFact.source_entry_id == log.id, ContactFact.is_active.is_(True))
+        .order_by(ContactFact.id.asc())
+        .all()
+        if text
+    ]
 
 
 def _extract_facts_via_llm(text: str, client=None) -> Dict[str, Dict[str, object]]:
@@ -342,6 +389,12 @@ def mine_activity_log(
         log, kind if kind in REQUIREMENT_KINDS else None, subject.get("tenant_name"),
     )
 
+    # What is already on file for this tenant, to catch a note that says
+    # something different. Only for a requirement filed under the entry's own
+    # company — a held or named one has no settled tenant to compare against.
+    tenant = entry_company(log) if about == ABOUT_ENTRY else None
+    on_file = _facts_on_file(db, tenant.id, log.id) if tenant is not None else {}
+
     created: List[Observation] = []
     for field in EXTRACTED_FIELDS:
         row = parsed.get(field) or {}
@@ -350,6 +403,13 @@ def mine_activity_log(
             continue
         auto = _should_auto_approve(field, str(value))
         is_market = field in MARKET_FIELDS
+        earlier = on_file.get(field)
+        contradicts = (
+            earlier is not None and field in CONFLICT_FIELDS
+            and _contradicts(field, earlier.value, str(value))
+        )
+        if contradicts:
+            auto = False   # a contradiction is Jack's call, never automatic
         obs = Observation(
             entity_type=entity_type,
             entity_id=entity_id,
@@ -363,10 +423,89 @@ def mine_activity_log(
             verified_by="auto" if auto else None,
             about=ABOUT_MARKET if is_market else about,
             about_name=None if is_market else about_name,
+            conflicts_with_id=earlier.id if contradicts else None,
         )
         db.add(obs)
         created.append(obs)
     return created
+
+
+# Fields where a different value means the tenant changed their story — a
+# contradiction for Jack to settle. Lists like must-haves only ever add, so a
+# new item is a new fact, not a conflict.
+CONFLICT_FIELDS = {
+    "req_sf_min", "req_sf_max", "req_budget_max_psf", "req_lease_term_years",
+    "expiration_date",
+}
+
+# Two numbers this close are the same statement ("$38" and "38.00/SF").
+_SAME_NUMBER = 0.02
+# Two lease dates this close are the same date, pinned down.
+_SAME_DATE_DAYS = 45
+
+
+def _first_number(text: Optional[str]) -> Optional[float]:
+    import re
+
+    match = re.search(r"\d[\d,]*(?:\.\d+)?", text or "")
+    if not match:
+        return None
+    try:
+        return float(match.group(0).replace(",", ""))
+    except ValueError:
+        return None
+
+
+def _contradicts(field: str, old: Optional[str], new: Optional[str]) -> bool:
+    """Whether two stated values disagree. Unreadable is never a contradiction:
+    only values that can be compared, and differ, go to Review."""
+    if field == "expiration_date":
+        from app.services.intel_signal_service import parse_expiry
+
+        a, b = parse_expiry(old).date, parse_expiry(new).date
+        return bool(a and b) and abs((a - b).days) > _SAME_DATE_DAYS
+    a, b = _first_number(old), _first_number(new)
+    if a is None or b is None:
+        return False
+    return abs(a - b) > _SAME_NUMBER * max(abs(a), abs(b))
+
+
+def _facts_on_file(db: Session, company_id: int, exclude_log_id: int) -> Dict[str, Observation]:
+    """The newest settled fact per field for one tenant, from other notes.
+
+    Settled: not superseded, not itself waiting on a contradiction, and filed
+    under this company — by its note's company, or by Jack attaching it.
+    """
+    log_ids = [
+        lid for (lid,) in
+        db.query(ActivityLog.id)
+        .filter(
+            or_(ActivityLog.company_stamp_id == company_id,
+                ActivityLog.company_id == company_id),
+            ActivityLog.id != exclude_log_id,
+        )
+        .all()
+    ]
+    sources = [f"activity_log:{lid}" for lid in log_ids]
+    conditions = [Observation.assigned_company_id == company_id]
+    if sources:
+        conditions.append(Observation.source_doc.in_(sources))
+    rows = (
+        db.query(Observation)
+        .filter(
+            or_(*conditions),
+            Observation.superseded_by_id.is_(None),
+            Observation.field.in_(sorted(CONFLICT_FIELDS)),
+            or_(Observation.about.is_(None), Observation.about.in_(("entry", "named"))),
+            or_(Observation.conflicts_with_id.is_(None), Observation.human_verified.is_(True)),
+        )
+        .order_by(Observation.id.asc())
+        .all()
+    )
+    newest: Dict[str, Observation] = {}
+    for obs in rows:
+        newest[obs.field] = obs   # ascending id: the last one is the newest
+    return newest
 
 
 def remine_activity_log(
@@ -643,33 +782,103 @@ def mine_all_activity_logs(
     processed = facts = failed = 0
     total = len(logs)
     for idx, log in enumerate(logs, start=1):
-        try:
-            _drop_machine_facts(db, log.id)
-            created = mine_activity_log(log, db, extractor=extractor)
-            # Clear any earlier failed attempt so counts reflect reality.
-            db.query(IntelActivityExtraction).filter(
-                IntelActivityExtraction.activity_log_id == log.id,
-                IntelActivityExtraction.status == "failed",
-            ).delete(synchronize_session=False)
-            db.add(IntelActivityExtraction(
-                activity_log_id=log.id,
-                status="done" if created else "empty",
-                fields_found=len(created),
-            ))
-            db.commit()
-            processed += 1
-            facts += len(created)
-        except MissingAPIKeyError:
-            db.rollback()
-            raise
-        except Exception as exc:  # one bad note must not abort the batch
-            db.rollback()
-            db.add(IntelActivityExtraction(
-                activity_log_id=log.id, status="failed", fields_found=0, error=str(exc)[:500],
-            ))
-            db.commit()
+        found = _mine_one(db, log, extractor)
+        if found is None:
             failed += 1
+        else:
+            processed += 1
+            facts += found
         if progress:
             progress(idx, total)
 
     return {"processed": processed, "facts": facts, "skipped": skipped, "failed": failed}
+
+
+def _mine_one(db: Session, log: ActivityLog, extractor=None) -> Optional[int]:
+    """Read one entry, replacing its old machine facts, and mark it done.
+
+    Returns the number of facts written, or None when it failed — a failed
+    entry is marked so the next run retries it. A missing API key is not a
+    per-entry failure and is raised to the caller.
+    """
+    try:
+        _drop_machine_facts(db, log.id)
+        created = mine_activity_log(log, db, extractor=extractor)
+        # Clear any earlier failed attempt so counts reflect reality.
+        db.query(IntelActivityExtraction).filter(
+            IntelActivityExtraction.activity_log_id == log.id,
+            IntelActivityExtraction.status == "failed",
+        ).delete(synchronize_session=False)
+        db.add(IntelActivityExtraction(
+            activity_log_id=log.id,
+            status="done" if created else "empty",
+            fields_found=len(created),
+        ))
+        db.commit()
+        return len(created)
+    except MissingAPIKeyError:
+        db.rollback()
+        raise
+    except Exception as exc:  # one bad note must not abort the batch
+        db.rollback()
+        db.add(IntelActivityExtraction(
+            activity_log_id=log.id, status="failed", fields_found=0, error=str(exc)[:500],
+        ))
+        db.commit()
+        return None
+
+
+# ── Reading new entries as they arrive ───────────────────────────────────────
+# Jack should not have to press Mine for every email the 7pm check logs. A new
+# entry is read right after it is saved, in the background, so logging never
+# waits on the model. If that fails — no credits, no network — the entry is
+# simply left for the Mine button, exactly as before.
+#
+# DEAL_RADAR_AUTO_MINE=0 switches it off (the test suite does, so tests never
+# reach the API). With no API key set it is off too.
+
+def auto_mine_enabled() -> bool:
+    flag = os.environ.get("DEAL_RADAR_AUTO_MINE", "1").strip().lower()
+    return flag not in ("0", "false", "no", "off") and bool(os.environ.get("ANTHROPIC_API_KEY"))
+
+
+def mine_new_entries(entry_ids, extractor=None, session_factory=None) -> Dict[str, int]:
+    """Read freshly logged entries. Runs after the response, in its own session."""
+    if session_factory is None:
+        from app.database import SessionLocal as session_factory
+    db = session_factory()
+    done = failed = 0
+    try:
+        for lid in entry_ids:
+            log = db.query(ActivityLog).filter(ActivityLog.id == lid).first()
+            if log is None or not is_mineable(log):
+                continue
+            already = (
+                db.query(IntelActivityExtraction)
+                .filter(IntelActivityExtraction.activity_log_id == lid,
+                        IntelActivityExtraction.status != "failed")
+                .first()
+            )
+            if already is not None:
+                continue
+            try:
+                result = _mine_one(db, log, extractor)
+            except MissingAPIKeyError:
+                break   # nothing to do until a key is set; the button will say so
+            if result is None:
+                failed += 1
+            else:
+                done += 1
+    except Exception as exc:   # never let a background read take anything down
+        import logging
+        logging.getLogger(__name__).warning("background mining stopped: %s", exc)
+    finally:
+        db.close()
+    return {"mined": done, "failed": failed}
+
+
+def schedule_mining(background_tasks, entry_ids) -> None:
+    """Queue new entries to be read once the response has gone out."""
+    ids = [lid for lid in entry_ids if lid]
+    if ids and auto_mine_enabled():
+        background_tasks.add_task(mine_new_entries, ids)

@@ -613,6 +613,14 @@ export const confirmContactType = (
     contact_type: contactType, apply_to_firm: applyToFirm,
   }).then(r => r.data)
 
+// "They left <company> on <date>": moves later entries off the old company.
+export const contactLeftCompany = (
+  contactId: number, leftOn: string, newCompanyId: number | null,
+): Promise<{ contact: Contact; entries_moved: number }> =>
+  api.post(`/contacts/${contactId}/left-company`, {
+    left_on: leftOn, new_company_id: newCompanyId,
+  }).then(r => r.data)
+
 // ── Contact facts ──────────────────────────────────────────────────────────
 
 export const getContactFacts = (
@@ -990,6 +998,13 @@ export const getObservations = (filters?: ObservationFilters): Promise<Observati
 
 // Confirm (value omitted) or correct (value supplied). Backend creates a new
 // verified row that supersedes the original — the old row never edits in place.
+// Settle a contradiction: use the newer statement, or keep the one on file.
+// The value not kept is superseded, never deleted.
+export const resolveObservationConflict = (
+  observationId: number, keep: 'new' | 'old',
+): Promise<Observation> =>
+  api.post(`/observations/${observationId}/resolve-conflict`, { keep }).then(r => r.data)
+
 export const verifyObservation = (
   observationId: number,
   value?: string,
@@ -1026,6 +1041,20 @@ export const dispositionIntelOpportunity = (
 
 export const getIntelHistory = (): Promise<IntelHistoryItem[]> =>
   api.get('/intel/history').then(r => r.data)
+
+// Per kind of card: decisions, and how often an accepted one led anywhere.
+export interface IntelResultRow {
+  family: string
+  accepted: number
+  rejected: number
+  deferred: number
+  acted: number        // touched within two weeks of accepting
+  interested: number   // reached Interested or further
+  closed: number
+}
+
+export const getIntelResults = (): Promise<IntelResultRow[]> =>
+  api.get('/intel/results').then(r => r.data)
 
 export const getIntelCriteria = (): Promise<IntelCriterion[]> =>
   api.get('/intel/criteria').then(r => r.data)

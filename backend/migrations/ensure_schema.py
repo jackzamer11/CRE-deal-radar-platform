@@ -396,6 +396,10 @@ def ensure_contacts(cur: sqlite3.Cursor) -> int:
             # row migrates with no backfill and reads exactly as it did.
             "current_status":            "TEXT",
             "current_status_updated_at": "DATE",
+            # "Left <company> on <date>" — both nullable; nobody has left
+            # anywhere until Jack says so.
+            "former_company_id":         "INTEGER",
+            "left_company_on":           "DATE",
             "responded":        "BOOLEAN DEFAULT 0",
             "triaged":          "BOOLEAN DEFAULT 0",
             "auto_created":     "BOOLEAN DEFAULT 0",
@@ -508,6 +512,7 @@ def ensure_observations(cur: sqlite3.Cursor) -> int:
             "about_name": "TEXT",
             "assigned_company_id": "INTEGER",
             "assigned_contact_id": "INTEGER",
+            "conflicts_with_id": "INTEGER",
         }.items():
             added += _add_column(cur, "observations", col, col_def)
         return added
@@ -531,6 +536,7 @@ def ensure_observations(cur: sqlite3.Cursor) -> int:
             about_name TEXT,
             assigned_company_id INTEGER,
             assigned_contact_id INTEGER,
+            conflicts_with_id INTEGER,
             FOREIGN KEY(superseded_by_id) REFERENCES observations(id)
         )
     """)

@@ -435,6 +435,10 @@ export interface Contact {
   // the type changes only when Jack confirms it.
   suggested_type: ConfirmableType | null
   suggested_type_reason: string | null
+  // "Left <former company> on <date>", when Jack has said so.
+  former_company_id?: number | null
+  former_company_name?: string | null
+  left_company_on?: string | null
 }
 
 export interface ContactListRow {
@@ -1006,6 +1010,13 @@ export interface Observation {
   suggested_value?: string | null
   /** How precise the stored text really was: exact | month | quarter | year */
   value_precision?: string | null
+  /** Set when this fact contradicts one already on file: that earlier fact. */
+  conflicts_with?: {
+    id: number
+    value: string | null
+    source_doc: string | null
+    source_snippet: string | null
+  } | null
 }
 
 export interface IntelSignalRef {
@@ -1028,6 +1039,11 @@ export interface IntelSignalRef {
   conflicts?: { source: string; date: string }[]
   // The person on the entry behind the card, when there is one.
   contact_name?: string | null
+  // Jack placed this tenant before.
+  past_client?: boolean
+  // Why this card is in the Waiting group ("In Play with Maria Chen",
+  // "Maria Chen is due Dec 1"), or null when it is ready to call.
+  waiting?: string | null
 }
 
 export interface IntelOpportunity {
@@ -1055,6 +1071,8 @@ export interface IntelGenerateStats {
   expirations_unreadable: number
   expirations_past: number
   expirations_beyond_horizon: number
+  // In the Waiting group: being worked, asked to wait, or said no recently.
+  waiting: number
   opportunities: number
   by_signal_type: Record<string, number>
 }
@@ -1074,6 +1092,15 @@ export interface IntelHistoryItem extends IntelOpportunity {
   disposition: IntelDisposition | null
   reason_category: string | null
   reason_text: string | null
+  // Accepted cards only: what followed, read off the timeline.
+  outcome?: {
+    decided_on: string | null
+    first_touch: string | null
+    first_touch_channel: string | null
+    touches: number
+    best_stage: string | null
+    closed: boolean
+  } | null
 }
 
 export interface IntelDispositionResult {

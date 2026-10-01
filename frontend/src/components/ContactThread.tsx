@@ -28,6 +28,7 @@ import StageChangeDivider from './StageChangeDivider'
 import TypeConfirm from './TypeConfirm'
 import CompanyPicker from './CompanyPicker'
 import MarketFacts from './MarketFacts'
+import LeftCompany from './LeftCompany'
 import { formatDate } from '../dates'
 
 const OUTREACH_TYPE_LABELS: Record<string, string> = {
@@ -417,6 +418,9 @@ function ContactEditor({
           placeholder="Search companies…"
           onPick={c => setCompanyId(c?.id ?? null)}
         />
+        {contact.company_id && contact.company_name && (
+          <LeftCompany contactId={contact.id} companyName={contact.company_name} onDone={onSaved} />
+        )}
       </div>
 
       <AddressesEditor contactId={contact.id} />
@@ -1632,6 +1636,11 @@ export default function ContactThread({
               {c.title && <span>{c.title}</span>}
               {c.email && <span>{c.email}</span>}
               {c.phone && <span>{c.phone}</span>}
+              {c.former_company_name && c.left_company_on && (
+                <span title="Entries after this date moved off that company">
+                  left {c.former_company_name} {formatDate(c.left_company_on, { month: 'short', year: 'numeric' })}
+                </span>
+              )}
               {c.contact_type !== 'unconfirmed' && (
                 <span className="uppercase tracking-wider">{c.contact_type}</span>
               )}

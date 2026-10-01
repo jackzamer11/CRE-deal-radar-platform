@@ -200,4 +200,7 @@ class Company(Base):
         foreign_keys="ActivityLog.company_stamp_id",
     )
     outreach_logs  = relationship("OutreachLog", back_populates="company")
-    contacts       = relationship("Contact", back_populates="company")
+    # Current employees only — a contact's former_company_id is a second path
+    # to this table, so the join is spelled out.
+    contacts       = relationship("Contact", back_populates="company",
+                                  foreign_keys="Contact.company_id")

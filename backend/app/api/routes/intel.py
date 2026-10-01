@@ -27,6 +27,7 @@ from app.services.intel_feedback_service import (
     disposition_opportunity,
     save_criterion,
 )
+from app.services.intel_results_service import outcome_for, results_summary
 from app.services.intel_signal_service import generate_with_stats
 from app.services.requirement_subject import (
     ABOUT_DISMISSED, ABOUT_MARKET, ABOUT_NAMED, ABOUT_UNASSIGNED, NameResolver,
@@ -100,6 +101,9 @@ class GenerateStatsOut(BaseModel):
     expirations_unreadable: int = 0
     expirations_past: int = 0
     expirations_beyond_horizon: int = 0
+    # Shown in the Waiting group: the tenant is being worked, said when to
+    # come back, or said no recently. They move to Ready on their own.
+    waiting: int = 0
     opportunities: int = 0
     by_signal_type: dict = {}
 
@@ -151,10 +155,34 @@ class DispositionOut(BaseModel):
     suggested_rule: Optional[str] = None
 
 
+class OutcomeOut(BaseModel):
+    """What followed an accepted card, read off the timeline."""
+    decided_on: Optional[date] = None
+    first_touch: Optional[date] = None
+    first_touch_channel: Optional[str] = None
+    touches: int = 0
+    best_stage: Optional[str] = None
+    closed: bool = False
+
+
 class HistoryItemOut(IntelOpportunityOut):
     disposition: Optional[str] = None
     reason_category: Optional[str] = None
     reason_text: Optional[str] = None
+    # Accepted cards only.
+    outcome: Optional[OutcomeOut] = None
+
+
+class ResultRowOut(BaseModel):
+    family: str
+    accepted: int = 0
+    rejected: int = 0
+    deferred: int = 0
+    # Of the accepted: touched within two weeks, reached Interested or
+    # further, closed.
+    acted: int = 0
+    interested: int = 0
+    closed: int = 0
 
 
 class CriterionIn(BaseModel):
@@ -191,10 +219,16 @@ def disposition(opportunity_id: int, payload: DispositionIn, db: Session = Depen
 
 @router.get("/history", response_model=List[HistoryItemOut])
 def history(db: Session = Depends(get_db)):
-    """Dispositioned opportunities with their latest feedback, newest first."""
+    """Jack's decisions with their latest feedback, newest first — and, for an
+    accepted card, what followed it.
+
+    Cards the machine retired (superseded) are not decisions and are left out:
+    every run retires the cards whose facts moved or changed, and listing those
+    here buried the decisions.
+    """
     rows = (
         db.query(IntelOpportunity)
-        .filter(IntelOpportunity.status != "open")
+        .filter(IntelOpportunity.status.in_(("accepted", "rejected", "deferred")))
         .order_by(IntelOpportunity.surfaced_at.desc())
         .all()
     )
@@ -212,8 +246,15 @@ def history(db: Session = Depends(get_db)):
             disposition=fb.disposition if fb else opp.status,
             reason_category=fb.reason_category if fb else None,
             reason_text=fb.reason_text if fb else None,
+            outcome=OutcomeOut(**outcome_for(db, opp)) if opp.status == "accepted" else None,
         ))
     return out
+
+
+@router.get("/results", response_model=List[ResultRowOut])
+def results(db: Session = Depends(get_db)):
+    """Per kind of card: decisions, and how often accepting one led anywhere."""
+    return [ResultRowOut(**row) for row in results_summary(db)]
 
 
 # ── Activity-log mining ──────────────────────────────────────────────────────
