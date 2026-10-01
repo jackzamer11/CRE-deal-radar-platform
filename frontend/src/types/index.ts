@@ -435,6 +435,10 @@ export interface Contact {
   // the type changes only when Jack confirms it.
   suggested_type: ConfirmableType | null
   suggested_type_reason: string | null
+  // "Left <former company> on <date>", when Jack has said so.
+  former_company_id?: number | null
+  former_company_name?: string | null
+  left_company_on?: string | null
 }
 
 export interface ContactListRow {

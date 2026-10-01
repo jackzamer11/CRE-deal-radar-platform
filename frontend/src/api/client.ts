@@ -613,6 +613,14 @@ export const confirmContactType = (
     contact_type: contactType, apply_to_firm: applyToFirm,
   }).then(r => r.data)
 
+// "They left <company> on <date>": moves later entries off the old company.
+export const contactLeftCompany = (
+  contactId: number, leftOn: string, newCompanyId: number | null,
+): Promise<{ contact: Contact; entries_moved: number }> =>
+  api.post(`/contacts/${contactId}/left-company`, {
+    left_on: leftOn, new_company_id: newCompanyId,
+  }).then(r => r.data)
+
 // ── Contact facts ──────────────────────────────────────────────────────────
 
 export const getContactFacts = (

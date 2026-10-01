@@ -64,6 +64,14 @@ class Contact(Base):
     # departed contact's history stays on the old company's page.
     company_id = Column(Integer, ForeignKey("companies.id"), nullable=True, index=True)
 
+    # "Left Halverson on 2030-03-01." Set by one action (POST
+    # /contacts/{id}/left-company) that also moves the entries logged after
+    # that day off the old company — so the old company keeps exactly the years
+    # this person worked there, and their own thread stays whole. Also what
+    # keeps the old company's lease out of anything written to this person.
+    former_company_id = Column(Integer, ForeignKey("companies.id"), nullable=True)
+    left_company_on = Column(Date, nullable=True)
+
     # tenant | counterparty | owner. counterparty covers landlord brokers,
     # landlords, property managers and lenders.
     contact_type = Column(
@@ -125,7 +133,9 @@ class Contact(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
-    company       = relationship("Company", back_populates="contacts")
+    # foreign_keys is required: former_company_id is a second path to companies.
+    company       = relationship("Company", back_populates="contacts",
+                                 foreign_keys=[company_id])
     activity_logs = relationship("ActivityLog", back_populates="contact")
     facts         = relationship(
         "ContactFact", back_populates="contact", cascade="all, delete-orphan",

@@ -396,6 +396,10 @@ def ensure_contacts(cur: sqlite3.Cursor) -> int:
             # row migrates with no backfill and reads exactly as it did.
             "current_status":            "TEXT",
             "current_status_updated_at": "DATE",
+            # "Left <company> on <date>" — both nullable; nobody has left
+            # anywhere until Jack says so.
+            "former_company_id":         "INTEGER",
+            "left_company_on":           "DATE",
             "responded":        "BOOLEAN DEFAULT 0",
             "triaged":          "BOOLEAN DEFAULT 0",
             "auto_created":     "BOOLEAN DEFAULT 0",
