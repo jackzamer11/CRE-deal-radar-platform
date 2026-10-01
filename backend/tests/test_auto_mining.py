@@ -131,6 +131,25 @@ def test_a_background_read_mines_new_entries_and_skips_the_rest(db, factory):
     assert sources == {f"activity_log:{fresh.id}"}
 
 
+def test_a_mining_failure_says_what_broke_instead_of_a_bare_500(client, monkeypatch, tmp_path):
+    """The Review page showed "server error 500" with no reason. A failure in
+    the run now comes back with its type and message, and is logged."""
+    from app.api.routes import intel as routes
+
+    def broken(*a, **k):
+        raise RuntimeError("database is locked")
+
+    logged = []
+    monkeypatch.setattr(routes, "mine_all_activity_logs", broken)
+    monkeypatch.setattr(routes, "_log_mining_error", lambda exc: logged.append(exc))
+    resp = client.post("/api/intel/activity/mine", json={"limit": 5})
+    assert resp.status_code == 500
+    detail = resp.json()["detail"]
+    assert "RuntimeError: database is locked" in detail
+    assert "press Mine again" in detail
+    assert len(logged) == 1
+
+
 def test_a_failed_background_read_is_left_for_the_button(db, factory):
     log = _entry(db)
 

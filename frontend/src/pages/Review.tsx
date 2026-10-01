@@ -262,7 +262,9 @@ function ReviewRow({
 // ── Activity-log mining panel ────────────────────────────────────────────────
 // Turns freeform notes into structured facts. Runs in small batches so a long
 // backfill never blocks on a single HTTP request. Never edits the logs.
-const MINE_BATCH_SIZE = 20
+// Small batches: each request stays short (a long one can be cut off by the
+// dev proxy), and every entry is saved as it is read, so nothing is lost.
+const MINE_BATCH_SIZE = 5
 
 function ActivityMiningPanel({ onMined }: { onMined: () => void }) {
   const [status, setStatus] = useState<ActivityMiningStatus | null>(null)
