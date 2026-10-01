@@ -5,7 +5,7 @@ import re
 from typing import List, Optional, Tuple
 from datetime import date
 
-from fastapi import APIRouter, Depends, Query, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, Query, HTTPException
 from fastapi.responses import FileResponse
 from sqlalchemy import func, or_
 from sqlalchemy.exc import IntegrityError
@@ -1062,7 +1062,8 @@ def _resolve_deal_companies(
 
 @router.post("/from-email", response_model=ActivityFromEmailResult)
 def create_activity_from_email(
-    payload: ActivityFromEmail, db: Session = Depends(get_db),
+    payload: ActivityFromEmail, background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
 ):
     """Log an interpreted email: the entry, its participants, and what it said.
 
@@ -1529,6 +1530,10 @@ def create_activity_from_email(
     out.participation_entry_ids = extra_participation
     out.skipped_own_addresses = skipped_own
     out.entries = deal_results
+    # Read what the email said once the response has gone — the entries the
+    # deals produced; copies on other people's threads are never read.
+    from app.services.activity_intel_service import schedule_mining
+    schedule_mining(background_tasks, ids)
     return out
 
 
@@ -1759,7 +1764,10 @@ def update_activity_stage(
 
 
 @router.post("/", response_model=ActivityOut)
-def create_activity(payload: ActivityCreate, db: Session = Depends(get_db)):
+def create_activity(
+    payload: ActivityCreate, background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
     stage = payload.stage if payload.stage in VALID_STAGES else "Sent"
 
     # Duplicate provider message → a clear 409, never a 500 from the unique
@@ -1843,6 +1851,9 @@ def create_activity(payload: ActivityCreate, db: Session = Depends(get_db)):
             detail=f"An entry for message {payload.source_message_id} already exists.",
         )
     db.refresh(log)
+    # Read the new entry once the response has gone, so logging never waits.
+    from app.services.activity_intel_service import schedule_mining
+    schedule_mining(background_tasks, [log.id])
     return _to_out(log)
 
 

@@ -782,33 +782,103 @@ def mine_all_activity_logs(
     processed = facts = failed = 0
     total = len(logs)
     for idx, log in enumerate(logs, start=1):
-        try:
-            _drop_machine_facts(db, log.id)
-            created = mine_activity_log(log, db, extractor=extractor)
-            # Clear any earlier failed attempt so counts reflect reality.
-            db.query(IntelActivityExtraction).filter(
-                IntelActivityExtraction.activity_log_id == log.id,
-                IntelActivityExtraction.status == "failed",
-            ).delete(synchronize_session=False)
-            db.add(IntelActivityExtraction(
-                activity_log_id=log.id,
-                status="done" if created else "empty",
-                fields_found=len(created),
-            ))
-            db.commit()
-            processed += 1
-            facts += len(created)
-        except MissingAPIKeyError:
-            db.rollback()
-            raise
-        except Exception as exc:  # one bad note must not abort the batch
-            db.rollback()
-            db.add(IntelActivityExtraction(
-                activity_log_id=log.id, status="failed", fields_found=0, error=str(exc)[:500],
-            ))
-            db.commit()
+        found = _mine_one(db, log, extractor)
+        if found is None:
             failed += 1
+        else:
+            processed += 1
+            facts += found
         if progress:
             progress(idx, total)
 
     return {"processed": processed, "facts": facts, "skipped": skipped, "failed": failed}
+
+
+def _mine_one(db: Session, log: ActivityLog, extractor=None) -> Optional[int]:
+    """Read one entry, replacing its old machine facts, and mark it done.
+
+    Returns the number of facts written, or None when it failed — a failed
+    entry is marked so the next run retries it. A missing API key is not a
+    per-entry failure and is raised to the caller.
+    """
+    try:
+        _drop_machine_facts(db, log.id)
+        created = mine_activity_log(log, db, extractor=extractor)
+        # Clear any earlier failed attempt so counts reflect reality.
+        db.query(IntelActivityExtraction).filter(
+            IntelActivityExtraction.activity_log_id == log.id,
+            IntelActivityExtraction.status == "failed",
+        ).delete(synchronize_session=False)
+        db.add(IntelActivityExtraction(
+            activity_log_id=log.id,
+            status="done" if created else "empty",
+            fields_found=len(created),
+        ))
+        db.commit()
+        return len(created)
+    except MissingAPIKeyError:
+        db.rollback()
+        raise
+    except Exception as exc:  # one bad note must not abort the batch
+        db.rollback()
+        db.add(IntelActivityExtraction(
+            activity_log_id=log.id, status="failed", fields_found=0, error=str(exc)[:500],
+        ))
+        db.commit()
+        return None
+
+
+# ── Reading new entries as they arrive ───────────────────────────────────────
+# Jack should not have to press Mine for every email the 7pm check logs. A new
+# entry is read right after it is saved, in the background, so logging never
+# waits on the model. If that fails — no credits, no network — the entry is
+# simply left for the Mine button, exactly as before.
+#
+# DEAL_RADAR_AUTO_MINE=0 switches it off (the test suite does, so tests never
+# reach the API). With no API key set it is off too.
+
+def auto_mine_enabled() -> bool:
+    flag = os.environ.get("DEAL_RADAR_AUTO_MINE", "1").strip().lower()
+    return flag not in ("0", "false", "no", "off") and bool(os.environ.get("ANTHROPIC_API_KEY"))
+
+
+def mine_new_entries(entry_ids, extractor=None, session_factory=None) -> Dict[str, int]:
+    """Read freshly logged entries. Runs after the response, in its own session."""
+    if session_factory is None:
+        from app.database import SessionLocal as session_factory
+    db = session_factory()
+    done = failed = 0
+    try:
+        for lid in entry_ids:
+            log = db.query(ActivityLog).filter(ActivityLog.id == lid).first()
+            if log is None or not is_mineable(log):
+                continue
+            already = (
+                db.query(IntelActivityExtraction)
+                .filter(IntelActivityExtraction.activity_log_id == lid,
+                        IntelActivityExtraction.status != "failed")
+                .first()
+            )
+            if already is not None:
+                continue
+            try:
+                result = _mine_one(db, log, extractor)
+            except MissingAPIKeyError:
+                break   # nothing to do until a key is set; the button will say so
+            if result is None:
+                failed += 1
+            else:
+                done += 1
+    except Exception as exc:   # never let a background read take anything down
+        import logging
+        logging.getLogger(__name__).warning("background mining stopped: %s", exc)
+    finally:
+        db.close()
+    return {"mined": done, "failed": failed}
+
+
+def schedule_mining(background_tasks, entry_ids) -> None:
+    """Queue new entries to be read once the response has gone out."""
+    ids = [lid for lid in entry_ids if lid]
+    if ids and auto_mine_enabled():
+        background_tasks.add_task(mine_new_entries, ids)
