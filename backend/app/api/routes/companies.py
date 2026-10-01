@@ -1390,6 +1390,10 @@ def draft_outreach(company_id: str, db: Session = Depends(get_db)):
         "opportunity_score":    company.opportunity_score,
         "priority":             company.priority,
     }
+    # What this tenant told Jack, and the lease Jack has on file for them —
+    # gathered under the guardrails in services/outreach_facts.py.
+    from app.services.outreach_facts import outreach_context
+    company_dict.update(outreach_context(db, company))
 
     try:
         result = generate_outreach(company_dict)
