@@ -810,6 +810,35 @@ def _drop_machine_facts(db: Session, log_id: int) -> int:
     )
 
 
+def clear_stale_failures(db: Session) -> int:
+    """Drop failure records for entries that were later read successfully.
+
+    Two reads of one entry can overlap (the button and the background reader);
+    one can lose a lock and record a failure while the other succeeds. The
+    failure then means nothing and only confuses the count. Does not commit.
+    """
+    read_ok = [
+        lid for (lid,) in
+        db.query(IntelActivityExtraction.activity_log_id)
+        .filter(IntelActivityExtraction.status != "failed")
+        .distinct()
+        .all()
+    ]
+    if not read_ok:
+        return 0
+    removed = 0
+    for i in range(0, len(read_ok), 500):
+        removed += (
+            db.query(IntelActivityExtraction)
+            .filter(
+                IntelActivityExtraction.status == "failed",
+                IntelActivityExtraction.activity_log_id.in_(read_ok[i:i + 500]),
+            )
+            .delete(synchronize_session=False)
+        )
+    return removed
+
+
 def sweep_copies(db: Session) -> Dict[str, int]:
     """Clear facts mined from copies before copies were skipped, and mark every
     copy as handled so it never counts as waiting.
@@ -882,6 +911,7 @@ def mine_all_activity_logs(
     Returns counts: {processed, facts, skipped, failed}.
     """
     sweep_copies(db)
+    clear_stale_failures(db)
     reconcile_with_jacks_answers(db)
 
     # Only logs that actually succeeded are "done". Failed ones (e.g. a transient

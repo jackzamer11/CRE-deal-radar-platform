@@ -560,6 +560,22 @@ def test_a_failed_read_still_counts_as_waiting(db, client):
     assert status["remaining"] == 1 and status["failed"] == 1
 
 
+def test_a_failure_the_entry_later_got_past_is_not_counted(db, client):
+    """Two overlapping reads of Ann's note: one lost a lock, one succeeded.
+    The page said "1 failed" with nothing left to mine."""
+    co = _company(db, "Halverson Dental")
+    maria = _contact(db, "Maria Chen", co)
+    log = _entry(db, company=co, contact=maria)
+    db.add(IntelActivityExtraction(activity_log_id=log.id, status="failed", fields_found=0))
+    db.add(IntelActivityExtraction(activity_log_id=log.id, status="done", fields_found=3))
+    db.commit()
+    status = client.get("/api/intel/activity/status").json()
+    assert status["failed"] == 0 and status["remaining"] == 0
+
+    mine_all_activity_logs(db, extractor=_extractor())
+    assert db.query(IntelActivityExtraction).filter_by(status="failed").count() == 0
+
+
 # ══ 6. Reclassifying someone re-reads their notes ═════════════════════════════
 
 def test_confirming_a_broker_queues_their_entries_to_be_read_again(db):

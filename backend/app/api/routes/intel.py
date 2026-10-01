@@ -359,7 +359,10 @@ def activity_status(db: Session = Depends(get_db)):
         mined=mined,
         remaining=max(0, total - mined),
         facts_extracted=sum(r.fields_found for r in rows),
-        failed=sum(1 for r in rows if r.status == "failed"),
+        # A failure the same entry later got past is not a failure: two reads
+        # of one entry can overlap, one losing a lock while the other succeeds.
+        failed=len({r.activity_log_id for r in rows if r.status == "failed"}
+                   - {r.activity_log_id for r in rows if r.status != "failed"}),
     )
 
 
