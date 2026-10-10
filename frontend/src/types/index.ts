@@ -1060,6 +1060,9 @@ export interface IntelOpportunity {
   // cycle only. resurface_at: the day a deferred card comes back.
   cycle: string | null
   resurface_at: string | null
+  // The company's business id ("CO-001"), for opening it. Null when the card
+  // has no company behind it.
+  company_key?: string | null
 }
 
 export type IntelDisposition = 'accepted' | 'rejected' | 'deferred'
