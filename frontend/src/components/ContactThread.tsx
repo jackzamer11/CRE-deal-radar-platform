@@ -1492,11 +1492,14 @@ function LogEntryForm({
 
 // ── The thread ───────────────────────────────────────────────────────────────
 export default function ContactThread({
-  contactId, onBack, onOpenCompany,
+  contactId, onBack, onOpenCompany, focusEntryId, onFocusHandled,
 }: {
   contactId: number
   onBack: () => void
   onOpenCompany: (companyBusinessId: string) => void
+  // Deep link from the Dashboard: scroll to and briefly highlight this entry.
+  focusEntryId?: number | null
+  onFocusHandled?: () => void
 }) {
   const [header, setHeader] = useState<ThreadHeader | null>(null)
   const [entries, setEntries] = useState<TimelineEntry[]>([])
@@ -1544,6 +1547,26 @@ export default function ContactThread({
       setTimeout(() => setHighlightId(null), 2800)
     }
   }
+
+  // Arrival from a Dashboard link: the entry may sit past the first page, so
+  // keep loading until it is mounted (or the thread runs out), then jump.
+  useEffect(() => {
+    if (!focusEntryId || loading) return
+    if (entries.some(e => e.id === focusEntryId)) {
+      // Wait a frame so the row is in the DOM before scrolling.
+      const raf = requestAnimationFrame(() => {
+        jumpToEntry(focusEntryId)
+        onFocusHandled?.()
+      })
+      return () => cancelAnimationFrame(raf)
+    }
+    if (entries.length < total) {
+      void loadMore()
+    } else {
+      onFocusHandled?.() // entry isn't in this thread — land on the thread, no error
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusEntryId, loading, entries.length, total])
 
   const handleStage = async (stage: ActivityStage) => {
     if (!header) return

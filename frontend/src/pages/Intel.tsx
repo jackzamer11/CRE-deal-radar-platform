@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import {
   Sparkles, RefreshCw, ArrowRight, AlertTriangle, CheckCircle2, Clock,
   ThumbsUp, ThumbsDown, PauseCircle, X, BookmarkPlus, Target,
@@ -103,7 +104,9 @@ function OppCard({
   onDispositioned,
 }: {
   opp: IntelOpportunity
-  onDispositioned: (id: number, suggestedRule: string | null) => void
+  // `accepted` is the card when it was just accepted, so the page can offer
+  // to open the company — the card itself is gone from the list by then.
+  onDispositioned: (id: number, suggestedRule: string | null, accepted: IntelOpportunity | null) => void
 }) {
   // null = showing Accept/Reject/Defer; 'rejected'/'deferred' = reason picker open.
   const [reasonFor, setReasonFor] = useState<IntelDisposition | null>(null)
@@ -124,7 +127,7 @@ function OppCard({
         reason_text: text.trim() || undefined,
         resurface_at: disposition === 'deferred' ? backOn : undefined,
       })
-      onDispositioned(opp.id, res.suggested_rule)
+      onDispositioned(opp.id, res.suggested_rule, disposition === 'accepted' ? opp : null)
     } catch (e: any) {
       setError(e?.response?.data?.detail ?? 'Could not save that decision.')
       setBusy(false)
@@ -389,6 +392,9 @@ export default function IntelPage() {
   const [generating, setGenerating] = useState(false)
   const [ruleSuggestion, setRuleSuggestion] = useState<string | null>(null)
   const [ruleSaved, setRuleSaved] = useState(false)
+  // The card Jack just accepted, while he decides whether to open its company.
+  const [justAccepted, setJustAccepted] = useState<IntelOpportunity | null>(null)
+  const navigate = useNavigate()
   const [stats, setStats] = useState<IntelGenerateStats | null>(null)
 
   const load = async () => {
@@ -415,9 +421,12 @@ export default function IntelPage() {
     }
   }
 
-  const handleDispositioned = (id: number, suggestedRule: string | null) => {
+  const handleDispositioned = (
+    id: number, suggestedRule: string | null, accepted: IntelOpportunity | null,
+  ) => {
     setOpps(prev => prev.filter(o => o.id !== id))
     getIntelHistory().then(setHistory)
+    setJustAccepted(accepted)
     if (suggestedRule) {
       setRuleSuggestion(suggestedRule)
       setRuleSaved(false)
@@ -484,6 +493,42 @@ export default function IntelPage() {
           </div>
           <button onClick={() => setStats(null)} className="text-ink-muted hover:text-ink-primary flex-shrink-0">
             <X size={13} />
+          </button>
+        </div>
+      )}
+
+      {/* After an accept: go work it now, or stay here. Accepting records the
+          decision only; nothing is opened unless Jack says so. */}
+      {justAccepted && (
+        <div className="mb-5 bg-emerald-500/10 border border-emerald-500/30 rounded-xl p-4 flex items-start gap-3">
+          <ThumbsUp size={18} className="text-emerald-400 flex-shrink-0 mt-0.5" />
+          <div className="flex-1 min-w-0">
+            <div className="text-sm font-semibold text-ink-primary">Accepted — {justAccepted.title}</div>
+            <p className="text-[11px] text-ink-secondary mt-0.5">
+              {justAccepted.company_key
+                ? 'Open the company to draft outreach now, or keep going through the list.'
+                : 'This card has no company behind it, so there is nothing to open.'}
+            </p>
+            <div className="flex items-center gap-2 mt-2">
+              {justAccepted.company_key && (
+                <button
+                  onClick={() => navigate(`/companies?selected=${encodeURIComponent(justAccepted.company_key!)}`)}
+                  className="flex items-center gap-1.5 text-[10px] px-3 py-1.5 rounded-lg bg-emerald-600
+                             hover:bg-emerald-700 text-white font-semibold"
+                >
+                  Open company <ArrowRight size={11} />
+                </button>
+              )}
+              <button
+                onClick={() => setJustAccepted(null)}
+                className="text-[10px] text-ink-muted hover:text-ink-primary"
+              >
+                Not now
+              </button>
+            </div>
+          </div>
+          <button onClick={() => setJustAccepted(null)} className="text-ink-muted hover:text-ink-primary">
+            <X size={14} />
           </button>
         </div>
       )}

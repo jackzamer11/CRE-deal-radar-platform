@@ -886,6 +886,13 @@ export default function ActivityLogPage() {
           contactId={openContactId}
           onBack={() => setParam('contact', null)}
           onOpenCompany={businessId => setParam('company', businessId)}
+          focusEntryId={Number(searchParams.get('entry')) || null}
+          onFocusHandled={() => {
+            // Clear the param so a refresh doesn't re-trigger the highlight.
+            const next = new URLSearchParams(searchParams)
+            next.delete('entry')
+            setSearchParams(next, { replace: true })
+          }}
         />
       ) : (
         <ContactList

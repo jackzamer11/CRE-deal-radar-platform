@@ -68,12 +68,25 @@ class IntelOpportunityOut(BaseModel):
     # card, the day it comes back.
     cycle: Optional[str] = None
     resurface_at: Optional[date] = None
+    # The company's business id ("CO-001") for a company card, so the page can
+    # open that company. Null for a card about a note with no company behind it.
+    company_key: Optional[str] = None
 
     class Config:
         from_attributes = True
 
 
-def _to_out(opp: IntelOpportunity) -> IntelOpportunityOut:
+def _company_keys(db: Session, opps) -> dict:
+    """{company row id: company business id} for the company cards in `opps`."""
+    ids = {o.entity_id for o in opps if o.entity_type == "company"}
+    if not ids:
+        return {}
+    return dict(
+        db.query(Company.id, Company.company_id).filter(Company.id.in_(ids)).all()
+    )
+
+
+def _to_out(opp: IntelOpportunity, company_keys: Optional[dict] = None) -> IntelOpportunityOut:
     try:
         signals = json.loads(opp.signals_json) if opp.signals_json else []
     except (ValueError, TypeError):
@@ -90,6 +103,8 @@ def _to_out(opp: IntelOpportunity) -> IntelOpportunityOut:
         status=opp.status,
         cycle=opp.cycle,
         resurface_at=opp.resurface_at,
+        company_key=(company_keys or {}).get(opp.entity_id)
+        if opp.entity_type == "company" else None,
     )
 
 
@@ -123,8 +138,9 @@ def generate(db: Session = Depends(get_db)):
     """
     touched, stats = generate_with_stats(db)
     touched.sort(key=lambda o: o.score, reverse=True)
+    keys = _company_keys(db, touched)
     return GenerateOut(
-        opportunities=[_to_out(o) for o in touched],
+        opportunities=[_to_out(o, keys) for o in touched],
         stats=GenerateStatsOut(**stats),
     )
 
@@ -136,7 +152,8 @@ def list_opportunities(status: str = "open", db: Session = Depends(get_db)):
     if status:
         query = query.filter(IntelOpportunity.status == status)
     rows = query.order_by(IntelOpportunity.score.desc(), IntelOpportunity.surfaced_at.desc()).all()
-    return [_to_out(o) for o in rows]
+    keys = _company_keys(db, rows)
+    return [_to_out(o, keys) for o in rows]
 
 
 # ── Feedback loop (Phase E) ──────────────────────────────────────────────────
@@ -214,7 +231,9 @@ def disposition(opportunity_id: int, payload: DispositionIn, db: Session = Depen
         # "Opportunity not found" → 404; validation problems → 400.
         code = 404 if "not found" in str(exc).lower() else 400
         raise HTTPException(status_code=code, detail=str(exc)) from exc
-    return DispositionOut(opportunity=_to_out(opp), suggested_rule=suggested)
+    return DispositionOut(
+        opportunity=_to_out(opp, _company_keys(db, [opp])), suggested_rule=suggested,
+    )
 
 
 @router.get("/history", response_model=List[HistoryItemOut])
