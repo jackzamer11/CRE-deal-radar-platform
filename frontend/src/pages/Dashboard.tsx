@@ -278,6 +278,14 @@ function AcquisitionRow({
   )
 }
 
+// Re-engage items go to the contact's page, highlighting the triggering entry.
+// An entry with no linked contact falls back to the Activity Log feed.
+function reEngageLink(item: Pick<ActivityLog, 'id' | 'contact_id'>): string {
+  return item.contact_id
+    ? `/activity?contact=${item.contact_id}&entry=${item.id}`
+    : `/activity?focus=${item.id}`
+}
+
 function SectionHeader({
   icon: Icon, color, title, count,
 }: { icon: React.ElementType; color: string; title: string; count: number }) {
@@ -834,12 +842,12 @@ export default function Dashboard() {
                   </div>
                 </div>
                 <button
-                  onClick={() => navigate(`/activity?focus=${item.id}`)}
+                  onClick={() => navigate(reEngageLink(item))}
                   className="flex-shrink-0 flex items-center gap-1 text-[10px] px-3 py-1.5 rounded-lg
                              bg-amber-600 hover:bg-amber-700 text-white font-semibold transition-colors"
                 >
                   <ClipboardList size={11} />
-                  Open in Activity Log
+                  {item.contact_id ? 'Open Contact' : 'Open in Activity Log'}
                 </button>
               </div>
             ))}
