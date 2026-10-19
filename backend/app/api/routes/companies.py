@@ -21,6 +21,7 @@ from app.services import signal_engine as se
 from app.services.scoring_model import score_property
 from app.services.match_scoring import medical_mismatch_penalty
 from app.services.lease_storage import delete_lease_file
+from app.services.company_merge_service import CompanyMergeConflict, merge_companies
 from app.models.email_ingest import CONVERSATION_SOURCE
 from app.services.lease_records import (
     CONFIRMED_LEASE_SOURCES, LEASE_DOCUMENT_SOURCE, MANUAL_SOURCE, choose_current,
@@ -799,6 +800,35 @@ def delete_company(company_id: str, db: Session = Depends(get_db)):
     db.delete(company)
     db.commit()
     return {"deleted": company_id}
+
+
+class CompanyMergeRequest(BaseModel):
+    # Business key (CO-nnn) of the duplicate to fold in and delete.
+    source_company_id: str
+
+
+@router.post("/{company_id}/merge", status_code=200)
+def merge_company(
+    company_id: str, payload: CompanyMergeRequest, db: Session = Depends(get_db),
+):
+    """Merge source_company_id into company_id: one transaction, target wins.
+
+    Every entry, contact, lease, fact, intel row and outreach record on the
+    duplicate moves to the target; fields the target lacks are filled from it;
+    the duplicate is deleted. Irreversible. See services/company_merge_service.py.
+    """
+    target = db.query(Company).filter(Company.company_id == company_id).first()
+    source = db.query(Company).filter(
+        Company.company_id == payload.source_company_id
+    ).first()
+    if not target or not source:
+        raise HTTPException(status_code=404, detail="Company not found")
+    try:
+        result = merge_companies(db, target, source)
+    except CompanyMergeConflict as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    db.commit()
+    return result
 
 
 class SnoozeRequest(BaseModel):

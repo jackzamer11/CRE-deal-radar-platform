@@ -462,9 +462,37 @@ def _contains_words(outer: List[str], inner: List[str]) -> bool:
     return any(outer[i:i + n] == inner for i in range(len(outer) - n + 1))
 
 
+# Shortest name the run-together comparison applies to. Below it, "a b" vs
+# "ab" style coincidences outnumber real matches.
+_MIN_JOINED_NAME_CHARS = 5
+
+
+def _contains_joined(outer: List[str], inner: List[str]) -> bool:
+    """True when `inner`, written as one word, equals a run of whole words in
+    `outer` written as one word — "morevang" against "global printing dba more
+    vang". Still whole words on both sides, never a character substring.
+    """
+    joined = "".join(inner)
+    if len(joined) < _MIN_JOINED_NAME_CHARS:
+        return False
+    for i in range(len(outer)):
+        run = ""
+        for word in outer[i:]:
+            run += word
+            if run == joined:
+                return True
+            if len(run) >= len(joined):
+                break
+    return False
+
+
 def _names_match(a: str, b: str) -> bool:
     """Two normalized company names match when they are equal, or one is a
-    whole-word run inside the other ("acme" in "acme holdings").
+    whole-word run inside the other ("acme" in "acme holdings") — including
+    when one writes those words run together. A domain-derived name is one
+    word: morevang.com gives "morevang", which an email calling the tenant
+    "Global Printing dba More Vang" never matched on words alone, and the same
+    tenant got two company records from one email.
 
     Never a character substring: the name derived from ics.com is "ics", which
     sits inside "magnet forensics" and filed that sender under Magnet Forensics.
@@ -472,7 +500,10 @@ def _names_match(a: str, b: str) -> bool:
     wa, wb = a.split(), b.split()
     if not wa or not wb:
         return False
-    return wa == wb or _contains_words(wb, wa) or _contains_words(wa, wb)
+    return (
+        wa == wb or _contains_words(wb, wa) or _contains_words(wa, wb)
+        or _contains_joined(wb, wa) or _contains_joined(wa, wb)
+    )
 
 
 def resolve_company_for_email(
@@ -647,7 +678,13 @@ def resolve_companies_by_names(
             for cand, cand_norm in candidates:
                 if not cand_norm:
                     continue
-                if cand_norm == target or target in cand_norm or cand_norm in target:
+                if (
+                    cand_norm == target or target in cand_norm
+                    or cand_norm in target
+                    # "More Vang" in an email against a "Morevang" already
+                    # created from the tenant's email domain.
+                    or _names_match(target, cand_norm)
+                ):
                     match = cand
                     break
         if match is not None:
