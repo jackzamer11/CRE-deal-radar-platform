@@ -25,8 +25,10 @@ Two rules this module enforces
 
 Lease content is private. Nothing here feeds generated outreach copy.
 """
+import base64
 import json
 import os
+import re
 from typing import Callable, Dict, List, Optional
 
 from app.config import settings
@@ -204,8 +206,44 @@ def _normalize(raw: Dict[str, object]) -> Dict[str, Dict[str, Optional[object]]]
     return result
 
 
-def _extract_via_llm(pages: List[str], client=None) -> Dict[str, object]:
+# A DocuSign envelope stamps this header onto every page, so a scanned lease
+# that went through DocuSign comes back from pdfplumber with one line of "text"
+# per page and none of the lease. That line must not count as a text layer.
+_STAMP_LINE = re.compile(r"^\s*docusign envelope id:.*$", re.IGNORECASE | re.MULTILINE)
+
+# A page with fewer real characters than this is treated as a scan.
+_MIN_PAGE_TEXT_CHARS = 100
+
+# The API's page ceiling for a PDF sent as a document. Past it, a lease that is
+# only partly scanned is read from its text layer rather than refused outright.
+_MAX_PDF_PAGES = 100
+
+
+def _page_has_text(text: Optional[str]) -> bool:
+    body = _STAMP_LINE.sub("", text or "")
+    return len("".join(body.split())) >= _MIN_PAGE_TEXT_CHARS
+
+
+def _needs_page_images(pages: List[str]) -> bool:
+    """True when the text layer cannot be trusted to carry the lease.
+
+    Any page without real text — a scanned signature page, a scanned addendum,
+    a DocuSign-wrapped scan — means the model has to see the pages themselves.
+    """
+    if not pages:
+        return True
+    if all(_page_has_text(page) for page in pages):
+        return False
+    return len(pages) <= _MAX_PDF_PAGES
+
+
+def _extract_via_llm(
+    pages: List[str], client=None, pdf_bytes: Optional[bytes] = None,
+) -> Dict[str, object]:
     """Call Anthropic with structured (tool-use) output; return the raw map.
+
+    With `pdf_bytes`, the PDF itself is sent as a document so a scanned lease is
+    read off its page images; otherwise the page-marked text layer is sent.
 
     `client` is injectable so tests stub the network boundary. Raises
     MissingAPIKeyError when no key is configured — the caller turns that into
@@ -223,22 +261,50 @@ def _extract_via_llm(pages: List[str], client=None) -> Dict[str, object]:
 
         client = anthropic.Anthropic(api_key=api_key)
 
-    user_content = (
-        f"{_FIELD_GUIDE}\n\n"
-        "Extract the nine fields from the lease below and record them with the "
-        "record_lease_abstract tool. Quote the clause behind every value; "
-        "return null for anything the document does not state.\n\n"
-        f"--- LEASE DOCUMENT ---\n{_document_text(pages)}"
-    )
+    def instruction(where: str) -> str:
+        return (
+            f"{_FIELD_GUIDE}\n\n"
+            f"Extract the nine fields from the lease {where} and record them "
+            "with the record_lease_abstract tool. Quote the clause behind every "
+            "value; return null for anything the document does not state."
+        )
 
-    response = client.messages.create(
-        # Read at call time so the model is a setting, not a code edit.
-        model=settings.LEASE_EXTRACTION_MODEL,
-        max_tokens=8000,
-        system=_SYSTEM_PROMPT,
-        tools=[_EXTRACTION_TOOL],
-        messages=[{"role": "user", "content": user_content}],
-    )
+    if pdf_bytes is not None:
+        user_content = [
+            {
+                "type": "document",
+                "source": {
+                    "type": "base64",
+                    "media_type": "application/pdf",
+                    "data": base64.standard_b64encode(pdf_bytes).decode("ascii"),
+                },
+            },
+            {"type": "text", "text": instruction("in the attached PDF")},
+        ]
+    else:
+        user_content = (
+            instruction("below")
+            + f"\n\n--- LEASE DOCUMENT ---\n{_document_text(pages)}"
+        )
+
+    try:
+        response = client.messages.create(
+            # Read at call time so the model is a setting, not a code edit.
+            model=settings.LEASE_EXTRACTION_MODEL,
+            max_tokens=8000,
+            system=_SYSTEM_PROMPT,
+            tools=[_EXTRACTION_TOOL],
+            # Forced: a free-text reply is not an abstract, and with nothing
+            # forcing the tool the model can answer in prose instead.
+            tool_choice={"type": "tool", "name": "record_lease_abstract"},
+            messages=[{"role": "user", "content": user_content}],
+        )
+    except Exception as exc:  # noqa: BLE001
+        if pdf_bytes is not None and type(exc).__name__ == "BadRequestError":
+            raise ExtractionUnavailable(
+                f"The PDF could not be read ({exc}). The file is stored and linked."
+            ) from exc
+        raise
 
     for block in response.content:
         if (
@@ -274,22 +340,30 @@ def extract_lease_from_pdf(
 ) -> Dict[str, Dict[str, Optional[object]]]:
     """Read a PDF and extract the nine fields.
 
+    A lease whose pages carry real text is read from that text. A scanned one —
+    including a scan DocuSign has stamped an envelope ID onto — is sent to the
+    model as the PDF itself, so it is read off the page images instead of
+    coming back empty. `extractor` (tests) receives the page text either way.
+
     An unreadable PDF raises ExtractionUnavailable rather than propagating a
-    pdfplumber error, so the caller has one failure type to report against a
-    file it has already stored.
+    pdfplumber or API error, so the caller has one failure type to report
+    against a file it has already stored.
     """
     try:
         pages = _extract_pages(pdf_bytes)
-    except Exception as exc:  # noqa: BLE001 — any parse failure is the same outcome
+    except Exception:  # noqa: BLE001 — the model may still read what pdfplumber cannot
+        pages = []
+    if _needs_page_images(pages):
+        fn = extractor or (lambda p: _extract_via_llm(p, pdf_bytes=pdf_bytes))
+        return extract_lease(pages, extractor=fn)
+    if not any(_page_has_text(page) for page in pages):
+        # A scan too long to send as page images, with no text layer. Nothing
+        # to abstract, but the document itself is still worth keeping and
+        # linking.
         raise ExtractionUnavailable(
-            f"The PDF could not be read ({exc}). The file is stored and linked."
-        ) from exc
-    if not any((page or "").strip() for page in pages):
-        # A scanned lease with no text layer. Nothing to abstract, but the
-        # document itself is still worth keeping and linking.
-        raise ExtractionUnavailable(
-            "This PDF has no readable text (it may be a scan). The file is "
-            "stored and linked; the fields need entering by hand."
+            f"This PDF has no readable text (it may be a scan) and is over "
+            f"{_MAX_PDF_PAGES} pages, too long to read as page images. The file "
+            "is stored and linked; the fields need entering by hand."
         )
     return extract_lease(pages, extractor=extractor)
 
