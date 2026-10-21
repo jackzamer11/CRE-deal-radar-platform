@@ -456,6 +456,19 @@ def _normalize_company_name(name: str) -> str:
     return re.sub(r"\s+", " ", n).strip()
 
 
+def former_names_of(company: Company) -> List[str]:
+    """Names this company was renamed from, oldest first. Never raises: a
+    malformed value reads as no former names."""
+    import json
+    try:
+        names = json.loads(company.former_names or "[]")
+    except (TypeError, ValueError):
+        return []
+    if not isinstance(names, list):
+        return []
+    return [n for n in names if isinstance(n, str) and n.strip()]
+
+
 def _contains_words(outer: List[str], inner: List[str]) -> bool:
     """True when `inner` appears in `outer` as a contiguous run of whole words."""
     n = len(inner)
@@ -664,10 +677,15 @@ def resolve_companies_by_names(
     if not wanted:
         return {}
 
-    candidates = [
-        (cand, _normalize_company_name(cand.name))
-        for cand in db.query(Company).filter(Company.name.isnot(None)).all()
-    ]
+    companies = db.query(Company).filter(Company.name.isnot(None)).all()
+    candidates = [(cand, _normalize_company_name(cand.name)) for cand in companies]
+    # A name the company was renamed FROM still means that company: an email
+    # calling IDEA "Development.org" lands on IDEA. Exact only — a former name
+    # is a remembered alias, not a pattern to stretch.
+    by_former: Dict[str, Company] = {}
+    for cand in companies:
+        for old in former_names_of(cand):
+            by_former.setdefault(_normalize_company_name(old), cand)
 
     resolved: Dict[str, Tuple[Company, bool]] = {}
     created_ids = set()
@@ -675,6 +693,11 @@ def resolve_companies_by_names(
         target = _normalize_company_name(raw)
         match = None
         if target:
+            # A company that has this name NOW wins over one that used to.
+            match = next((c for c, n in candidates if n == target), None)
+            if match is None:
+                match = by_former.get(target)
+        if target and match is None:
             for cand, cand_norm in candidates:
                 if not cand_norm:
                     continue

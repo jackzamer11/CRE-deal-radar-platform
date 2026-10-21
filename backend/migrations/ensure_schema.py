@@ -973,6 +973,15 @@ def ensure_companies(cur: sqlite3.Cursor) -> int:
     except sqlite3.OperationalError as _exc:
         print(f"  ! companies.email_domain index skipped: {_exc}")
 
+    # ── Former names (company rename) ──────────────────────────────────────
+    # JSON list of names a company was renamed from, so the email resolvers
+    # still find it by its old name. NULL on every existing row: nothing has
+    # been renamed yet.
+    try:
+        added += _add_column(cur, "companies", "former_names", "TEXT")
+    except Exception as _exc:
+        print(f"  ! companies.former_names add skipped: {_exc}")
+
     # ── Medical/non-medical classification (soft match penalty) ────────────
     # Defaults to 0 (false) for all existing rows. Guarded so a partially-migrated
     # DB can never abort startup on this single column.

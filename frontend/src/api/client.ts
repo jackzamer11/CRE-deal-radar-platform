@@ -153,6 +153,13 @@ export const updateCompanyLease = (
 ): Promise<CompanyOut> =>
   api.patch(`/companies/${companyId}/lease`, payload).then(r => r.data)
 
+// 409 when another company already has the name; 422 when blank.
+export const updateCompanyName = (
+  companyId: string,
+  name: string,
+): Promise<CompanyOut> =>
+  api.patch(`/companies/${companyId}/name`, { name }).then(r => r.data)
+
 export const updateCompanyTrajectory = (
   companyId: string,
   lease_trajectory: string,

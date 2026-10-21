@@ -114,6 +114,11 @@ class Company(Base):
     # an inbound sender to an existing company instead of creating a duplicate.
     # Never set for free-mail domains.
     email_domain = Column(String, nullable=True, index=True)
+    # JSON list of names this company was renamed FROM (oldest first). An email
+    # that still calls the tenant by its old name ("Development.org" after Jack
+    # renamed it IDEA) must land on this record, not fork a new one — see
+    # services/company_rename_service.py and the name resolvers.
+    former_names = Column(Text, nullable=True)
     # tenant | counterparty | owner. Nullable on purpose: an auto-created company
     # gets no type until Jack sets one, so a guess never hardens into a fact.
     company_type = Column(String, nullable=True)
