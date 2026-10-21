@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 from app.models.activity import ActivityLog
 from app.models.company import Company
 from app.models.contact import Contact
+from app.services.contact_service import former_names_of
 
 # Observation.about values. See models/observation.py.
 ABOUT_ENTRY = "entry"
@@ -156,8 +157,16 @@ class NameResolver:
 
     def __init__(self, db: Session):
         self._companies: Dict[str, Optional[int]] = {}
-        for cid, name in db.query(Company.id, Company.name).all():
-            self._add(self._companies, name_key(name), cid)
+        rows = db.query(Company).all()
+        for company in rows:
+            self._add(self._companies, name_key(company.name), company.id)
+        # A fact mined before a rename still names the company by its old
+        # name. Kept apart and consulted after current names, so a company
+        # that holds a name NOW is never made ambiguous by one that used to.
+        self._former: Dict[str, Optional[int]] = {}
+        for company in rows:
+            for old in former_names_of(company):
+                self._add(self._former, name_key(old), company.id)
         self._people: Dict[str, Optional[int]] = {}
         for name, company_id in (
             db.query(Contact.name, Contact.company_id)
@@ -181,4 +190,6 @@ class NameResolver:
             return None
         if key in self._companies:
             return self._companies[key]
+        if key in self._former:
+            return self._former[key]
         return self._people.get(key)

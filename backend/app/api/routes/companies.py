@@ -22,6 +22,9 @@ from app.services.scoring_model import score_property
 from app.services.match_scoring import medical_mismatch_penalty
 from app.services.lease_storage import delete_lease_file
 from app.services.company_merge_service import CompanyMergeConflict, merge_companies
+from app.services.company_rename_service import (
+    CompanyRenameConflict, CompanyRenameError, rename_company,
+)
 from app.models.email_ingest import CONVERSATION_SOURCE
 from app.services.lease_records import (
     CONFIRMED_LEASE_SOURCES, LEASE_DOCUMENT_SOURCE, MANUAL_SOURCE, choose_current,
@@ -1056,6 +1059,37 @@ def remove_lease(
         promoted_file_name=promoted_name,
         warning=warning,
     )
+
+
+class NameUpdate(BaseModel):
+    name: str
+
+
+@router.patch("/{company_id}/name", response_model=CompanyOut)
+def update_name(
+    company_id: str,
+    payload: NameUpdate,
+    db: Session = Depends(get_db),
+):
+    """Rename a company. company_id never changes.
+
+    422 on a blank name; 409 when another company already has it (any casing)
+    — a rename never merges, that is POST /{company_id}/merge. The old name is
+    remembered so a later email that still uses it lands here instead of
+    creating a duplicate. See services/company_rename_service.py.
+    """
+    company = db.query(Company).filter(Company.company_id == company_id).first()
+    if not company:
+        raise HTTPException(status_code=404, detail="Company not found")
+    try:
+        rename_company(db, company, payload.name)
+    except CompanyRenameError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except CompanyRenameConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    db.commit()
+    db.refresh(company)
+    return _company_out(company, db)
 
 
 class SubmarketUpdate(BaseModel):

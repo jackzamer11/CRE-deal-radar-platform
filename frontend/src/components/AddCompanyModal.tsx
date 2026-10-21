@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { X, Users, ChevronRight } from 'lucide-react'
-import { createCompany, updateCompanyMedical, updateCompanySfOccupied, updateCompanyBuildingClass, updateCompanyLease, updateCompanyRents, updateCompanySubmarket } from '../api/client'
+import { createCompany, updateCompanyName, updateCompanyMedical,updateCompanySfOccupied, updateCompanyBuildingClass, updateCompanyLease, updateCompanyRents, updateCompanySubmarket } from '../api/client'
 import type { CompanyOut } from '../types'
 // The submarket list is a table that grows (Add new at the bottom), not a
 // fixed array in this file.
@@ -139,6 +139,11 @@ export default function AddCompanyModal({ onClose, onSaved, editCompanyId, initi
       if (isEdit) {
         // Save each patchable field via its own endpoint, then use the final
         // response (medical) as the returned record so the caller gets fresh data.
+        // Name first: a taken name (409) stops the save before anything else
+        // is written, and the error says which company holds it.
+        if (form.name.trim() !== (initialData?.name ?? '').trim()) {
+          await updateCompanyName(editCompanyId!, form.name)
+        }
         const sfVal = form.current_sf_occupied ? parseInt(form.current_sf_occupied) : null
         await updateCompanySfOccupied(editCompanyId!, sfVal)
         await updateCompanyBuildingClass(editCompanyId!, form.current_building_class || null)
